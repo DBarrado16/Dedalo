@@ -91,6 +91,24 @@ function inventoryAssets() {
   const assets = inventory?.activos || [];
   return $("hide-empty").checked ? assets.filter(asset => asset.servicios.length) : assets;
 }
+function inventoryRows() {
+  // Una fila por servicio (o una vacía por host sin puertos) que pase los filtros.
+  const query = $("search").value.toLowerCase().trim(), range = $("range-filter").value, subnet = $("subnet-filter").value, service = $("service-filter").value;
+  return inventoryAssets().flatMap(asset => (asset.servicios.length ? asset.servicios : [null]).map(port => ({asset, port})))
+    .filter(({asset, port}) => (!range || asset.rango === range) && (!subnet || asset.subred === subnet) && (!service || (port && (port.servicio || "Sin identificar") === service)) &&
+      (!query || [asset.ip, ...asset.nombres, asset.subred, port?.puerto, port?.protocolo, port?.servicio, port?.producto, port?.version, port?.detalle, ...(port?.cpe || [])].join(" ").toLowerCase().includes(query)));
+}
+function exportHosts() {
+  // IP:puerto de lo que muestran los filtros, uno por línea; IPv6 entre corchetes.
+  const lines = [...new Set(inventoryRows().filter(row => row.port)
+    .map(({asset, port}) => (asset.ip.includes(":") ? `[${asset.ip}]` : asset.ip) + ":" + port.puerto))];
+  if (!lines.length) { notice("No hay servicios que exportar con estos filtros."); return; }
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([lines.join("\n") + "\n"], {type: "text/plain"}));
+  link.download = "hosts_" + current.nombre.replace(/[^\w.-]+/g, "_") + ".txt";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
 function updateFilters() {
   const groups = activeTab === "inventory" ? inventoryAssets() : current.grupos;
   selectOptions($("range-filter"), groups.map(g => g.rango), "Todos los rangos", rangeText);
@@ -230,13 +248,10 @@ function renderInventory() {
     renderKey = "";
     return;
   }
-  const query = $("search").value.toLowerCase().trim(), range = $("range-filter").value, subnet = $("subnet-filter").value, service = $("service-filter").value;
   const captures = new Map(current.grupos.flatMap((g, gi) => g.objetivos.map((t, ti) => [t.ip + ":" + t.puerto, {...t, key:gi+"-"+ti}])));
   const empty = inventory.activos.filter(asset => !asset.servicios.length).length;
   $("empty-count").textContent = empty ? ` (${empty})` : "";
-  const filtered = inventoryAssets().flatMap(asset => (asset.servicios.length ? asset.servicios : [null]).map(port => ({asset, port})))
-    .filter(({asset, port}) => (!range || asset.rango === range) && (!subnet || asset.subred === subnet) && (!service || (port && (port.servicio || "Sin identificar") === service)) &&
-      (!query || [asset.ip, ...asset.nombres, asset.subred, port?.puerto, port?.protocolo, port?.servicio, port?.producto, port?.version, port?.detalle, ...(port?.cpe || [])].join(" ").toLowerCase().includes(query)));
+  const filtered = inventoryRows();
   const visible = filtered.slice(0, shown);
   $("result-count").textContent = `${new Set(filtered.map(row => row.asset.ip)).size} activos / ${filtered.filter(row => row.port).length} servicios`;
   $("more").hidden = filtered.length <= shown;
@@ -355,6 +370,7 @@ async function action(type) {
   finally { mutating=false; render(); }
 }
 $("start-job").addEventListener("click", () => action("start"));
+$("inventory-hosts").addEventListener("click", exportHosts);
 $("cancel-job").addEventListener("click", () => action("cancel"));
 $("delete-job").addEventListener("click", () => {
   if (!current || mutating || activeStates.has(current.estado)) return;
