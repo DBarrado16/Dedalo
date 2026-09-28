@@ -98,14 +98,26 @@ function inventoryRows() {
     .filter(({asset, port}) => (!range || asset.rango === range) && (!subnet || asset.subred === subnet) && (!service || (port && (port.servicio || "Sin identificar") === service)) &&
       (!query || [asset.ip, ...asset.nombres, asset.subred, port?.puerto, port?.protocolo, port?.servicio, port?.producto, port?.version, port?.detalle, ...(port?.cpe || [])].join(" ").toLowerCase().includes(query)));
 }
-function exportHosts() {
-  // IP:puerto de lo que muestran los filtros, uno por línea; IPv6 entre corchetes.
-  const lines = [...new Set(inventoryRows().filter(row => row.port)
-    .map(({asset, port}) => (asset.ip.includes(":") ? `[${asset.ip}]` : asset.ip) + ":" + port.puerto))];
+function exportPairs(webOnly) {
+  // Web = objetivos de captura de la ejecución (80/443 y puertos añadidos en opciones).
+  const web = new Set(current.grupos.flatMap(g => g.objetivos.map(t => t.ip + ":" + t.puerto)));
+  if (activeTab === "inventory") {
+    return inventoryRows().filter(({asset, port}) => port && (!webOnly || (port.protocolo === "tcp" && web.has(asset.ip + ":" + port.puerto))))
+      .map(({asset, port}) => [asset.ip, port.puerto]);
+  }
+  if (webOnly) return rows().map(row => [row.ip, row.puerto]);
+  // Fuera de Activos solo aplican los filtros comunes de rango y subred.
+  const range = $("range-filter").value, subnet = $("subnet-filter").value;
+  return (inventory?.activos || []).filter(a => (!range || a.rango === range) && (!subnet || a.subred === subnet))
+    .flatMap(a => a.servicios.map(s => [a.ip, s.puerto]));
+}
+function exportHosts(webOnly) {
+  // IP:puerto, uno por línea; IPv6 entre corchetes.
+  const lines = [...new Set(exportPairs(webOnly).map(([ip, port]) => (ip.includes(":") ? `[${ip}]` : ip) + ":" + port))];
   if (!lines.length) { notice("No hay servicios que exportar con estos filtros."); return; }
   const link = document.createElement("a");
   link.href = URL.createObjectURL(new Blob([lines.join("\n") + "\n"], {type: "text/plain"}));
-  link.download = "hosts_" + current.nombre.replace(/[^\w.-]+/g, "_") + ".txt";
+  link.download = (webOnly ? "hosts_web_" : "hosts_") + current.nombre.replace(/[^\w.-]+/g, "_") + ".txt";
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
@@ -193,6 +205,7 @@ function render() {
   $("results").hidden = activeTab === "logs";
   $("logs").hidden = activeTab !== "logs";
   $("inventory-tools").hidden = activeTab !== "inventory";
+  document.querySelector(".tab-actions").hidden = activeTab === "logs";
   $("status-filter-label").hidden = activeTab === "inventory";
   $("service-filter-label").hidden = activeTab !== "inventory";
   $("search").placeholder = activeTab === "inventory" ? "IP, nombre, puerto o producto" : "IP, URL o título";
@@ -370,7 +383,8 @@ async function action(type) {
   finally { mutating=false; render(); }
 }
 $("start-job").addEventListener("click", () => action("start"));
-$("inventory-hosts").addEventListener("click", exportHosts);
+$("export-hosts").addEventListener("click", () => exportHosts(false));
+$("export-web").addEventListener("click", () => exportHosts(true));
 $("cancel-job").addEventListener("click", () => action("cancel"));
 $("delete-job").addEventListener("click", () => {
   if (!current || mutating || activeStates.has(current.estado)) return;

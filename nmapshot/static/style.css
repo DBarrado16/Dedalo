@@ -112,10 +112,12 @@ progress { display: block; width: 100%; height: 4px; border: 0; background: var(
 progress::-webkit-progress-bar { background: var(--inset); }
 progress::-webkit-progress-value { background: var(--action); }
 .tabs { display: flex; align-items: center; gap: 28px; border-bottom: 1px solid var(--line); }
-.tabs button { font-size: 14px; background: transparent; border: 0; border-bottom: 3px solid transparent; color: var(--muted); padding: 12px 1px; }
-.tabs button:hover { color: var(--ink); }
-.tabs button[aria-selected=true] { color: var(--ink); border-bottom-color: var(--action); font-weight: 600; }
+.tabs button[role=tab] { font-size: 14px; background: transparent; border: 0; border-bottom: 3px solid transparent; color: var(--muted); padding: 12px 1px; }
+.tabs button[role=tab]:hover { color: var(--ink); }
+.tabs button[role=tab][aria-selected=true] { color: var(--ink); border-bottom-color: var(--action); font-weight: 600; }
 .tabs>span { margin-left: auto; color: var(--muted); font-size: 12px; }
+.tab-actions { display: flex; gap: 8px; margin-bottom: 6px; }
+.tab-actions .secondary { font-size: 12px; min-height: 32px; padding: 5px 10px; }
 .filters { display: grid; grid-template-columns: minmax(180px,1.4fr) repeat(3,minmax(120px,1fr)); gap: 14px; margin: 20px 0 24px; }
 .filters label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12px; min-width: 0; }
 input:not([type=checkbox],[type=file]), select, textarea { width: 100%; min-width: 0; border: 1px solid var(--line); background: var(--surface); color: var(--ink); padding: 9px 10px; border-radius: 3px; font-size: 13px; }
@@ -248,6 +250,7 @@ input[type=checkbox] { accent-color: var(--action); width: 16px; height: 16px; }
   .network-actions { width: 100%; justify-content: space-between; }
   .tabs { flex-wrap: wrap; column-gap: 18px; row-gap: 0; }
   .tabs>span { font-size: 11px; flex-basis: 100%; text-align: right; padding-bottom: 8px; }
+  .tab-actions { flex-basis: 100%; justify-content: flex-end; }
   .filters { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
   .filters label:last-child { grid-column: 1/-1; }
   .filters select { font-size: 12px; padding-inline: 6px; }
