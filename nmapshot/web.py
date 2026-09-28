@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import copy
 import csv
 from datetime import datetime, timezone
@@ -25,7 +26,7 @@ import webbrowser
 from xml.etree.ElementTree import ParseError
 import zipfile
 
-from . import cli, gowitness, inventory, parser, report, targets
+from . import auditoria, cli, db, gowitness, inventory, parser, report, targets
 
 STATIC = Path(__file__).parent / "static"
 MAX_BODY = 32 * 1024 * 1024
@@ -99,6 +100,12 @@ class PortalStore:
         except OSError:
             self.file_lock.close()
             raise ValueError("Ya hay un portal usando esta carpeta de datos")
+        try:
+            # Crea o actualiza la base al arrancar para detectar pronto cualquier problema.
+            self.database().close()
+        except Exception:
+            self.file_lock.close()
+            raise
         self.jobs = {}
         for path in self.root.glob("*/trabajo.json"):
             if not re.fullmatch(r"[a-f0-9]{32}", path.parent.name):
@@ -115,6 +122,10 @@ class PortalStore:
                 continue
         self.worker = threading.Thread(target=self._worker, name="nmapshot-capturas", daemon=True)
         self.worker.start()
+
+    def database(self):
+        # Una conexión por operación: los hilos del servidor no comparten conexiones.
+        return db.connect(self.root)
 
     def directory(self, job_id):
         if not re.fullmatch(r"[a-f0-9]{32}", job_id):
@@ -160,7 +171,7 @@ class PortalStore:
             uploads.append((filename, content))
         networks = [line.split("#", 1)[0].strip() for line in ranges.splitlines() if line.split("#", 1)[0].strip()]
         merged = parser.merge(hosts)
-        assets = inventory.build(merged, networks)
+        inventory.build(merged, networks)  # valida rangos y límites antes de guardar nada
         groups = cli.group_hosts(merged, networks, options["puertos"], options["por_servicio"])
         total = sum(len(g["objetivos"]) for g in groups)
         if total > 100_000:
@@ -174,30 +185,37 @@ class PortalStore:
                 raise Conflict("El portal se está cerrando")
             directory = self.directory(job_id)
             (directory / "entradas").mkdir(parents=True)
-            for index, (_, content) in enumerate(uploads):
-                (directory / "entradas" / f"nmap-{index:02d}.txt").write_text(content, encoding="utf-8")
-            (directory / "rangos.txt").write_text(ranges, encoding="utf-8")
-            atomic_json(directory / "inventario.json", assets)
-            self._save(meta)
+            try:
+                paths = []
+                for index, (_, content) in enumerate(uploads):
+                    paths.append(directory / "entradas" / f"nmap-{index:02d}.txt")
+                    paths[-1].write_text(content, encoding="utf-8")
+                (directory / "rangos.txt").write_text(ranges, encoding="utf-8")
+                with closing(self.database()) as con:
+                    auditoria.import_nmap(con, auditoria.default_audit(con), job_id, name, merged, paths, self.root, meta["fecha"])
+                self._save(meta)
+            except Exception:
+                # Sin importación completa no queda una ejecución a medias.
+                shutil.rmtree(directory, ignore_errors=True)
+                raise
             self.jobs[job_id] = meta
         return self.detail(job_id)
 
     def inventory(self, job_id):
         with self.lock:
-            self._meta(job_id)
+            meta = self._meta(job_id)
             directory = self.directory(job_id)
-            path = directory / "inventario.json"
-            if path.is_file():
-                return json.loads(path.read_text(encoding="utf-8"))
-            # Las ejecuciones anteriores conservan los Nmap originales subidos.
-            inputs = sorted((directory / "entradas").glob("nmap-*.txt"))
-            if not inputs:
-                raise FileNotFoundError("No se conservan los Nmap de esta ejecución para reconstruir el inventario.")
-            hosts = parser.merge([parser.parse_file(item) for item in inputs])
-            networks = targets.read_networks_file(directory / "rangos.txt")
-            data = inventory.build(hosts, networks)
-            atomic_json(path, data)
-            return data
+            with closing(self.database()) as con:
+                if not auditoria.has_execution(con, job_id):
+                    # Ejecuciones anteriores a la base: se importan desde sus Nmap guardados.
+                    inputs = sorted((directory / "entradas").glob("nmap-*.txt"))
+                    if not inputs:
+                        raise FileNotFoundError("No se conservan los Nmap de esta ejecución para reconstruir el inventario.")
+                    hosts = parser.merge([parser.parse_file(item) for item in inputs])
+                    auditoria.import_nmap(con, auditoria.default_audit(con), job_id, meta["nombre"], hosts, inputs,
+                                          self.root, meta["fecha"])
+                hosts = auditoria.observed_hosts(con, job_id)
+            return inventory.build(hosts, targets.read_networks_file(directory / "rangos.txt"))
 
     def _manifest(self, meta):
         path = self.directory(meta["id"]) / "resultado" / report.MANIFEST
@@ -342,6 +360,8 @@ class PortalStore:
             if source.is_symlink() or source.is_junction():
                 raise ValueError("No se puede borrar una ejecución enlazada a otra carpeta")
             shutil.rmtree(directory)
+            with closing(self.database()) as con:
+                auditoria.delete_execution(con, job_id)
             del self.jobs[job_id]
         return {"eliminada": job_id}
 

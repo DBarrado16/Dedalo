@@ -101,6 +101,7 @@ Es un portal local de un usuario: escucha exclusivamente en loopback y verifica 
 
 ```text
 portal_datos/
+  dedalo.sqlite3           # base de auditorías, activos, servicios y evidencias
   ID_DE_EJECUCION/
     trabajo.json
     entradas/nmap-00.txt
@@ -113,7 +114,9 @@ Los resultados anteriores de consola siguen accesibles con `ver`; no se importan
 
 ## Inventario de activos y servicios
 
-Cada ejecución web guarda `inventario.json` junto a `trabajo.json`. Los hosts sin puertos web y los hosts activos sin puertos abiertos también se conservan. Las ejecuciones antiguas del portal reconstruyen el inventario al consultarlo, usando sus copias guardadas de Nmap y sus rangos; si faltan esas entradas se muestra el error y siguen disponibles las capturas.
+Cada Nmap subido se registra en la base `portal_datos/dedalo.sqlite3` (modelo en `docs/MODELO_DATOS.md`): una ejecución de importación, cada IP como activo, cada puerto como servicio, lo que describe ese Nmap como observación y el archivo original como evidencia con su SHA-256. Una misma IP aparece una sola vez aunque la traigan varias subidas, y cada subida conserva su propia descripción. Mientras el portal no permita elegir auditoría, todo se guarda en la auditoría «Importadas».
+
+Los hosts sin puertos web y los hosts activos sin puertos abiertos también se conservan. Las ejecuciones anteriores a la base se importan automáticamente la primera vez que se consulta su inventario, usando sus copias guardadas de Nmap; si faltan esas entradas se muestra el error y siguen disponibles las capturas. Los `inventario.json` que hubieran quedado de versiones anteriores ya no se usan. Borrar una ejecución también elimina sus datos de la base y los activos que solo ella había visto.
 
 Se incluyen únicamente puertos con estado `open`, diferenciando TCP y UDP aunque compartan número. `closed`, `filtered` y `open|filtered` no se cuentan como servicios abiertos. Solo los servicios TCP seleccionados se envían al motor de capturas.
 

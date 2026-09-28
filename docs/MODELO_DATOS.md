@@ -40,7 +40,7 @@ CREATE TABLE alcance (
 );
 
 CREATE TABLE ejecucion (
-  id           TEXT PRIMARY KEY,       -- uuid hex; en capturas coincide con la carpeta de portal_datos
+  id           TEXT PRIMARY KEY,       -- uuid hex; en importaciones coincide con la carpeta de portal_datos
   auditoria_id TEXT NOT NULL REFERENCES auditoria(id) ON DELETE CASCADE,
   tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura')),
   origen_id    TEXT REFERENCES ejecucion(id),   -- captura -> importación de la que salen sus objetivos
@@ -145,8 +145,8 @@ evidencia (imagen) ← captura → servicio 443/tcp → activo 10.10.5.3 → aud
 
 ## Plan de trabajo
 
-1. `db.py`: conexión, migración 1 y pruebas de que el esquema se crea, se reabre y rechaza datos inválidos.
-2. Importación: de un Nmap a activos, servicios y observaciones, sustituyendo a `inventario.json`.
+1. ✅ `db.py`: conexión, migración 1 y pruebas de que el esquema se crea, se reabre y rechaza datos inválidos.
+2. ✅ Importación (`auditoria.py`): de un Nmap a activos, servicios y observaciones, sustituyendo a `inventario.json`. Las ejecuciones antiguas se importan al consultar su inventario.
 3. Auditorías y alcance en el portal: crear, elegir y editar reglas; revisar objetivos marcando su situación.
 4. Capturas: registrar cada intento y evidencia en la base y aplicar la regla de solo en alcance.
 5. Migración del historial.

@@ -1,8 +1,11 @@
+from contextlib import closing
 import csv
+import hashlib
 import io
 import json
 import os
 from pathlib import Path
+import sqlite3
 import threading
 import tempfile
 import time
@@ -12,7 +15,7 @@ import urllib.error
 import urllib.request
 import zipfile
 
-from nmapshot import cli, report
+from nmapshot import auditoria, cli, report
 from nmapshot.web import PortalStore, PortalServer
 from tests.test_nmapshot import ROOT, fake_database
 
@@ -246,16 +249,45 @@ class PortalTests(unittest.TestCase):
         self.server.store = self.store
         self.assertEqual(json.loads(self.request(route + "/inventory")[1]), inventory)
 
-    def test_legacy_inventory_is_rebuilt_from_original_inputs(self):
+    def test_legacy_inventory_is_imported_from_original_inputs(self):
         job = self.create()
         directory = self.store.directory(job["id"])
-        (directory / "inventario.json").unlink()
+        with closing(self.store.database()) as con:
+            auditoria.delete_execution(con, job["id"])  # como una ejecución anterior a la base
         original_meta = (directory / "trabajo.json").read_bytes()
         result = self.store.inventory(job["id"])
         self.assertEqual(result["servicios_total"], 7)
         self.assertEqual((directory / "trabajo.json").read_bytes(), original_meta)
-        self.assertTrue((directory / "inventario.json").is_file())
+        self.assertFalse((directory / "inventario.json").exists())
+        with closing(self.store.database()) as con:
+            row = con.execute("SELECT nombre, creada FROM ejecucion WHERE id = ?", (job["id"],)).fetchone()
+        self.assertEqual((row["nombre"], row["creada"]), ("Prueba de portal", job["fecha"]))
         self.assertEqual(self.request("/api/jobs/" + "a"*32 + "/inventory")[0], 404)
+
+    def test_upload_is_stored_in_database_and_delete_removes_it(self):
+        job, other = self.create(), self.create()
+        with closing(self.store.database()) as con:
+            evidence = con.execute("SELECT ruta, sha256, bytes FROM evidencia WHERE ejecucion_id = ?", (job["id"],)).fetchall()
+            self.assertEqual([row["ruta"] for row in evidence], [job["id"] + "/entradas/nmap-00.txt"])
+            original = (self.store.directory(job["id"]) / "entradas/nmap-00.txt").read_bytes()
+            self.assertEqual((evidence[0]["sha256"], evidence[0]["bytes"]), (hashlib.sha256(original).hexdigest(), len(original)))
+            # Dos subidas del mismo Nmap: los activos no se duplican, las observaciones sí.
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM activo").fetchone()[0], 3)
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM observacion").fetchone()[0], 14)
+        self.assertEqual(self.request("/api/jobs/" + job["id"] + "/delete", {})[0], 200)
+        with closing(self.store.database()) as con:
+            self.assertFalse(auditoria.has_execution(con, job["id"]))
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM activo").fetchone()[0], 3)
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM observacion").fetchone()[0], 7)
+        self.assertEqual(self.request("/api/jobs/" + other["id"] + "/delete", {})[0], 200)
+        with closing(self.store.database()) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM activo").fetchone()[0], 0)
+
+    def test_failed_import_leaves_no_job_behind(self):
+        with patch("nmapshot.web.auditoria.import_nmap", side_effect=sqlite3.OperationalError("disco lleno")):
+            self.assertEqual(self.request("/api/jobs", payload())[0], 500)
+        self.assertFalse(self.store.jobs)
+        self.assertEqual([p.name for p in Path(self.temp.name).iterdir() if p.is_dir()], [])
 
     def test_upload_with_only_non_web_services_retains_inventory(self):
         data = payload()
