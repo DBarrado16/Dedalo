@@ -16,7 +16,7 @@ Acepta XML (`-oX`), grepable (`-oG`) y salida normal (`-oN`), detectados por el 
 - [gowitness v3](https://github.com/sensepost/gowitness), probado con **3.2.0**. Colocar el ejecutable en `bin/gowitness.exe` (Windows), `bin/gowitness` (Linux), en el PATH o indicar `--gowitness`.
 - Chrome, Chromium o Edge. Se detectan automáticamente o se indican con `--chrome`. Si no se encuentra ninguno, gowitness puede descargar su navegador.
 
-El ejecutable de gowitness no se incluye en el repositorio. Descarga el binario adecuado de las [versiones oficiales](https://github.com/sensepost/gowitness/releases) y colócalo en `bin/`; en Linux hay que darle permiso de ejecución con `chmod +x bin/gowitness`.
+El ejecutable de gowitness no se incluye en el repositorio. `python -m nmapshot instalar` descarga el binario oficial para Windows, Linux o macOS (Intel o ARM), comprueba su SHA-256 contra la huella fijada en `nmapshot/gowitness.py` y lo coloca en `bin/`. El portal lo hace automáticamente al arrancar si no encuentra gowitness y no se indicó `--gowitness`; si la descarga falla, arranca igualmente y muestra el aviso. Los comandos `capturar` y `ver` no descargan nada por su cuenta.
 
 Ejecutar los comandos desde la carpeta del proyecto. En Kali usar `python3` en lugar de `python`. Si Windows no reconoce `python`, usar `py -3.12` o la ruta del intérprete, por ejemplo:
 
@@ -33,14 +33,13 @@ No hace falta entorno virtual ni `pip install`: Dedalo solo usa la librería est
 1. Instala **Python 3.12 o superior** desde [python.org/downloads](https://www.python.org/downloads/). En el instalador, marca **Add python.exe to PATH**. Abre una terminal nueva y comprueba la versión con `python --version`.
 2. Asegúrate de tener **Chrome o Edge**. Edge viene con Windows.
 3. Clona el repositorio o copia su carpeta sin `portal_datos/`, `pruebas_locales/` ni `salida/`, que contienen datos de ejecuciones.
-4. Descarga **gowitness 3.2.0** para `windows-amd64` desde las [versiones oficiales](https://github.com/sensepost/gowitness/releases). Renombra el archivo a `gowitness.exe` y colócalo en `bin\` dentro del proyecto; crea la carpeta si no existe:
+4. **gowitness se instala solo.** La primera vez que se abre el portal, si no lo encuentra, descarga el binario oficial 3.2.0 para tu sistema desde GitHub (unos 50 MB), comprueba su huella SHA-256 y lo guarda en `bin\`. También se puede hacer antes, desde la carpeta del proyecto:
 
-   ```text
-   herramienta_nmaps\
-     bin\gowitness.exe
-     nmapshot\
-     iniciar_portal.cmd
+   ```powershell
+   python -m nmapshot instalar
    ```
+
+   Si no hay acceso a internet, descarga a mano `gowitness-3.2.0-windows-amd64.exe` desde las [versiones oficiales](https://github.com/sensepost/gowitness/releases/tag/3.2.0), renómbralo a `gowitness.exe` y déjalo en `bin\`. Con el binario ya colocado, `python -m nmapshot instalar` comprueba si coincide con el oficial.
 
 5. Desde la carpeta del proyecto, ejecuta las pruebas. Deben terminar en `OK`. No usan gowitness ni la red:
 
@@ -57,7 +56,7 @@ No hace falta entorno virtual ni `pip install`: Dedalo solo usa la librería est
 
 ### Kali / Linux
 
-Los mismos pasos con estas diferencias: usa `python3`, descarga el binario `linux-amd64` como `bin/gowitness` y dale permiso con `chmod +x bin/gowitness`, instala Chromium con `sudo apt install chromium` y arranca el portal con `python3 -m nmapshot web --abrir`. En Linux todavía no se ha hecho una prueba real completa.
+Los mismos pasos con estas diferencias: usa `python3` (`python3 -m nmapshot instalar` descarga el binario de Linux y le da permiso de ejecución), instala Chromium con `sudo apt install chromium` y arranca el portal con `python3 -m nmapshot web --abrir`. En Linux todavía no se ha hecho una prueba real completa.
 
 ## Operar desde la web
 
@@ -315,4 +314,4 @@ Sube nmap y rangos de prueba, inicia el trabajo y verifica capturas HTTP/HTTPS, 
 - El navegador usa el perfil temporal de gowitness, sin reutilizar las sesiones personales.
 - Las capturas HTTPS con certificado autofirmado funcionan con la versión probada. No se resuelven pantallas de login ni se añaden nombres de virtual host/SNI: se accede a la IP solicitada.
 - El portal permite cargar nmap y cambiar de subred desde el navegador. Sigue necesitando que su servidor local esté iniciado (con doble clic en el lanzador o con `web`).
-- Si cambias de versión de gowitness, repite la prueba de integración: los parámetros, el esquema de base y el comportamiento del navegador son dependencias externas.
+- Si cambias de versión de gowitness, actualiza `VERSION` y las huellas de `RELEASES` en `nmapshot/gowitness.py` y repite la prueba de integración: los parámetros, el esquema de base y el comportamiento del navegador son dependencias externas.

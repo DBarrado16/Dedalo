@@ -71,6 +71,9 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--host", default="127.0.0.1", help="Dirección de escucha (127.0.0.1)")
     show.add_argument("--puerto", type=port_number, default=7171)
     show.add_argument("--gowitness", help="Ruta o nombre del ejecutable gowitness v3")
+
+    setup = subcommands.add_parser("instalar", help=f"Descargar y verificar gowitness {gowitness.VERSION} en bin/")
+    setup.add_argument("--forzar", action="store_true", help="Descargar aunque ya exista en bin/")
     return command
 
 
@@ -205,6 +208,18 @@ def show(args) -> int:
     return 0
 
 
+def install(args) -> int:
+    local = gowitness.local_binary()
+    if local.is_file() and not args.forzar:
+        _, expected = gowitness.release_for_this_system()
+        state = "coincide con" if gowitness.sha256_of(local) == expected else "NO coincide con"
+        print(f"Ya existe {local}; su SHA-256 {state} el gowitness {gowitness.VERSION} oficial. "
+              "Usa --forzar para reemplazarlo.")
+        return 0
+    gowitness.install_gowitness()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     command = build_parser()
     args = command.parse_args(argv)
@@ -212,6 +227,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "web":
             from .web import serve_portal
             return serve_portal(args)
+        if args.command == "instalar":
+            return install(args)
         return capture(args) if args.command == "capturar" else show(args)
     except KeyboardInterrupt:
         print("\nInterrumpido.", file=sys.stderr)

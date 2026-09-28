@@ -2,19 +2,37 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import json
+import platform
 import re
 from pathlib import Path
 import shutil
 import sqlite3
 import subprocess
 from urllib.parse import urlsplit, urlunsplit
+import urllib.request
 
 DB_NAME = "gowitness.sqlite3"
 SHOTS_DIR = "capturas"
 URLS_FILE = "urls.txt"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+VERSION = "3.2.0"
+RELEASE_URL = "https://github.com/sensepost/gowitness/releases/download/{version}/{name}"
+# Huellas SHA-256 que publica GitHub para cada binario oficial de la versión
+# fijada. Al cambiar de versión hay que actualizarlas y repetir la integración.
+RELEASES = {
+    ("windows", "amd64"): ("gowitness-3.2.0-windows-amd64.exe", "6aaa0cfedd255685824402bad07a295013919d4417af06431978214cd4402f4c"),
+    ("windows", "arm64"): ("gowitness-3.2.0-windows-arm64.exe", "c0cc196fa7650c06250009160586b407e70ce3ff00d37edbba71cfa26758630a"),
+    ("linux", "amd64"): ("gowitness-3.2.0-linux-amd64", "d315bf505691ea64a87f6231a757acfee0a94c024ab3531f35b3c52dad15895e"),
+    ("linux", "arm64"): ("gowitness-3.2.0-linux-arm64", "bea4bc2b7935909267540ab75b23fe840aa0ac971dd743a7300ed967449addf3"),
+    ("linux", "arm"): ("gowitness-3.2.0-linux-arm", "bee9838858c51fe82b8375c4744b447cf2115c5a20db0893c7588e90ba42dd2e"),
+    ("darwin", "amd64"): ("gowitness-3.2.0-darwin-amd64", "d4112b293d708ad92a1a22eec8c8164d2f267cc59a77ce90a982715c46a2f8bc"),
+    ("darwin", "arm64"): ("gowitness-3.2.0-darwin-arm64", "30122eaca82ef08ad325cc2230d4e41ba0304f391cda0f86f40748cba987de6f"),
+}
+MAX_DOWNLOAD = 200 * 1024 * 1024
 
 
 def _executable(explicit: str) -> str:
@@ -27,16 +45,69 @@ def _executable(explicit: str) -> str:
     raise ValueError(f"No existe el ejecutable: {explicit}")
 
 
+def local_binary() -> Path:
+    return PROJECT_ROOT / "bin" / ("gowitness.exe" if os.name == "nt" else "gowitness")
+
+
 def find_gowitness(explicit: str | None) -> str:
     if explicit:
         return _executable(explicit)
-    local = PROJECT_ROOT / "bin" / ("gowitness.exe" if os.name == "nt" else "gowitness")
+    local = local_binary()
     if local.is_file():
         return str(local)
     found = shutil.which("gowitness")
     if found:
         return str(Path(found).resolve())
-    raise ValueError("No encuentro gowitness v3. Déjalo en bin/ o en el PATH, o usa --gowitness.")
+    raise ValueError("No encuentro gowitness v3. Ejecuta «python -m nmapshot instalar», déjalo en bin/ o en el PATH, o usa --gowitness.")
+
+
+def release_for_this_system() -> tuple[str, str]:
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    arch = {"amd64": "amd64", "x86_64": "amd64", "arm64": "arm64", "aarch64": "arm64"}.get(machine)
+    if arch is None and machine.startswith("arm"):
+        arch = "arm"
+    if (system, arch) not in RELEASES:
+        raise ValueError(f"No hay un gowitness {VERSION} oficial para {platform.system()} {platform.machine()}; instálalo a mano.")
+    return RELEASES[(system, arch)]
+
+
+def sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        while chunk := file.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def install_gowitness(destination: str | Path | None = None, log=print) -> str:
+    """Descarga el binario oficial fijado y solo lo instala si su SHA-256 coincide."""
+    name, expected = release_for_this_system()
+    target = Path(destination) if destination else local_binary()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(target.name + ".descarga")
+    url = RELEASE_URL.format(version=VERSION, name=name)
+    log(f"Descargando gowitness {VERSION} ({name}) desde GitHub...")
+    digest, size = hashlib.sha256(), 0
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response, partial.open("wb") as output:
+            while chunk := response.read(1 << 20):
+                size += len(chunk)
+                if size > MAX_DOWNLOAD:
+                    raise ValueError("La descarga de gowitness es mayor de lo esperado; se descarta.")
+                digest.update(chunk)
+                output.write(chunk)
+        if digest.hexdigest() != expected:
+            raise ValueError("La huella SHA-256 del gowitness descargado no coincide con la oficial; se descarta.")
+        if os.name != "nt":
+            partial.chmod(0o755)
+        partial.replace(target)
+    except OSError as exc:
+        raise ValueError(f"No se pudo descargar gowitness: {exc}. Descárgalo a mano (ver README).") from exc
+    finally:
+        partial.unlink(missing_ok=True)
+    log(f"gowitness {VERSION} verificado e instalado en {target}")
+    return str(target)
 
 
 def find_chrome(explicit: str | None) -> str | None:

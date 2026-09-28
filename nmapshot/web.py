@@ -570,7 +570,22 @@ class PortalHandler(BaseHTTPRequestHandler):
             self.json({"error": "No se pudo completar la operación. Consulta la terminal del portal."}, 500)
 
 
+def ensure_gowitness(explicit):
+    """Sin ruta indicada, descarga el gowitness oficial si no hay ninguno."""
+    if explicit:
+        return
+    try:
+        gowitness.find_gowitness(None)
+    except ValueError:
+        try:
+            gowitness.install_gowitness(log=lambda text: print(text, flush=True))
+        except ValueError as exc:
+            # El portal arranca igual; el aviso del motor explica cómo instalarlo.
+            print(f"Aviso: {exc}", flush=True)
+
+
 def serve_portal(args):
+    ensure_gowitness(args.gowitness)
     store = PortalStore(args.datos, args.gowitness, args.chrome)
     try:
         server = PortalServer(("127.0.0.1", args.puerto), store)
