@@ -1,3 +1,4 @@
+import argparse
 from contextlib import closing
 import csv
 import hashlib
@@ -15,7 +16,7 @@ import urllib.error
 import urllib.request
 import zipfile
 
-from nmapshot import auditoria, cli, report
+from nmapshot import auditoria, cli, report, web
 from nmapshot.web import PortalStore, PortalServer
 from tests.test_nmapshot import ROOT, fake_database
 
@@ -304,6 +305,23 @@ class PortalTests(unittest.TestCase):
         self.assertIn(b"Nueva captura", content)
         self.assertEqual(self.request("/app.js")[0], 200)
         self.assertEqual(self.request("/style.css")[0], 200)
+
+
+class PortTests(unittest.TestCase):
+    def test_second_portal_cannot_share_the_port(self):
+        with tempfile.TemporaryDirectory() as first_data, tempfile.TemporaryDirectory() as second_data:
+            store = PortalStore(first_data)
+            server = PortalServer(("127.0.0.1", 0), store)
+            try:
+                args = argparse.Namespace(datos=second_data, gowitness="indicado", chrome=None,
+                                          puerto=server.server_address[1], abrir=False)
+                with self.assertRaisesRegex(ValueError, "ya está en uso"):
+                    web.serve_portal(args)
+            finally:
+                server.server_close()
+                store.close()
+            # El portal que no pudo arrancar liberó su carpeta de datos.
+            PortalStore(second_data).close()
 
 
 class StopTests(unittest.TestCase):

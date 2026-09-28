@@ -77,7 +77,7 @@ El portal está en [http://127.0.0.1:8787](http://127.0.0.1:8787). Desde ahí:
 5. Pulsa **Revisar objetivos**: se muestra el reparto por rango y subred sin hacer conexiones a los objetivos.
 6. Pulsa **Iniciar captura**. Los trabajos se encolan y se ejecutan de uno en uno.
 7. Consulta las imágenes y filtra por rango, subred, estado o texto. Puedes ampliar y descargar imágenes, descargar CSV/JSON o consultar el registro sin salir del portal. **Descargar capturas** en la cabecera de cada subred descarga un ZIP con todas sus capturas, aunque haya filtros activos. Cada imagen se llama `IP_PUERTO_ESQUEMA` (por ejemplo `10.10.5.1_443_https.jpeg`) y el `indice.csv` del ZIP recoge su URL, URL final, código HTTP y título.
-8. En **Activos**, busca por IP, nombre, puerto, servicio o producto y filtra por rango, subred o servicio. **Inventario CSV** y **Inventario JSON** descargan el inventario completo de la ejecución, independientemente de los filtros. Los enlaces de captura permiten abrir la imagen del servicio cuando está disponible.
+8. En **Activos**, busca por IP, nombre, puerto, servicio o producto y filtra por rango, subred o servicio. **Ocultar hosts sin puertos abiertos** viene marcado: un Nmap lanzado con `-Pn` da por activas todas las IP del rango aunque no respondan, y así solo quedan las que tienen algún puerto abierto. Entre paréntesis se indica cuántas se ocultan. **Inventario CSV** y **Inventario JSON** descargan el inventario completo de la ejecución, independientemente de los filtros. Los enlaces de captura permiten abrir la imagen del servicio cuando está disponible.
 
 El portal recibe archivos y **lanza las capturas**, no ejecuta un nuevo escaneo nmap. Las conexiones salen del equipo donde corre el servidor. Cerrar la pestaña no detiene las capturas.
 
@@ -96,6 +96,8 @@ python -m nmapshot web --chrome "C:\Program Files (x86)\Microsoft\Edge\Applicati
 ```
 
 El portal admite hasta 20 archivos por carga (10 MB por archivo y 24 MB en total en la interfaz), con un máximo de 100.000 objetivos por ejecución. Muestra los resultados por páginas de 60 objetivos. Los ajustes de ejecutables se realizan al arrancar el servidor, no desde los archivos subidos.
+
+Si el puerto ya lo usa otro portal, el nuevo no arranca y lo indica: ciérralo o usa `--puerto`. En Windows el portal reserva el puerto en exclusiva para que dos portales no puedan quedar escuchando a la vez.
 
 Es un portal local de un usuario: escucha exclusivamente en loopback y verifica el origen de las peticiones. No incluye autenticación multiusuario ni publicación en red. El navegador usa la misma galería del portal para todas las subredes; no hace falta arrancar visores separados de gowitness.
 
@@ -120,7 +122,7 @@ Los hosts sin puertos web y los hosts activos sin puertos abiertos también se c
 
 Se incluyen únicamente puertos con estado `open`, diferenciando TCP y UDP aunque compartan número. `closed`, `filtered` y `open|filtered` no se cuentan como servicios abiertos. Solo los servicios TCP seleccionados se envían al motor de capturas.
 
-XML conserva producto, versión, información adicional, CPE y el identificador y texto `output` de los scripts NSE de host o puerto. Dedalo muestra esos datos en **Datos Nmap**, sin ejecutar scripts nuevos ni interpretar sus resultados como instrucciones. Los formatos normal y grepable conservan el texto de producto/versión disponible, sin intentar separar campos que no están estructurados. Los archivos originales se guardan para conservar la información completa del escaneo.
+XML conserva producto, versión, información adicional, CPE y el identificador y texto `output` de los scripts NSE de host o puerto. Dedalo muestra esos datos en **Datos Nmap**, sin ejecutar scripts nuevos ni interpretar sus resultados como instrucciones. Los formatos normal y grepable conservan el texto de producto/versión disponible, sin intentar separar campos que no están estructurados. En el formato normal se descarta la columna `REASON` que añaden `-v` o `--reason` (por ejemplo `syn-ack ttl 64`). Los archivos originales se guardan para conservar la información completa del escaneo.
 
 Si varios archivos describen la misma IP y puerto/protocolo, se unen sus puertos y prevalece la última descripción de ese servicio en el orden de carga. Para conservar todos los metadatos estructurados de un servicio, carga su XML en último lugar. Las distintas ejecuciones mantienen inventarios independientes.
 

@@ -86,8 +86,13 @@ function selectOptions(element, values, placeholder, display = (v) => v) {
     element.value = [...element.options].some(option => option.value === selected) ? selected : "";
   }
 }
+function inventoryAssets() {
+  // Con -Pn Nmap da por activas IP que no responden; ocultarlas quita ruido.
+  const assets = inventory?.activos || [];
+  return $("hide-empty").checked ? assets.filter(asset => asset.servicios.length) : assets;
+}
 function updateFilters() {
-  const groups = activeTab === "inventory" ? inventory?.activos || [] : current.grupos;
+  const groups = activeTab === "inventory" ? inventoryAssets() : current.grupos;
   selectOptions($("range-filter"), groups.map(g => g.rango), "Todos los rangos", rangeText);
   selectOptions($("subnet-filter"), groups.filter(g => !$("range-filter").value || g.rango === $("range-filter").value).map(g => g.subred), "Todas las subredes");
   if (activeTab === "inventory") selectOptions($("service-filter"), (inventory?.activos || []).flatMap(a => a.servicios.map(s => s.servicio || "Sin identificar")).sort(), "Todos los servicios");
@@ -225,7 +230,9 @@ function renderInventory() {
   }
   const query = $("search").value.toLowerCase().trim(), range = $("range-filter").value, subnet = $("subnet-filter").value, service = $("service-filter").value;
   const captures = new Map(current.grupos.flatMap((g, gi) => g.objetivos.map((t, ti) => [t.ip + ":" + t.puerto, {...t, key:gi+"-"+ti}])));
-  const filtered = inventory.activos.flatMap(asset => (asset.servicios.length ? asset.servicios : [null]).map(port => ({asset, port})))
+  const empty = inventory.activos.filter(asset => !asset.servicios.length).length;
+  $("empty-count").textContent = empty ? ` (${empty})` : "";
+  const filtered = inventoryAssets().flatMap(asset => (asset.servicios.length ? asset.servicios : [null]).map(port => ({asset, port})))
     .filter(({asset, port}) => (!range || asset.rango === range) && (!subnet || asset.subred === subnet) && (!service || (port && (port.servicio || "Sin identificar") === service)) &&
       (!query || [asset.ip, ...asset.nombres, asset.subred, port?.puerto, port?.protocolo, port?.servicio, port?.producto, port?.version, port?.detalle, ...(port?.cpe || [])].join(" ").toLowerCase().includes(query)));
   const visible = filtered.slice(0, shown);
@@ -334,7 +341,7 @@ $("upload-form").addEventListener("submit", async event => {
   finally { button.disabled = false; button.textContent = "Revisar objetivos"; }
 });
 $("jobs").addEventListener("click", event => { const button = event.target.closest("[data-id]"); if (button) selectJob(button.dataset.id).catch(error => notice(error.message)); });
-for (const id of ["range-filter","subnet-filter","status-filter","service-filter","search"]) $(id).addEventListener(id === "search" ? "input" : "change", () => { shown=60; updateFilters(); renderResults(); });
+for (const id of ["range-filter","subnet-filter","status-filter","service-filter","hide-empty","search"]) $(id).addEventListener(id === "search" ? "input" : "change", () => { shown=60; updateFilters(); renderResults(); });
 document.querySelectorAll("[data-tab]").forEach(button => button.addEventListener("click", () => { activeTab=button.dataset.tab; shown=60; render(); if (activeTab === "logs") loadLogs().catch(error=>notice(error.message)); }));
 $("more").addEventListener("click", () => { shown += 60; renderResults(); });
 async function action(type) {

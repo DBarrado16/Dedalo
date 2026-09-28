@@ -6,6 +6,7 @@ from contextlib import closing
 import copy
 import csv
 from datetime import datetime, timezone
+import errno
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
@@ -16,6 +17,7 @@ import queue
 import re
 import secrets
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -447,10 +449,19 @@ class PortalStore:
 
 class PortalServer(ThreadingHTTPServer):
     daemon_threads = True
+    # En Windows SO_REUSEADDR deja que dos portales escuchen a la vez en el mismo
+    # puerto y el navegador acaba hablando con uno cualquiera. Allí se exige
+    # uso exclusivo; en Linux se mantiene para poder reiniciar sin esperas.
+    allow_reuse_address = os.name != "nt"
 
     def __init__(self, address, store):
         self.store = store
         super().__init__(address, PortalHandler)
+
+    def server_bind(self):
+        if os.name == "nt":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 class PortalHandler(BaseHTTPRequestHandler):
@@ -609,8 +620,11 @@ def serve_portal(args):
     store = PortalStore(args.datos, args.gowitness, args.chrome)
     try:
         server = PortalServer(("127.0.0.1", args.puerto), store)
-    except Exception:
+    except Exception as exc:
         store.close()
+        if isinstance(exc, OSError) and (exc.errno == errno.EADDRINUSE or getattr(exc, "winerror", None) in (10013, 10048)):
+            raise ValueError(f"El puerto {args.puerto} ya está en uso, probablemente por otro portal abierto. "
+                             "Ciérralo o usa --puerto con otro número.") from exc
         raise
     url = f"http://127.0.0.1:{server.server_address[1]}"
     print(f"Portal nmapshot: {url}\nDatos: {store.root}\nCtrl+C para cerrar.", flush=True)

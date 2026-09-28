@@ -150,6 +150,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--action); }
 .table-wrap { overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; }
 .inventory-tools { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
 .inventory-tools p { font-size: 12px; color: var(--muted); margin: 0; flex: 1 1 260px; }
+.toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink); cursor: pointer; }
+.toggle input { width: 15px; height: 15px; margin: 0; accent-color: var(--action); }
+.toggle span { color: var(--muted); }
 .inventory-table td { vertical-align: top; }
 .inventory-table td small { display: block; color: var(--muted); margin-top: 5px; white-space: normal; overflow-wrap: anywhere; max-width: 260px; }
 .inventory-table .service-data { white-space: normal; min-width: 160px; max-width: 350px; overflow-wrap: anywhere; }

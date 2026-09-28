@@ -171,11 +171,14 @@ def _parse_grepable(text: str) -> list[Host]:
 _NORMAL_HOST = re.compile(r"^Nmap scan report for (?:(\S+) \(([^)]+)\)|(\S+))\s*$")
 # 443/tcp open  ssl/http  nginx 1.18
 _NORMAL_PORT = re.compile(r"^(\d+)/(tcp|udp)\s+open\s+(\S+)?\s*(.*)$")
+# Con -v o --reason la tabla añade REASON: "syn-ack ttl 64", "user-set"...
+_NORMAL_REASON = re.compile(r"^\S+(?:\s+ttl\s+\d+)?\s*")
 
 
 def _parse_normal(text: str) -> list[Host]:
     hosts: dict[str, Host] = {}
     current: Host | None = None
+    reason = False
 
     for line in text.splitlines():
         m = _NORMAL_HOST.match(line)
@@ -198,9 +201,13 @@ def _parse_normal(text: str) -> list[Host]:
             hosts.pop(current.ip, None)
             current = None
             continue
+        if line.startswith("PORT "):
+            reason = "REASON" in line.split()
+            continue
         pm = _NORMAL_PORT.match(line)
         if not pm:
             continue
+        detail = _NORMAL_REASON.sub("", pm.group(4), count=1) if reason else pm.group(4)
         service = pm.group(3) or ""
         tunnel = ""
         if "/" in service:  # ssl/http
@@ -208,7 +215,7 @@ def _parse_normal(text: str) -> list[Host]:
         number = _port_number(pm.group(1))
         ports = current.ports if pm.group(2) == "tcp" else current.udp_ports
         ports[number] = Port(
-            number=number, service=service.rstrip("?"), tunnel=tunnel, product=pm.group(4).strip()
+            number=number, service=service.rstrip("?"), tunnel=tunnel, product=detail.strip()
         )
 
     return list(hosts.values())
