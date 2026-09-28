@@ -163,6 +163,9 @@ tr:hover td { background: var(--selection); }
 .page-footer { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; margin-top: 32px; padding-top: 12px; border-top: 1px solid var(--line); }
 dialog { color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 28px; width: min(890px,calc(100vw - 32px)); max-height: 92vh; overflow: auto; box-shadow: 0 16px 48px #0004; }
 dialog::backdrop { background: var(--overlay); }
+#delete-dialog { width: min(520px,calc(100vw - 32px)); }
+#delete-name { font-weight: bold; overflow-wrap: anywhere; }
+#delete-description { color: var(--muted); }
 .dialog-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 22px; }
 .dialog-heading h2 { margin-bottom: 8px; }
 .dialog-heading p { font-size: 13px; color: var(--muted); margin-bottom: 0; }

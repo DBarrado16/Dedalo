@@ -48,6 +48,8 @@ El portal recibe archivos y **lanza las capturas**, no ejecuta un nuevo escaneo 
 
 El historial y las cargas se conservan en `portal_datos/`. Al cerrar el servidor con Ctrl+C se solicita la parada y se espera a la subred activa. Si el servidor se cerró inesperadamente, al volver a abrirlo los trabajos activos se marcan interrumpidos; no se relanzan automáticamente.
 
+Para eliminar una ejecución, selecciónala en el historial y pulsa **Borrar ejecución**. El portal pide confirmación y elimina permanentemente esa ejecución, sus capturas, copias de los Nmap subidos, índices y registros. Los archivos originales de tu equipo no se modifican. Si está en cola o capturando, primero cancélala o detenla y espera a que termine; entonces podrás borrarla.
+
 ```powershell
 # Cambiar puerto y carpeta de almacenamiento
 python -m nmapshot web --puerto 8788 --datos portal_datos_cliente

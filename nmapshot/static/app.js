@@ -30,6 +30,7 @@ const labels = {preparada:"Preparada",en_cola:"En cola",en_curso:"Capturando",de
 const activeStates = new Set(["en_cola","en_curso","deteniendo"]);
 let token = "", currentId = "", current = null, activeTab = "gallery", files = [], shown = 60, engine = {};
 let renderKey = "", polling = false, mutating = false;
+let viewVersion = 0, deletionTarget = null;
 const dateText = (value) => new Date(value).toLocaleString("es-ES", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
 const rangeText = (value) => value === "fuera_de_rango" ? "Fuera de rango" : value;
 const badgeClass = (state) => state === "completa" || state === "capturada" ? "complete" : activeStates.has(state) ? "running" : ["error","parcial","sin_captura","interrumpida"].includes(state) ? "error" : "";
@@ -50,13 +51,14 @@ function updateJobs(jobs) {
   if ($("jobs").innerHTML !== html) $("jobs").innerHTML = html;
 }
 async function selectJob(id) {
+  const version = ++viewVersion;
   currentId = id;
   location.hash = id;
   shown = 60;
   renderKey = "";
   $("range-filter").value = $("subnet-filter").value = $("status-filter").value = $("search").value = "";
   const detail = await request("/api/jobs/" + id);
-  if (id !== currentId) return;
+  if (id !== currentId || version !== viewVersion) return;
   current = detail;
   activeTab = detail.estado === "preparada" ? "targets" : "gallery";
   render();
@@ -81,7 +83,18 @@ function rows() {
     .filter(row => (!range || row.range === range) && (!subnet || row.subnet === subnet) && (!status || (status === "pendiente" ? ["pendiente","en_curso"].includes(row.estado) : row.estado === status)) && (!query || [row.ip,row.url,row.titulo,row.subnet].join(" ").toLowerCase().includes(query)));
 }
 function render() {
-  if (!current) return;
+  if (!current) {
+    $("workspace").hidden = true;
+    $("empty-state").hidden = false;
+    $("page-title").textContent = "Capturas web";
+    $("page-description").textContent = "Inspecciona los servicios web encontrados por Nmap.";
+    $("job-state").hidden = true;
+    for (const id of ["stat-targets", "stat-shots", "stat-subnets", "stat-failures"]) $(id).textContent = "0";
+    $("results").innerHTML = "";
+    $("logs").textContent = "";
+    renderKey = "";
+    return;
+  }
   $("workspace").hidden = false;
   $("empty-state").hidden = true;
   $("page-title").textContent = current.nombre;
@@ -94,6 +107,8 @@ function render() {
   $("stat-subnets").textContent = current.subredes;
   $("stat-failures").textContent = current.sin_captura;
   const running = activeStates.has(current.estado);
+  $("delete-job").disabled = mutating || running;
+  $("delete-job").title = running ? "Detén la ejecución y espera a que termine antes de borrarla" : "Borrar esta ejecución y sus archivos";
   $("start-job").hidden = current.estado !== "preparada";
   $("start-job").disabled = mutating || !current.total || !engine.ready;
   $("cancel-job").hidden = !running;
@@ -172,11 +187,18 @@ async function loadLogs() {
   if (id === currentId) $("logs").textContent = result.text;
 }
 async function poll() {
-  if (polling) return;
+  if (polling || mutating) return;
   polling = true;
+  const version = viewVersion;
   try {
     const jobs = await request("/api/jobs");
+    if (version !== viewVersion || mutating) return;
     updateJobs(jobs);
+    if (currentId && !jobs.some(job => job.id === currentId)) {
+      currentId = ""; current = null;
+      history.replaceState(null, "", location.pathname);
+      render();
+    }
     if (!currentId && jobs.length) {
       const hash = location.hash.slice(1);
       const id = jobs.some(j => j.id === hash) ? hash : jobs[0].id;
@@ -187,8 +209,10 @@ async function poll() {
     if (currentId) {
       const id = currentId;
       const detail = await request("/api/jobs/" + id);
-      if (id === currentId) { current = detail; render(); }
-      if (activeTab === "logs") await loadLogs();
+      if (id === currentId && version === viewVersion && !mutating) {
+        current = detail; render();
+        if (activeTab === "logs") await loadLogs();
+      }
     }
   } catch (error) { notice("No se pudo actualizar el portal: " + error.message); }
   finally { polling = false; }
@@ -252,6 +276,47 @@ async function action(type) {
 }
 $("start-job").addEventListener("click", () => action("start"));
 $("cancel-job").addEventListener("click", () => action("cancel"));
+$("delete-job").addEventListener("click", () => {
+  if (!current || mutating || activeStates.has(current.estado)) return;
+  deletionTarget = {id: current.id, nombre: current.nombre};
+  $("delete-name").textContent = current.nombre;
+  $("delete-error").hidden = true;
+  $("delete-dialog").showModal();
+  $("cancel-delete").focus();
+});
+$("cancel-delete").addEventListener("click", () => $("delete-dialog").close());
+$("delete-dialog").addEventListener("cancel", event => { if (mutating) event.preventDefault(); });
+$("confirm-delete").addEventListener("click", async () => {
+  if (!deletionTarget || mutating) return;
+  const target = deletionTarget;
+  mutating = true; ++viewVersion; render(); notice("");
+  $("delete-error").hidden = true;
+  $("confirm-delete").disabled = $("cancel-delete").disabled = true;
+  $("confirm-delete").textContent = "Borrando…";
+  let deleted = false;
+  try {
+    await request("/api/jobs/" + target.id + "/delete", {});
+    deleted = true;
+    if (currentId === target.id) {
+      currentId = ""; current = null;
+      history.replaceState(null, "", location.pathname);
+    }
+    $("delete-dialog").close();
+    deletionTarget = null;
+    notice("Ejecución borrada: " + target.nombre);
+  } catch (error) {
+    $("delete-error").textContent = error.message;
+    $("delete-error").hidden = false;
+  } finally {
+    mutating = false; render();
+    $("confirm-delete").disabled = $("cancel-delete").disabled = false;
+    $("confirm-delete").textContent = "Borrar definitivamente";
+  }
+  if (deleted) {
+    await poll();
+    document.querySelector(".new-job").focus();
+  }
+});
 $("results").addEventListener("click", event => {
   const button = event.target.closest("[data-image]");
   if (!button) return;

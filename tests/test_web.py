@@ -78,6 +78,50 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.request("/api/jobs", data)[0], 400)
         self.assertFalse(self.store.jobs)
 
+    def test_delete_removes_only_selected_job_and_persists_after_restart(self):
+        job, other = self.create(), self.create()
+        directory = self.store.directory(job["id"])
+        captures = directory / "resultado" / "capturas"
+        captures.mkdir(parents=True)
+        (captures / "test.png").write_bytes(b"test-image")
+        route = "/api/jobs/" + job["id"]
+        self.assertEqual(self.request(route + "/delete", {})[0], 200)
+        self.assertFalse(directory.exists())
+        self.assertEqual(self.request(route)[0], 404)
+        self.assertEqual(self.request(route + "/delete", {})[0], 404)
+        self.assertTrue((self.store.directory(other["id"]) / "trabajo.json").is_file())
+        self.store.close()
+        self.store = PortalStore(self.temp.name)
+        self.server.store = self.store
+        self.assertEqual([item["id"] for item in self.store.list()], [other["id"]])
+        self.assertEqual(self.request("/api/jobs/" + other["id"] + "/delete", {})[0], 200)
+        self.assertEqual(json.loads(self.request("/api/jobs")[1]), [])
+
+    def test_delete_rejects_active_jobs_and_requires_same_origin_token(self):
+        job = self.create()
+        route = "/api/jobs/" + job["id"] + "/delete"
+        for headers in ({"X-Nmapshot-Token": "wrong"}, {"Origin": "https://example.org"}):
+            self.assertEqual(self.request(route, {}, headers)[0], 403)
+        self.assertEqual(self.request(route)[0], 404)
+        for state in ("en_cola", "en_curso", "deteniendo"):
+            with self.subTest(state=state):
+                self.store.jobs[job["id"]]["estado"] = state
+                self.assertEqual(self.request(route, {})[0], 409)
+                self.assertTrue(self.store.directory(job["id"]).exists())
+        self.store.jobs[job["id"]]["estado"] = "preparada"
+
+    def test_delete_rejects_directory_alias_and_retains_job_on_disk_error(self):
+        job, other = self.create(), self.create()
+        route = "/api/jobs/" + job["id"] + "/delete"
+        other_directory = self.store.directory(other["id"])
+        with patch.object(self.store, "directory", return_value=other_directory), patch("nmapshot.web.shutil.rmtree") as remove:
+            self.assertEqual(self.request(route, {})[0], 400)
+            remove.assert_not_called()
+        with patch("nmapshot.web.shutil.rmtree", side_effect=PermissionError("Archivo ocupado")):
+            self.assertEqual(self.request(route, {})[0], 500)
+        self.assertIn(job["id"], self.store.jobs)
+        self.assertTrue(self.store.directory(job["id"]).exists())
+
     def test_csrf_origin_host_and_body_size(self):
         self.assertEqual(self.request("/api/jobs", payload(), {"X-Nmapshot-Token": "wrong"})[0], 403)
         self.assertEqual(self.request("/api/jobs", payload(), {"Origin": "https://example.org"})[0], 403)
@@ -105,7 +149,7 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.request("/api/jobs/" + job["id"] + "/image/-1/0")[0], 404)
 
     def test_queue_start_once_and_cancel_queued_job(self):
-        first, second = self.create(), self.create()
+        first, second, third = self.create(), self.create(), self.create()
         begun, release = threading.Event(), threading.Event()
         def run(*args, **kwargs):
             begun.set()
@@ -122,6 +166,8 @@ class PortalTests(unittest.TestCase):
                 self.assertEqual(self.store.detail(second["id"])["estado"], "en_cola")
                 self.assertEqual(self.request("/api/jobs/" + second["id"] + "/cancel", {})[0], 200)
                 self.assertEqual(self.store.detail(second["id"])["estado"], "cancelada")
+                self.assertEqual(self.request("/api/jobs/" + second["id"] + "/delete", {})[0], 200)
+                self.assertEqual(self.request("/api/jobs/" + third["id"] + "/start", {})[0], 202)
                 self.request("/api/jobs/" + first["id"] + "/cancel", {})
                 self.assertTrue((self.store.directory(first["id"]) / "parar").exists())
                 release.set()
@@ -129,6 +175,10 @@ class PortalTests(unittest.TestCase):
                 while self.store.detail(first["id"])["estado"] == "deteniendo" and time.monotonic() < deadline:
                     time.sleep(.02)
                 self.assertEqual(self.store.detail(first["id"])["estado"], "interrumpida")
+                while self.store.detail(third["id"])["estado"] in ("en_cola", "en_curso") and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertEqual(self.store.detail(third["id"])["estado"], "interrumpida")
+                self.assertTrue(self.store.worker.is_alive())
         finally:
             release.set()
 

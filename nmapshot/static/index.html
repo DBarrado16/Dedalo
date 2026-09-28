@@ -31,6 +31,7 @@
       <a id="csv-download" class="secondary" hidden>Índice CSV</a><a id="json-download" class="secondary" hidden>JSON</a>
       <button id="cancel-job" class="secondary danger" hidden>Detener tras esta subred</button>
       <button id="start-job" class="primary" hidden>Iniciar captura</button>
+      <button id="delete-job" class="secondary danger">Borrar ejecución</button>
     </div></div>
     <progress id="progress" max="100" value="0" aria-label="Progreso de captura" hidden></progress>
     <div class="tabs" role="tablist" aria-label="Vista de resultados"><button role="tab" aria-selected="true" data-tab="gallery">Capturas</button><button role="tab" aria-selected="false" data-tab="targets">Objetivos</button><button role="tab" aria-selected="false" data-tab="logs">Registro</button><span id="result-count"></span></div>
@@ -75,4 +76,11 @@
   </form>
 </dialog>
 <dialog id="image-dialog" aria-label="Detalle de captura"><div class="image-heading"><div><strong id="image-title"></strong><p id="image-url"></p></div><button id="close-image" class="icon-button" aria-label="Cerrar captura">×</button></div><img id="full-image" alt="Captura ampliada"><div class="image-bottom"><span id="image-meta"></span><a id="image-download" class="secondary" download>Descargar imagen</a></div></dialog>
+<dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description">
+  <h2 id="delete-title">Borrar ejecución</h2>
+  <p id="delete-name"></p>
+  <p id="delete-description">Se eliminarán de este equipo sus capturas, archivos de Nmap subidos, índices y registros. Esta acción no se puede deshacer.</p>
+  <p id="delete-error" class="form-error" role="alert" hidden></p>
+  <div class="dialog-bottom actions"><button id="cancel-delete" class="secondary" autofocus>Conservar ejecución</button><button id="confirm-delete" class="primary">Borrar definitivamente</button></div>
+</dialog>
 </body></html>

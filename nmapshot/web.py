@@ -12,6 +12,7 @@ from pathlib import Path
 import queue
 import re
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -270,8 +271,8 @@ class PortalStore:
                 return
             job_id, binary, chrome = item
             with self.lock:
-                meta = self._meta(job_id)
-                if meta["estado"] != "en_cola":
+                meta = self.jobs.get(job_id)
+                if meta is None or meta["estado"] != "en_cola":
                     continue
                 meta["estado"] = "en_curso"
                 self._save(meta)
@@ -304,6 +305,22 @@ class PortalStore:
             with self.lock:
                 meta.update(estado=status, error=error, fin=now())
                 self._save(meta)
+
+    def delete(self, job_id):
+        with self.lock:
+            meta = self._meta(job_id)
+            if meta["estado"] in ACTIVE:
+                raise Conflict("Detén la ejecución y espera a que termine antes de borrarla.")
+            directory = self.directory(job_id)
+            # Solo esta carpeta directa; nunca seguir un enlace a otra ejecución.
+            if directory.parent != self.root or directory.name != job_id:
+                raise ValueError("La carpeta no corresponde a esta ejecución")
+            source = self.root / job_id
+            if source.is_symlink() or source.is_junction():
+                raise ValueError("No se puede borrar una ejecución enlazada a otra carpeta")
+            shutil.rmtree(directory)
+            del self.jobs[job_id]
+        return {"eliminada": job_id}
 
     def image(self, job_id, group_index, target_index):
         with self.lock:
@@ -437,6 +454,9 @@ class PortalHandler(BaseHTTPRequestHandler):
                         return
                     if parts[3] == "cancel":
                         self.json(store.cancel(parts[2]))
+                        return
+                    if parts[3] == "delete":
+                        self.json(store.delete(parts[2]))
                         return
                 raise FileNotFoundError("Ruta no encontrada")
             if path in ("/", "/app.js", "/style.css"):
