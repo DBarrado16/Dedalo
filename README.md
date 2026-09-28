@@ -1,0 +1,264 @@
+# Dedalo
+
+Portal local para subir resultados de nmap, lanzar capturas con gowitness y consultar las imágenes por rango del cliente y subred. Por defecto: **80/TCP abierto → HTTP**, **443/TCP abierto → HTTPS**. También conserva sus comandos de consola.
+
+El selector de la esquina superior derecha alterna entre modo claro y oscuro. Recuerda la elección en este navegador; si no hay una preferencia guardada, sigue el tema del sistema. El paquete y los comandos de consola siguen siendo `nmapshot`.
+
+La interfaz utiliza la paleta de SilentForce: negro, gris y rojo, con adaptación al modo claro. El diseño prioriza las capturas, con IP y puerto encima de cada imagen y agrupación por subred. Las decisiones visuales y la aplicación de `avoid-ai-design` están documentadas en `DESIGN.md` y `design/AUDIT.md`.
+
+Acepta XML (`-oX`), grepable (`-oG`) y salida normal (`-oN`), detectados por el contenido. No ejecuta nmap ni expande los CIDR a nuevas IP: los rangos sirven para clasificar las IP de los ficheros. El navegador sí sigue redirecciones y carga los recursos de cada página.
+
+## Requisitos
+
+- Python 3.12 o superior. Solo usa la librería estándar; no hay paquetes que instalar con pip.
+- [gowitness v3](https://github.com/sensepost/gowitness), probado con **3.2.0**. Colocar el ejecutable en `bin/gowitness.exe` (Windows), `bin/gowitness` (Linux), en el PATH o indicar `--gowitness`.
+- Chrome, Chromium o Edge. Se detectan automáticamente o se indican con `--chrome`. Si no se encuentra ninguno, gowitness puede descargar su navegador.
+
+El ejecutable de gowitness no se incluye en el repositorio. Descarga el binario adecuado de las [versiones oficiales](https://github.com/sensepost/gowitness/releases) y colócalo en `bin/`; en Linux hay que darle permiso de ejecución con `chmod +x bin/gowitness`.
+
+Ejecutar los comandos desde la carpeta del proyecto. En Kali usar `python3` en lugar de `python`. Si Windows no reconoce `python`, usar `py -3.12` o la ruta del intérprete, por ejemplo:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe" -m nmapshot --help
+```
+
+## Operar desde la web
+
+En Windows puedes hacer doble clic en **`iniciar_portal.cmd`**. Abre el navegador y mantiene el servidor en una terminal; déjala abierta mientras trabajas. No requiere instalar paquetes con pip ni Node.
+
+También puedes iniciarlo con:
+
+```powershell
+python -m nmapshot web --abrir
+```
+
+El portal está en [http://127.0.0.1:8787](http://127.0.0.1:8787). Desde ahí:
+
+1. Pulsa **Nueva captura** y pon nombre a la ejecución.
+2. Arrastra o selecciona uno o varios nmap (XML, grepable o normal).
+3. Pega los rangos CIDR o carga un archivo de rangos.
+4. Si hace falta, ajusta puertos adicionales, concurrencia, timeout, espera, formato o página completa.
+5. Pulsa **Revisar objetivos**: se muestra el reparto por rango y subred sin hacer conexiones a los objetivos.
+6. Pulsa **Iniciar captura**. Los trabajos se encolan y se ejecutan de uno en uno.
+7. Consulta las imágenes y filtra por rango, subred, estado o texto. Puedes ampliar y descargar imágenes, descargar CSV/JSON o consultar el registro sin salir del portal.
+
+El portal recibe archivos y **lanza las capturas**, no ejecuta un nuevo escaneo nmap. Las conexiones salen del equipo donde corre el servidor. Cerrar la pestaña no detiene las capturas.
+
+**Detener tras esta subred** conserva las capturas y evita iniciar nuevos grupos. No mata a la fuerza el navegador de la subred activa; el tiempo de espera depende de sus objetivos y timeout. Un trabajo todavía en cola se cancela inmediatamente.
+
+El historial y las cargas se conservan en `portal_datos/`. Al cerrar el servidor con Ctrl+C se solicita la parada y se espera a la subred activa. Si el servidor se cerró inesperadamente, al volver a abrirlo los trabajos activos se marcan interrumpidos; no se relanzan automáticamente.
+
+```powershell
+# Cambiar puerto y carpeta de almacenamiento
+python -m nmapshot web --puerto 8788 --datos portal_datos_cliente
+
+# Indicar los ejecutables del equipo que hace las capturas
+python -m nmapshot web --chrome "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --gowitness bin/gowitness.exe
+```
+
+El portal admite hasta 20 archivos por carga (10 MB por archivo y 24 MB en total en la interfaz), con un máximo de 100.000 objetivos por ejecución. Muestra los resultados por páginas de 60 objetivos. Los ajustes de ejecutables se realizan al arrancar el servidor, no desde los archivos subidos.
+
+Es un portal local de un usuario: escucha exclusivamente en loopback y verifica el origen de las peticiones. No incluye autenticación multiusuario ni publicación en red. El navegador usa la misma galería del portal para todas las subredes; no hace falta arrancar visores separados de gowitness.
+
+```text
+portal_datos/
+  ID_DE_EJECUCION/
+    trabajo.json
+    entradas/nmap-00.txt
+    rangos.txt
+    proceso.log
+    resultado/             # mismos índices, bases y capturas que la consola
+```
+
+Los resultados anteriores de consola siguen accesibles con `ver`; no se importan automáticamente en el historial web.
+
+## Uso desde consola
+
+Crear `rangos.txt` con un CIDR por línea:
+
+```text
+# Rangos del cliente
+10.10.0.0/17
+172.16.20.0/22
+```
+
+Comprobar primero el reparto, sin conexiones ni archivos de salida:
+
+```powershell
+python -m nmapshot capturar escaneo.xml -r rangos.txt --simular
+```
+
+Capturar y abrir el visor:
+
+```powershell
+python -m nmapshot capturar escaneo.xml -r rangos.txt -o salida/cliente-01
+python -m nmapshot ver salida/cliente-01
+```
+
+Abrir [http://127.0.0.1:7171](http://127.0.0.1:7171) y consultar la galería de gowitness. Cada resultado muestra su URL con la IP. El servidor permanece en la terminal hasta pulsar Ctrl+C.
+
+En el modo de consola, la selección se hace al lanzar `ver` y se usa la galería nativa de gowitness. En el portal `web`, la selección se hace con los filtros de la página.
+
+## Captura
+
+Se pueden mezclar formatos y combinar varios escaneos sin duplicar objetivos:
+
+```powershell
+python -m nmapshot capturar parte1.xml parte2.gnmap parte3.nmap -r rangos.txt -o salida/cliente-02
+```
+
+Si la misma IP aparece en varios archivos, se unen sus puertos abiertos; no se interpreta como un histórico de aperturas y cierres. Se captura por IP, aunque nmap incluya nombres DNS.
+
+| Opción | Función |
+| --- | --- |
+| `-r, --rangos` | Archivo de rangos. Opcional; sin él todas las IP van a `fuera_de_rango`. |
+| `-o, --salida` | Carpeta nueva o vacía. Si se omite: `salida/FECHA-HORA-MICROSEGUNDOS`. |
+| `--simular` / `--dry-run` | Muestra IP, URL y agrupación sin ejecutar gowitness. |
+| `--puertos "8080=http,8443=https"` | Añade puertos al mapa de 80/443; si se repite un puerto, sustituye su esquema. |
+| `--por-servicio` / `--by-service` | Incluye otros puertos que nmap identifique como HTTP/TLS. |
+| `-t, --hilos 6` | Concurrencia dentro de cada subred; las subredes se procesan en orden. |
+| `--timeout 60` | Límite por página, segundos. |
+| `--delay 10` | Espera antes de la captura, segundos (10 por defecto). Para contenido lento, prueba 20–30. |
+| `--formato jpeg` | `jpeg` o `png`. |
+| `--pagina-completa` | Solicita captura de página completa a gowitness. |
+| `--chrome RUTA` | Navegador que debe utilizar. |
+| `--gowitness RUTA` | Ejecutable de gowitness v3. |
+
+Ejemplo en Windows:
+
+```powershell
+python -m nmapshot capturar escaneo.xml -r rangos.txt -o salida/cliente-03 --puertos "8080=http,8443=https" --formato png --hilos 4 --timeout 30 --chrome "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+```
+
+Ejemplo en Kali:
+
+```bash
+python3 -m nmapshot capturar escaneo.gnmap -r rangos.txt -o salida/cliente-04 --chrome /usr/bin/chromium
+```
+
+Los rangos no son un filtro de alcance: una IP que no pertenezca a ninguno se conserva en `fuera_de_rango`. Un /17 se organiza en sus /24, creando únicamente las subredes con objetivos. Si se solapan rangos, gana el más específico. Un /25 o /26 se conserva sin ampliarlo a /24. Para IPv6 se agrupa por /64; sus nombres de carpeta sustituyen `:` por `_`.
+
+## Archivos de salida
+
+```text
+salida/cliente-01/
+  ejecucion.json
+  indice.csv
+  10.10.0.0_17/
+    10.10.5.0_24/
+      urls.txt
+      gowitness.sqlite3
+      gowitness.log
+      sin_captura.txt
+      capturas/
+    10.10.6.0_24/
+      ...
+  fuera_de_rango/
+    192.168.1.0_24/
+      ...
+  .vistas/
+    FECHA-HORA-ID/
+      gowitness.sqlite3
+      merge.log
+      capturas/
+```
+
+- `indice.csv`: una fila por objetivo, con rango, subred, IP, puerto, URL original, estado, código HTTP, título, URL final, ruta relativa de captura y error. Se guarda en UTF-8 con BOM; se neutralizan textos que Excel podría tratar como fórmulas.
+- `ejecucion.json`: objetivos, opciones, estado y resultados por subred. Necesario para `ver`. Se actualiza al terminar cada grupo.
+- `urls.txt`: URLs enviadas a gowitness, con **puertos siempre explícitos**, incluidos 80 y 443. Esto impide que el lector de gowitness añada puertos por defecto.
+- `sin_captura.txt`: URLs sin imagen válida. Un fichero vacío significa que ese grupo se capturó completo.
+- `gowitness.log`: errores de conexión, tiempos agotados y mensajes del proceso.
+- Solo se cuentan como capturadas las filas correctas de la base que además tengan un fichero de imagen existente y no vacío.
+
+Una respuesta HTTP 401, 403, 404 o 500 puede tener captura y se conserva con su código. Un puerto que estaba abierto cuando se hizo nmap puede haber dejado de responder.
+
+## Visor por subred, rango o completo
+
+```powershell
+# Ver qué grupos hay, sin arrancar el servidor
+python -m nmapshot ver salida/cliente-01 --listar
+
+# Una subred concreta
+python -m nmapshot ver salida/cliente-01 10.10.5.0/24
+
+# Un rango del cliente
+python -m nmapshot ver salida/cliente-01 10.10.0.0/17
+
+# IP fuera de los rangos indicados
+python -m nmapshot ver salida/cliente-01 fuera_de_rango
+
+# Todo junto
+python -m nmapshot ver salida/cliente-01
+
+# Solo preparar la vista y obtener su carpeta
+python -m nmapshot ver salida/cliente-01 --preparar
+
+# Otro puerto local
+python -m nmapshot ver salida/cliente-01 --puerto 7172
+```
+
+Los selectores deben corresponder a un rango o subred listado en la ejecución. Si solo hay una base con capturas, se utiliza directamente. Si hay varias, se combinan con `gowitness report merge`, conservando los originales; las imágenes se enlazan físicamente o se copian cuando el sistema de archivos no permite enlaces.
+
+Cada vista combinada crea una carpeta nueva en `.vistas/` para no modificar una base abierta por otro visor. Estas carpetas se pueden borrar cuando sus visores estén cerrados: se regeneran con `ver`. Las bases pueden ocupar espacio aunque las imágenes compartan disco mediante enlaces.
+
+Por defecto el visor solo escucha en `127.0.0.1`. `--host` permite cambiarlo. No se añade una capa de autenticación al visor de gowitness.
+
+## Ejecuciones repetidas e interrupciones
+
+Nunca se reutiliza una salida no vacía. Para repetir una captura, indicar otra carpeta o dejar que se cree una con fecha.
+
+Si falla gowitness en una subred se registra el error y se continúa con las restantes. Ctrl+C conserva lo completado, marca la ejecución interrumpida y deja los objetivos no intentados como pendientes en el CSV. No hay reanudación automática; usar otra salida para una nueva ejecución.
+
+| Código de salida | Significado |
+| --- | --- |
+| 0 | Operación correcta; captura completa, o no había objetivos. |
+| 1 | Error de archivo, configuración, base o proceso gowitness. |
+| 2 | Argumentos de consola incorrectos. |
+| 3 | Captura terminada con alguna URL sin imagen. El resto de resultados es utilizable. |
+| 130 | Captura interrumpida con Ctrl+C. |
+
+## Pruebas
+
+Pruebas automáticas sin conexiones ni navegador:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Ejemplo incluido que se puede simular:
+
+```powershell
+python -m nmapshot capturar ejemplos/escaneo.xml ejemplos/escaneo.gnmap ejemplos/escaneo.nmap -r ejemplos/rangos.txt --simular
+```
+
+Prueba real de principio a fin:
+
+```powershell
+python -m tests.integration_local
+```
+
+Necesita gowitness y navegador instalado. Arranca dos webs locales en `127.0.0.1` y `127.0.1.1`, intenta usar 80/443 y usa puertos libres si no puede. Verifica HTTP, redirección, HTTPS autofirmado, un puerto cerrado, URLs exactas, CSV, bases por subred, combinaciones de rango/todo y respuesta del servidor web. Cierra los servicios al terminar y conserva resultados en `pruebas_locales/FECHA-HORA/resultado`.
+
+El certificado y la clave de `tests/fixtures/` son exclusivamente material público de prueba local; no se instalan en el almacén de certificados.
+
+Con el portal arrancado, también hay una prueba de principio a fin de su API:
+
+```powershell
+python -m tests.integration_web
+```
+
+Sube nmap y rangos de prueba, inicia el trabajo y verifica capturas HTTP/HTTPS, progreso, fallo de conexión, imágenes, CSV, JSON y registro. Conserva la ejecución en el historial del portal. `--portal http://127.0.0.1:8788` permite usar otro puerto. `--manual` deja los dos servidores locales y archivos preparados para probar los botones de la interfaz; Ctrl+C cierra esos servidores de prueba.
+
+## Detalles y límites
+
+- Para acceder por VPN, inicia `iniciar_portal.cmd` desde Windows con la VPN conectada. Un portal arrancado desde un entorno con red restringida hereda esa restricción aunque puedas entrar en él por localhost. `ERR_NETWORK_ACCESS_DENIED` indica una denegación de red al navegador de captura.
+- Las tarjetas muestran el error específico del motor, también en ejecuciones antiguas. Un error `ERR_INVALID_AUTH_CREDENTIALS` indica autenticación HTTP requerida; el perfil temporal no comparte las credenciales de tu navegador.
+- Selección automática en Windows: Chrome instalado, Chromium headless de una instalación existente de Playwright y, por último, Edge. `--chrome` tiene prioridad. Chromium headless resolvió un bloqueo de Edge al generar capturas de un panel ORION; no se instala ni se descarga ningún navegador adicional mediante esta detección.
+
+- Probado en Windows con gowitness 3.2.0 y Edge. El código contempla Linux, pero no se ha ejecutado aquí una prueba real en Kali.
+- Las URI de SQLite que recibe gowitness son relativas a su carpeta, evitando el conflicto de `C:\...` con el formato URI.
+- En Windows, al lanzar Edge, se omite `__COMPAT_LAYER` solo en el entorno del proceso hijo. La capa heredada puede hacer que Edge se relance y rompa su conexión de automatización. No se modifica el entorno del equipo.
+- El navegador usa el perfil temporal de gowitness, sin reutilizar las sesiones personales.
+- Las capturas HTTPS con certificado autofirmado funcionan con la versión probada. No se resuelven pantallas de login ni se añaden nombres de virtual host/SNI: se accede a la IP solicitada.
+- El portal permite cargar nmap y cambiar de subred desde el navegador. Sigue necesitando que su servidor local esté iniciado (con doble clic en el lanzador o con `web`).
+- Si cambias de versión de gowitness, repite la prueba de integración: los parámetros, el esquema de base y el comportamiento del navegador son dependencias externas.

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun>
+  <host>
+    <status state="up"/><address addr="10.10.5.10" addrtype="ipv4"/>
+    <hostnames><hostname name="portal.ejemplo.local"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="80"><state state="open"/><service name="http" product="nginx"/></port>
+      <port protocol="tcp" portid="443"><state state="open"/><service name="http" tunnel="ssl"/></port>
+      <port protocol="tcp" portid="22"><state state="open"/><service name="ssh"/></port>
+      <port protocol="tcp" portid="8080"><state state="closed"/><service name="http-proxy"/></port>
+      <port protocol="udp" portid="80"><state state="open"/><service name="http"/></port>
+    </ports>
+  </host>
+  <host>
+    <status state="up"/><address addr="10.10.6.20" addrtype="ipv4"/>
+    <ports>
+      <port protocol="tcp" portid="80"><state state="open"/><service name="http"/></port>
+      <port protocol="tcp" portid="8443"><state state="open"/><service name="http" tunnel="ssl"/></port>
+      <port protocol="tcp" portid="443"><state state="filtered"/><service name="https"/></port>
+    </ports>
+  </host>
+  <host>
+    <status state="up"/><address addr="192.168.1.8" addrtype="ipv4"/>
+    <ports><port protocol="tcp" portid="443"><state state="open"/><service name="https"/></port></ports>
+  </host>
+  <host><status state="down"/><address addr="10.10.7.30" addrtype="ipv4"/></host>
+</nmaprun>

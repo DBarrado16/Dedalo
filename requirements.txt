@@ -1,0 +1,2 @@
+# Sin dependencias Python externas. Requiere Python 3.12 o superior.
+# gowitness v3 y Chrome/Chromium/Edge son ejecutables externos.

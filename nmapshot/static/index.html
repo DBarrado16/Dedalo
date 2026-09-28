@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="es">
+<!-- avoid-ai-design-ignore-file: K7 -- Focus styles live in style.css and are verified in both themes. -->
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>Dedalo | Capturas de red</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body>
+<aside class="sidebar">
+  <a class="brand" href="/" aria-label="Dedalo, inicio"><svg class="brand-mark" viewBox="0 0 36 36" fill="none" aria-hidden="true"><path d="M18 3H3v30h30V3h-8M10 3v14h7V10h9v16H10v-2M3 24h7M17 17h9M18 26v7" stroke="currentColor" stroke-width="2.5" stroke-linecap="square" stroke-linejoin="miter"/></svg><span>Dedalo<small>Capturas de red</small></span></a>
+  <button class="primary new-job">Nueva captura</button>
+  <div class="sidebar-heading">Ejecuciones <span id="job-count">0</span></div>
+  <nav id="jobs" aria-label="Historial de ejecuciones"></nav>
+  <div class="sidebar-footer"><span class="dot" id="engine-dot"></span><div id="engine-status">Conectando con el motor…</div><small>Guardado en este equipo</small></div>
+</aside>
+<main>
+  <div class="topline"><span>Explorador de servicios web</span><div class="topline-actions"><span class="local-label">En este equipo</span><button id="theme-toggle" class="theme-toggle" type="button" aria-label="Modo oscuro" aria-pressed="false"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20 15.5A8.5 8.5 0 0 1 8.5 4 8.5 8.5 0 1 0 20 15.5Z"/></svg><span>Modo oscuro</span></button></div></div>
+  <header class="page-header"><div><h1 id="page-title">Capturas web</h1><p id="page-description">Inspecciona los servicios web encontrados por Nmap.</p></div><span id="job-state" class="badge" hidden></span></header>
+  <div id="notice" class="notice" role="status" hidden></div>
+  <section class="stats" aria-label="Resumen">
+    <div><strong id="stat-targets">0</strong><span>Objetivos web</span></div>
+    <div><strong id="stat-shots">0</strong><span>Con captura</span></div>
+    <div><strong id="stat-subnets">0</strong><span>Subredes</span></div>
+    <div><strong id="stat-failures">0</strong><span>Sin captura</span></div>
+  </section>
+  <section id="empty-state" class="empty-state">
+    <h2>Empieza con un archivo de Nmap</h2>
+    <p>Dedalo captura los servicios HTTP y HTTPS del archivo y organiza las imágenes por IP y subred. Antes de conectar podrás revisar los objetivos.</p>
+    <button class="primary new-job">Seleccionar archivos de Nmap</button>
+    <p class="hint">Formatos admitidos: XML, grepable y texto.</p>
+  </section>
+  <section id="workspace" hidden>
+    <div class="runbar"><div><strong id="run-title">Preparada para capturar</strong><p id="run-description"></p></div><div class="actions">
+      <a id="csv-download" class="secondary" hidden>Índice CSV</a><a id="json-download" class="secondary" hidden>JSON</a>
+      <button id="cancel-job" class="secondary danger" hidden>Detener tras esta subred</button>
+      <button id="start-job" class="primary" hidden>Iniciar captura</button>
+    </div></div>
+    <progress id="progress" max="100" value="0" aria-label="Progreso de captura" hidden></progress>
+    <div class="tabs" role="tablist" aria-label="Vista de resultados"><button role="tab" aria-selected="true" data-tab="gallery">Capturas</button><button role="tab" aria-selected="false" data-tab="targets">Objetivos</button><button role="tab" aria-selected="false" data-tab="logs">Registro</button><span id="result-count"></span></div>
+    <div id="filters" class="filters">
+      <label class="search">Buscar<input id="search" type="search" placeholder="IP, URL o título" aria-label="Buscar IP, URL o título"></label>
+      <label>Rango<select id="range-filter" aria-label="Filtrar por rango"><option value="">Todos los rangos</option></select></label>
+      <label>Subred<select id="subnet-filter" aria-label="Filtrar por subred"><option value="">Todas las subredes</option></select></label>
+      <label>Resultado<select id="status-filter" aria-label="Filtrar por estado"><option value="">Todos los estados</option><option value="capturada">Con captura</option><option value="sin_captura">Sin captura</option><option value="pendiente">Pendientes</option></select></label>
+    </div>
+    <div id="results" aria-live="polite"></div><button id="more" class="secondary more" hidden>Mostrar más resultados</button>
+    <pre id="logs" tabindex="0" hidden></pre>
+  </section>
+  <footer class="page-footer"><span>Dedalo</span><span>Las capturas se guardan en este equipo</span></footer>
+</main>
+<dialog id="upload-dialog" aria-labelledby="upload-title">
+  <form id="upload-form">
+    <div class="dialog-heading"><div><h2 id="upload-title">Nueva captura</h2><p>Sube los resultados de Nmap y revisa qué servicios se capturarán.</p></div><button type="button" class="icon-button close-upload" aria-label="Cerrar formulario">×</button></div>
+    <label class="field">Nombre de la ejecución<input id="job-name" maxlength="120" placeholder="Ej. Red corporativa — septiembre" required></label>
+    <div class="form-columns">
+      <section><label class="field-label" for="nmap-files">Archivos de Nmap</label>
+        <label id="dropzone" class="dropzone" for="nmap-files"><svg viewBox="0 0 32 36" width="32" height="36" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M7 3h12l7 7v23H7zM19 3v8h7M12 18h9M12 23h9M12 28h6"/></svg><strong>Selecciona o arrastra tus archivos</strong><small>XML, grepable o texto. Hasta 20 archivos.</small><input id="nmap-files" type="file" multiple accept=".xml,.gnmap,.nmap,.txt" aria-label="Archivos de nmap"></label>
+        <ul id="file-list" class="file-list"></ul>
+      </section>
+      <section><label class="field-label" for="ranges">Rangos del cliente <small>Opcional</small></label>
+        <textarea id="ranges" rows="6" placeholder="10.10.0.0/17&#10;172.16.20.0/22" aria-label="Rangos del cliente"></textarea>
+        <label class="file-link">Cargar rangos desde un .txt<input id="range-file" type="file" accept=".txt,.cidr" aria-label="Archivo de rangos"></label>
+        <p class="hint">Un CIDR por línea. Cada rango se organiza en /24; las IP restantes van a «Fuera de rango».</p>
+      </section>
+    </div>
+    <details class="advanced"><summary>Opciones de captura <span>HTTP :80 / HTTPS :443</span></summary>
+      <div class="option-grid">
+        <label class="field">Concurrencia<input id="threads" type="number" min="1" max="32" value="6" required></label>
+        <label class="field">Timeout (s)<input id="timeout" type="number" min="1" max="300" value="60" required></label>
+        <label class="field">Espera antes de capturar (s)<input id="delay" type="number" min="0" max="30" value="10" required><small>Da tiempo a cargar el contenido dinámico. Por defecto 10 s; para webs lentas, prueba 20–30 s.</small></label>
+        <label class="field">Formato<select id="format"><option value="jpeg">JPEG</option><option value="png">PNG</option></select></label>
+      </div>
+      <label class="field">Puertos adicionales<input id="ports" placeholder="8080=http,8443=https"></label>
+      <div class="checks"><label><input id="by-service" type="checkbox"> Incluir otros servicios HTTP detectados</label><label><input id="fullpage" type="checkbox"> Página completa</label></div>
+    </details>
+    <p id="upload-error" class="form-error" role="alert" hidden></p>
+    <div class="dialog-bottom"><p>La captura comienza después de revisar los objetivos y pulsar «Iniciar captura».</p><button id="prepare-job" class="primary" type="submit">Revisar objetivos</button></div>
+  </form>
+</dialog>
+<dialog id="image-dialog" aria-label="Detalle de captura"><div class="image-heading"><div><strong id="image-title"></strong><p id="image-url"></p></div><button id="close-image" class="icon-button" aria-label="Cerrar captura">×</button></div><img id="full-image" alt="Captura ampliada"><div class="image-bottom"><span id="image-meta"></span><a id="image-download" class="secondary" download>Descargar imagen</a></div></dialog>
+</body></html>

@@ -1,0 +1,3 @@
+# Rangos de ejemplo; solo se capturan las IP presentes en nmap.
+10.10.0.0/17
+172.16.20.0/22

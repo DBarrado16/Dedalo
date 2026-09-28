@@ -1,0 +1,121 @@
+{
+  "tool": "avoid-ai-design",
+  "version": "0.4.0",
+  "scanned": 3,
+  "summary": {
+    "P0": 1,
+    "P1": 6,
+    "P2": 2,
+    "total": 9
+  },
+  "findings": [
+    {
+      "file": "nmapshot\\static\\app.js",
+      "id": "CP3",
+      "severity": "P1",
+      "name": "Arrow glyph welded to a CTA",
+      "why": "A '→' appended to button or link text is a reflex flourish.",
+      "lines": [
+        232
+      ],
+      "notes": []
+    },
+    {
+      "file": "nmapshot\\static\\app.js",
+      "id": "SD4d",
+      "severity": "P2",
+      "name": "Template chrome: meta strings joined with middle dots",
+      "why": "'A · B · C' metadata strings are a stock chrome move, not a decision about this content.",
+      "lines": [
+        82,
+        104,
+        254
+      ],
+      "notes": []
+    },
+    {
+      "file": "nmapshot\\static\\index.html",
+      "id": "CP3",
+      "severity": "P1",
+      "name": "Arrow glyph welded to a CTA",
+      "why": "A '→' appended to button or link text is a reflex flourish.",
+      "lines": [
+        73
+      ],
+      "notes": []
+    },
+    {
+      "file": "nmapshot\\static\\index.html",
+      "id": "K7",
+      "severity": "P1",
+      "name": "No visible keyboard focus",
+      "why": "Interactive elements with no :focus-visible style: the polish gap, and an accessibility defect.",
+      "lines": [
+        1
+      ],
+      "notes": []
+    },
+    {
+      "file": "nmapshot\\static\\index.html",
+      "id": "SD6",
+      "severity": "P1",
+      "name": "Decorative 01 / 02 / 03 markers",
+      "why": "Two-digit numerals are only information when the content is a real sequence; otherwise they are decoration.",
+      "lines": [
+        26,
+        52,
+        56
+      ],
+      "notes": []
+    },
+    {
+      "file": "nmapshot\\static\\index.html",
+      "id": "SD4d",
+      "severity": "P2",
+      "name": "Template chrome: meta strings joined with middle dots",
+      "why": "'A · B · C' metadata strings are a stock chrome move, not a decision about this content.",
+      "lines": [
+        3,
+        50,
+        53,
+        62
+      ],
+      "notes": []
+    },
+    {
+      "file": "nmapshot\\static\\style.css",
+      "id": "T1",
+      "severity": "P0",
+      "name": "Inter as the primary face",
+      "why": "Inter is the default of nearly every AI tool and component library.",
+      "lines": [
+        1
+      ],
+      "notes": []
+    },
+    {
+      "file": "nmapshot\\static\\style.css",
+      "id": "C9",
+      "severity": "P1",
+      "name": "Muted text below WCAG AA",
+      "why": "Grey-on-grey body copy fails contrast; it is both a tell and an accessibility defect.",
+      "lines": [
+        1
+      ],
+      "notes": [
+        "--muted #a5afbd on #f5f7fa = 2.07:1"
+      ]
+    },
+    {
+      "file": "nmapshot\\static\\style.css",
+      "id": "K3",
+      "severity": "P1",
+      "name": "Glassmorphism (backdrop-blur)",
+      "why": "Frosted surfaces by reflex; keep blur only where layering is real, like a nav over scrolling content.",
+      "lines": [
+        1
+      ],
+      "notes": []
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+# Nmap 7.95 scan
+Nmap scan report for portal.ejemplo.local (10.10.5.10)
+Host is up.
+PORT     STATE  SERVICE VERSION
+80/tcp   open   http    nginx
+443/tcp  open   ssl/http
+22/tcp   open   ssh
+8080/tcp closed http-proxy
+80/udp   open   http
+
+Nmap scan report for 10.10.6.20
+Host is up.
+PORT     STATE    SERVICE
+80/tcp   open     http
+8443/tcp open     ssl/http
+443/tcp  filtered https
+
+Nmap scan report for 192.168.1.8
+Host is up.
+PORT    STATE SERVICE
+443/tcp open  https
+
+Nmap scan report for 10.10.7.30
+Host is down.
+# Nmap done

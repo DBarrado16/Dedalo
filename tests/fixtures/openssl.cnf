@@ -1,0 +1,4 @@
+[req]
+distinguished_name = dn
+[dn]
+CN = nmapshot-local-test

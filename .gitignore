@@ -1,0 +1,26 @@
+# Datos de ejecuciones, Nmap subidos y capturas
+/portal_datos/
+/pruebas_locales/
+/salida/
+
+# Ejecutables externos y entornos Python
+/bin/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Notas locales con información de las redes probadas
+/RESUMEN.md
+
+# Copias de la web usadas como referencia visual
+/design/silentforce-reference.*
+
+# Configuración local y archivos generados
+.env
+.env.*
+!.env.example
+*.log
+*.sqlite3
+*.sqlite3-*

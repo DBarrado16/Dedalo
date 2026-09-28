@@ -1,0 +1,12 @@
+{
+  "tool": "avoid-ai-design",
+  "version": "0.4.0",
+  "scanned": 3,
+  "summary": {
+    "P0": 0,
+    "P1": 0,
+    "P2": 0,
+    "total": 0
+  },
+  "findings": []
+}

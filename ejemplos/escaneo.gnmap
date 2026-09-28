@@ -1,0 +1,9 @@
+# Nmap 7.95 scan
+Host: 10.10.5.10 (portal.ejemplo.local)	Status: Up
+Host: 10.10.5.10 (portal.ejemplo.local)	Ports: 80/open/tcp//http//nginx/, 443/open/tcp//ssl|http///, 22/open/tcp//ssh///, 8080/closed/tcp//http-proxy///, 80/open/udp//http///
+Host: 10.10.6.20 ()	Status: Up
+Host: 10.10.6.20 ()	Ports: 80/open/tcp//http///, 8443/open/tcp//ssl|http///, 443/filtered/tcp//https///
+Host: 192.168.1.8 ()	Status: Up
+Host: 192.168.1.8 ()	Ports: 443/open/tcp//https///
+Host: 10.10.7.30 ()	Status: Down
+# Nmap done
