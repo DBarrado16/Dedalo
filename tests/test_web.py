@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 import os
 from pathlib import Path
@@ -8,6 +10,7 @@ import unittest
 from unittest.mock import patch
 import urllib.error
 import urllib.request
+import zipfile
 
 from nmapshot import cli, report
 from nmapshot.web import PortalStore, PortalServer
@@ -148,6 +151,30 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.request("/api/jobs/" + "a"*32)[0], 404)
         self.assertEqual(self.request("/api/jobs/" + job["id"] + "/image/-1/0")[0], 404)
 
+    def test_subnet_zip_contains_only_that_subnet_captures(self):
+        job = self.create()
+        meta = self.store.jobs[job["id"]]
+        root = self.store.directory(job["id"]) / "resultado"
+        group = meta["grupos"][0]
+        target = group["objetivos"][0]
+        fake_database(root / group["carpeta"], [target["url"]])
+        report.collect_group(root, group)
+        report.write_index(root, {"version": 1, "grupos": meta["grupos"]})
+        route = "/api/jobs/" + job["id"] + "/download/captures/"
+        status, content = self.request(route + "0")
+        self.assertEqual(status, 200)
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            scheme = target["url"].split(":", 1)[0]
+            image = f"{target['ip']}_{target['port']}_{scheme}.png"
+            self.assertEqual(sorted(archive.namelist()), sorted([image, "indice.csv"]))
+            self.assertEqual(archive.read(image), b"test-image")
+            index = list(csv.DictReader(io.StringIO(archive.read("indice.csv").decode("utf-8-sig"))))
+        self.assertEqual((index[0]["archivo"], index[0]["url"], index[0]["titulo"]), (image, target["url"], "'=test"))
+        self.assertEqual(self.request(route + "1")[0], 404)
+        self.assertEqual(self.request(route + "99")[0], 404)
+        self.assertEqual(self.request(route + "-1")[0], 404)
+        self.assertEqual(self.request(route + "x")[0], 400)
+
     def test_queue_start_once_and_cancel_queued_job(self):
         first, second, third = self.create(), self.create(), self.create()
         begun, release = threading.Event(), threading.Event()
@@ -195,6 +222,49 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(detail["estado"], "preparada")
         self.assertEqual(detail["total"], 4)
         self.assertEqual(detail["archivos"], ["escaneo.xml"])
+
+    def test_inventory_is_available_before_capture_and_survives_restart(self):
+        data = payload()
+        data["archivos"] = [{"nombre": "inventario.xml", "contenido": (ROOT / "ejemplos/inventario.xml").read_text(encoding="utf-8")}]
+        with patch("nmapshot.web.subprocess.run") as run:
+            status, content = self.request("/api/jobs", data)
+            self.assertEqual(status, 201)
+            job = json.loads(content)
+            route = "/api/jobs/" + job["id"]
+            status, content = self.request(route + "/inventory")
+            self.assertEqual(status, 200)
+            inventory = json.loads(content)
+            self.assertEqual((inventory["activos_total"], inventory["servicios_total"]), (4, 9))
+            self.assertEqual(job["total"], 2)
+            self.assertEqual(self.request(route + "/download/inventory-json")[0], 200)
+            status, content = self.request(route + "/download/inventory-csv")
+            self.assertEqual(status, 200)
+            self.assertIn(b"OpenSSH,9.6", content)
+            run.assert_not_called()
+        self.store.close()
+        self.store = PortalStore(self.temp.name)
+        self.server.store = self.store
+        self.assertEqual(json.loads(self.request(route + "/inventory")[1]), inventory)
+
+    def test_legacy_inventory_is_rebuilt_from_original_inputs(self):
+        job = self.create()
+        directory = self.store.directory(job["id"])
+        (directory / "inventario.json").unlink()
+        original_meta = (directory / "trabajo.json").read_bytes()
+        result = self.store.inventory(job["id"])
+        self.assertEqual(result["servicios_total"], 7)
+        self.assertEqual((directory / "trabajo.json").read_bytes(), original_meta)
+        self.assertTrue((directory / "inventario.json").is_file())
+        self.assertEqual(self.request("/api/jobs/" + "a"*32 + "/inventory")[0], 404)
+
+    def test_upload_with_only_non_web_services_retains_inventory(self):
+        data = payload()
+        data["archivos"][0]["contenido"] = "Nmap scan report for 192.0.2.1\n22/tcp open ssh OpenSSH 9.6\n53/udp open domain\n"
+        status, content = self.request("/api/jobs", data)
+        self.assertEqual(status, 201)
+        job = json.loads(content)
+        self.assertEqual(job["total"], 0)
+        self.assertEqual(self.store.inventory(job["id"])["servicios_total"], 2)
 
     def test_static_page_uses_local_assets(self):
         status, content = self.request("/")

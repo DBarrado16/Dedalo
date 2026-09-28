@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import csv
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
 import json
 import mimetypes
 import os
@@ -21,8 +23,9 @@ from urllib.parse import urlsplit
 import uuid
 import webbrowser
 from xml.etree.ElementTree import ParseError
+import zipfile
 
-from . import cli, gowitness, parser, report
+from . import cli, gowitness, inventory, parser, report, targets
 
 STATIC = Path(__file__).parent / "static"
 MAX_BODY = 32 * 1024 * 1024
@@ -156,7 +159,9 @@ class PortalStore:
                 raise ValueError(f"{filename}: {exc}") from exc
             uploads.append((filename, content))
         networks = [line.split("#", 1)[0].strip() for line in ranges.splitlines() if line.split("#", 1)[0].strip()]
-        groups = cli.group_hosts(parser.merge(hosts), networks, options["puertos"], options["por_servicio"])
+        merged = parser.merge(hosts)
+        assets = inventory.build(merged, networks)
+        groups = cli.group_hosts(merged, networks, options["puertos"], options["por_servicio"])
         total = sum(len(g["objetivos"]) for g in groups)
         if total > 100_000:
             raise ValueError("Demasiados objetivos para una ejecución web; divide los archivos (máximo 100.000).")
@@ -172,9 +177,27 @@ class PortalStore:
             for index, (_, content) in enumerate(uploads):
                 (directory / "entradas" / f"nmap-{index:02d}.txt").write_text(content, encoding="utf-8")
             (directory / "rangos.txt").write_text(ranges, encoding="utf-8")
+            atomic_json(directory / "inventario.json", assets)
             self._save(meta)
             self.jobs[job_id] = meta
         return self.detail(job_id)
+
+    def inventory(self, job_id):
+        with self.lock:
+            self._meta(job_id)
+            directory = self.directory(job_id)
+            path = directory / "inventario.json"
+            if path.is_file():
+                return json.loads(path.read_text(encoding="utf-8"))
+            # Las ejecuciones anteriores conservan los Nmap originales subidos.
+            inputs = sorted((directory / "entradas").glob("nmap-*.txt"))
+            if not inputs:
+                raise FileNotFoundError("No se conservan los Nmap de esta ejecución para reconstruir el inventario.")
+            hosts = parser.merge([parser.parse_file(item) for item in inputs])
+            networks = targets.read_networks_file(directory / "rangos.txt")
+            data = inventory.build(hosts, networks)
+            atomic_json(path, data)
+            return data
 
     def _manifest(self, meta):
         path = self.directory(meta["id"]) / "resultado" / report.MANIFEST
@@ -322,28 +345,57 @@ class PortalStore:
             del self.jobs[job_id]
         return {"eliminada": job_id}
 
-    def image(self, job_id, group_index, target_index):
+    def _group(self, job_id, group_index):
+        """Subred del manifiesto, su carpeta y sus capturas válidas."""
         with self.lock:
             meta = copy.deepcopy(self._meta(job_id))
         manifest = self._manifest(meta)
-        if not manifest:
+        if not manifest or not 0 <= group_index < len(manifest["grupos"]):
             raise FileNotFoundError("Captura no disponible")
-        try:
-            if group_index < 0 or target_index < 0:
-                raise IndexError
-            group = manifest["grupos"][group_index]
-            target = group["objetivos"][target_index]
-        except IndexError:
-            raise FileNotFoundError("Captura no disponible")
+        group = manifest["grupos"][group_index]
         directory = report.inside(self.directory(job_id) / "resultado", group["carpeta"])
-        found = gowitness.read_results(directory / gowitness.DB_NAME)
+        return group, directory, gowitness.read_results(directory / gowitness.DB_NAME)
+
+    @staticmethod
+    def _shot(directory, found, target):
         row = found.get(gowitness.normalize_url(target["url"]))
         if not row:
             raise FileNotFoundError("Captura no disponible")
         path = gowitness.screenshot_path(directory, row["filename"])
         if path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
             raise ValueError("Formato de imagen no permitido")
-        return path
+        return path, row
+
+    def image(self, job_id, group_index, target_index):
+        group, directory, found = self._group(job_id, group_index)
+        if not 0 <= target_index < len(group["objetivos"]):
+            raise FileNotFoundError("Captura no disponible")
+        return self._shot(directory, found, group["objetivos"][target_index])[0]
+
+    def group_zip(self, job_id, group_index):
+        """ZIP con todas las capturas de una subred, nombradas por IP y puerto."""
+        group, directory, found = self._group(job_id, group_index)
+        index = io.StringIO(newline="")
+        writer = csv.writer(index)
+        writer.writerow(["archivo", "ip", "puerto", "url", "url_final", "codigo_http", "titulo"])
+        buffer = io.BytesIO()
+        # Las imágenes ya están comprimidas: se guardan sin recomprimir.
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+            for target in group["objetivos"]:
+                try:
+                    path, row = self._shot(directory, found, target)
+                except FileNotFoundError:
+                    continue
+                scheme = target["url"].split(":", 1)[0]
+                name = f"{target['ip'].replace(':', '_')}_{target['port']}_{scheme}{path.suffix.lower()}"
+                archive.write(path, name)
+                writer.writerow([report.csv_text(value) for value in (name, target["ip"], target["port"], target["url"],
+                                 row["final_url"], row["response_code"], row["title"])])
+            if not archive.namelist():
+                raise FileNotFoundError("Esta subred no tiene capturas")
+            archive.writestr("indice.csv", index.getvalue().encode("utf-8-sig"))
+        subnet = re.sub(r"[^0-9A-Za-z.]", "_", group["subred"])
+        return buffer.getvalue(), f"capturas_{subnet}.zip"
 
     def logs(self, job_id):
         with self.lock:
@@ -479,9 +531,23 @@ class PortalHandler(BaseHTTPRequestHandler):
                 if len(parts) == 4 and parts[3] == "logs":
                     self.json({"text": store.logs(job_id)})
                     return
+                if len(parts) == 4 and parts[3] == "inventory":
+                    self.json(store.inventory(job_id))
+                    return
+                if len(parts) == 5 and parts[3] == "download" and parts[4] in ("inventory-csv", "inventory-json"):
+                    data = store.inventory(job_id)
+                    csv = parts[4] == "inventory-csv"
+                    content = inventory.csv_bytes(data) if csv else json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+                    self.send_bytes(200, content, "text/csv; charset=utf-8" if csv else "application/json; charset=utf-8",
+                                    "inventario.csv" if csv else "inventario.json")
+                    return
                 if len(parts) == 6 and parts[3] == "image":
                     image = store.image(job_id, int(parts[4]), int(parts[5]))
                     self.send_bytes(200, image.read_bytes(), mimetypes.guess_type(image.name)[0] or "image/png")
+                    return
+                if len(parts) == 6 and parts[3] == "download" and parts[4] == "captures":
+                    content, filename = store.group_zip(job_id, int(parts[5]))
+                    self.send_bytes(200, content, "application/zip", filename)
                     return
                 if len(parts) == 5 and parts[3] == "download" and parts[4] in ("csv", "json"):
                     with store.lock:

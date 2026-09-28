@@ -2,6 +2,8 @@
 
 Portal local para subir resultados de nmap, lanzar capturas con gowitness y consultar las imágenes por rango del cliente y subred. Por defecto: **80/TCP abierto → HTTP**, **443/TCP abierto → HTTPS**. También conserva sus comandos de consola.
 
+La pestaña **Activos** conserva el inventario de hosts y puertos TCP/UDP abiertos de los archivos importados, incluidos servicios sin web como SSH, SMB, LDAP y DNS. Se puede consultar y exportar antes de lanzar capturas.
+
 El selector de la esquina superior derecha alterna entre modo claro y oscuro. Recuerda la elección en este navegador; si no hay una preferencia guardada, sigue el tema del sistema. El paquete y los comandos de consola siguen siendo `nmapshot`.
 
 La interfaz utiliza la paleta de SilentForce: negro, gris y rojo, con adaptación al modo claro. El diseño prioriza las capturas, con IP y puerto encima de cada imagen y agrupación por subred. Las decisiones visuales y la aplicación de `avoid-ai-design` están documentadas en `DESIGN.md` y `design/AUDIT.md`.
@@ -22,6 +24,41 @@ Ejecutar los comandos desde la carpeta del proyecto. En Kali usar `python3` en l
 & "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe" -m nmapshot --help
 ```
 
+## Instalación desde cero
+
+No hace falta entorno virtual ni `pip install`: Dedalo solo usa la librería estándar de Python. gowitness no es un paquete de Python, sino un ejecutable independiente que Dedalo lanza como proceso externo. Nmap todavía no es necesario, porque el portal lee archivos de Nmap ya generados.
+
+### Windows
+
+1. Instala **Python 3.12 o superior** desde [python.org/downloads](https://www.python.org/downloads/). En el instalador, marca **Add python.exe to PATH**. Abre una terminal nueva y comprueba la versión con `python --version`.
+2. Asegúrate de tener **Chrome o Edge**. Edge viene con Windows.
+3. Clona el repositorio o copia su carpeta sin `portal_datos/`, `pruebas_locales/` ni `salida/`, que contienen datos de ejecuciones.
+4. Descarga **gowitness 3.2.0** para `windows-amd64` desde las [versiones oficiales](https://github.com/sensepost/gowitness/releases). Renombra el archivo a `gowitness.exe` y colócalo en `bin\` dentro del proyecto; crea la carpeta si no existe:
+
+   ```text
+   herramienta_nmaps\
+     bin\gowitness.exe
+     nmapshot\
+     iniciar_portal.cmd
+   ```
+
+5. Desde la carpeta del proyecto, ejecuta las pruebas. Deben terminar en `OK`. No usan gowitness ni la red:
+
+   ```powershell
+   python -m unittest discover -s tests
+   ```
+
+6. Haz doble clic en `iniciar_portal.cmd`. Para una primera prueba sin conectar con ninguna red, sube `ejemplos/inventario.xml` y revisa la pestaña **Activos** sin iniciar capturas.
+7. Opcional: comprueba capturas reales con gowitness y el navegador contra dos webs locales que levanta la propia prueba:
+
+   ```powershell
+   python -m tests.integration_local
+   ```
+
+### Kali / Linux
+
+Los mismos pasos con estas diferencias: usa `python3`, descarga el binario `linux-amd64` como `bin/gowitness` y dale permiso con `chmod +x bin/gowitness`, instala Chromium con `sudo apt install chromium` y arranca el portal con `python3 -m nmapshot web --abrir`. En Linux todavía no se ha hecho una prueba real completa.
+
 ## Operar desde la web
 
 En Windows puedes hacer doble clic en **`iniciar_portal.cmd`**. Abre el navegador y mantiene el servidor en una terminal; déjala abierta mientras trabajas. No requiere instalar paquetes con pip ni Node.
@@ -40,7 +77,8 @@ El portal está en [http://127.0.0.1:8787](http://127.0.0.1:8787). Desde ahí:
 4. Si hace falta, ajusta puertos adicionales, concurrencia, timeout, espera, formato o página completa.
 5. Pulsa **Revisar objetivos**: se muestra el reparto por rango y subred sin hacer conexiones a los objetivos.
 6. Pulsa **Iniciar captura**. Los trabajos se encolan y se ejecutan de uno en uno.
-7. Consulta las imágenes y filtra por rango, subred, estado o texto. Puedes ampliar y descargar imágenes, descargar CSV/JSON o consultar el registro sin salir del portal.
+7. Consulta las imágenes y filtra por rango, subred, estado o texto. Puedes ampliar y descargar imágenes, descargar CSV/JSON o consultar el registro sin salir del portal. **Descargar capturas** en la cabecera de cada subred descarga un ZIP con todas sus capturas, aunque haya filtros activos. Cada imagen se llama `IP_PUERTO_ESQUEMA` (por ejemplo `10.10.5.1_443_https.jpeg`) y el `indice.csv` del ZIP recoge su URL, URL final, código HTTP y título.
+8. En **Activos**, busca por IP, nombre, puerto, servicio o producto y filtra por rango, subred o servicio. **Inventario CSV** y **Inventario JSON** descargan el inventario completo de la ejecución, independientemente de los filtros. Los enlaces de captura permiten abrir la imagen del servicio cuando está disponible.
 
 El portal recibe archivos y **lanza las capturas**, no ejecuta un nuevo escaneo nmap. Las conexiones salen del equipo donde corre el servidor. Cerrar la pestaña no detiene las capturas.
 
@@ -73,6 +111,20 @@ portal_datos/
 ```
 
 Los resultados anteriores de consola siguen accesibles con `ver`; no se importan automáticamente en el historial web.
+
+## Inventario de activos y servicios
+
+Cada ejecución web guarda `inventario.json` junto a `trabajo.json`. Los hosts sin puertos web y los hosts activos sin puertos abiertos también se conservan. Las ejecuciones antiguas del portal reconstruyen el inventario al consultarlo, usando sus copias guardadas de Nmap y sus rangos; si faltan esas entradas se muestra el error y siguen disponibles las capturas.
+
+Se incluyen únicamente puertos con estado `open`, diferenciando TCP y UDP aunque compartan número. `closed`, `filtered` y `open|filtered` no se cuentan como servicios abiertos. Solo los servicios TCP seleccionados se envían al motor de capturas.
+
+XML conserva producto, versión, información adicional, CPE y el identificador y texto `output` de los scripts NSE de host o puerto. Dedalo muestra esos datos en **Datos Nmap**, sin ejecutar scripts nuevos ni interpretar sus resultados como instrucciones. Los formatos normal y grepable conservan el texto de producto/versión disponible, sin intentar separar campos que no están estructurados. Los archivos originales se guardan para conservar la información completa del escaneo.
+
+Si varios archivos describen la misma IP y puerto/protocolo, se unen sus puertos y prevalece la última descripción de ese servicio en el orden de carga. Para conservar todos los metadatos estructurados de un servicio, carga su XML en último lugar. Las distintas ejecuciones mantienen inventarios independientes.
+
+El inventario admite hasta 100.000 activos o servicios por ejecución. Las tablas muestran inicialmente 60 filas y permiten cargar más. El CSV incluye una fila por servicio y una fila vacía de servicio para los hosts sin puertos abiertos; los resultados de scripts se conservan en el JSON. El CSV neutraliza campos que una hoja de cálculo podría interpretar como fórmulas.
+
+Puedes subir `ejemplos/inventario.xml` para revisar cuatro activos de documentación con servicios HTTP/HTTPS, SSH, LDAP, SMB, Kerberos y DNS, incluyendo TCP, UDP e IPv6. Basta con revisar la importación; no es necesario iniciar capturas contra esas direcciones de ejemplo.
 
 ## Uso desde consola
 

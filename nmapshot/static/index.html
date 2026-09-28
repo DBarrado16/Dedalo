@@ -15,14 +15,16 @@
   <header class="page-header"><div><h1 id="page-title">Capturas web</h1><p id="page-description">Inspecciona los servicios web encontrados por Nmap.</p></div><span id="job-state" class="badge" hidden></span></header>
   <div id="notice" class="notice" role="status" hidden></div>
   <section class="stats" aria-label="Resumen">
+    <div><strong id="stat-assets">0</strong><span>Activos</span></div>
+    <div><strong id="stat-services">0</strong><span>Servicios abiertos</span></div>
     <div><strong id="stat-targets">0</strong><span>Objetivos web</span></div>
     <div><strong id="stat-shots">0</strong><span>Con captura</span></div>
-    <div><strong id="stat-subnets">0</strong><span>Subredes</span></div>
+    <div><strong id="stat-subnets">0</strong><span>Subredes web</span></div>
     <div><strong id="stat-failures">0</strong><span>Sin captura</span></div>
   </section>
   <section id="empty-state" class="empty-state">
     <h2>Empieza con un archivo de Nmap</h2>
-    <p>Dedalo captura los servicios HTTP y HTTPS del archivo y organiza las imágenes por IP y subred. Antes de conectar podrás revisar los objetivos.</p>
+    <p>Dedalo muestra los activos y servicios de tus archivos de Nmap y captura sus webs HTTP y HTTPS. Antes de conectar podrás revisar los objetivos.</p>
     <button class="primary new-job">Seleccionar archivos de Nmap</button>
     <p class="hint">Formatos admitidos: XML, grepable y texto.</p>
   </section>
@@ -34,12 +36,14 @@
       <button id="delete-job" class="secondary danger">Borrar ejecución</button>
     </div></div>
     <progress id="progress" max="100" value="0" aria-label="Progreso de captura" hidden></progress>
-    <div class="tabs" role="tablist" aria-label="Vista de resultados"><button role="tab" aria-selected="true" data-tab="gallery">Capturas</button><button role="tab" aria-selected="false" data-tab="targets">Objetivos</button><button role="tab" aria-selected="false" data-tab="logs">Registro</button><span id="result-count"></span></div>
+    <div class="tabs" role="tablist" aria-label="Vista de resultados"><button role="tab" aria-selected="false" data-tab="inventory">Activos</button><button role="tab" aria-selected="true" data-tab="gallery">Capturas</button><button role="tab" aria-selected="false" data-tab="targets">Objetivos web</button><button role="tab" aria-selected="false" data-tab="logs">Registro</button><span id="result-count"></span></div>
+    <div id="inventory-tools" class="inventory-tools" hidden><p>Puertos TCP y UDP abiertos según los Nmap importados. Los datos disponibles dependen del escaneo original.</p><div class="actions"><a id="inventory-csv" class="secondary">Inventario CSV</a><a id="inventory-json" class="secondary">Inventario JSON</a></div></div>
     <div id="filters" class="filters">
       <label class="search">Buscar<input id="search" type="search" placeholder="IP, URL o título" aria-label="Buscar IP, URL o título"></label>
       <label>Rango<select id="range-filter" aria-label="Filtrar por rango"><option value="">Todos los rangos</option></select></label>
       <label>Subred<select id="subnet-filter" aria-label="Filtrar por subred"><option value="">Todas las subredes</option></select></label>
-      <label>Resultado<select id="status-filter" aria-label="Filtrar por estado"><option value="">Todos los estados</option><option value="capturada">Con captura</option><option value="sin_captura">Sin captura</option><option value="pendiente">Pendientes</option></select></label>
+      <label id="status-filter-label">Resultado<select id="status-filter" aria-label="Filtrar por estado"><option value="">Todos los estados</option><option value="capturada">Con captura</option><option value="sin_captura">Sin captura</option><option value="pendiente">Pendientes</option></select></label>
+      <label id="service-filter-label" hidden>Servicio<select id="service-filter" aria-label="Filtrar por servicio"><option value="">Todos los servicios</option></select></label>
     </div>
     <div id="results" aria-live="polite"></div><button id="more" class="secondary more" hidden>Mostrar más resultados</button>
     <pre id="logs" tabindex="0" hidden></pre>

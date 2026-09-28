@@ -1,7 +1,7 @@
 """Lectura de la salida de nmap: XML (-oX), grepable (-oG) y normal (-oN).
 
 Todas las variantes se reducen a lo mismo: por cada host, la lista de puertos
-TCP abiertos con el servicio que nmap le haya puesto. El formato se detecta
+TCP y UDP abiertos con el servicio que nmap le haya puesto. El formato se detecta
 por el contenido, no por la extensión.
 """
 
@@ -19,6 +19,10 @@ class Port:
     service: str = ""
     tunnel: str = ""  # "ssl" cuando nmap detecta TLS delante del servicio
     product: str = ""
+    version: str = ""
+    extrainfo: str = ""
+    cpe: list[str] = field(default_factory=list)
+    scripts: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -26,6 +30,13 @@ class Host:
     ip: str
     hostnames: list[str] = field(default_factory=list)
     ports: dict[int, Port] = field(default_factory=dict)
+    udp_ports: dict[int, Port] = field(default_factory=dict)
+    scripts: list[dict] = field(default_factory=list)
+
+
+def _scripts(node):
+    return [{"id": item.get("id", ""), "output": item.get("output", "")}
+            for item in node.findall("script")]
 
 
 def parse_file(path: str) -> list[Host]:
@@ -88,24 +99,31 @@ def _parse_xml(text: str) -> list[Host]:
             continue
 
         host = _host(hosts, ip)
+        host.scripts = _scripts(node.find("hostscript")) if node.find("hostscript") is not None else []
         for hn in node.findall("hostnames/hostname"):
             name = hn.get("name")
             if name and name not in host.hostnames:
                 host.hostnames.append(name)
 
         for p in node.findall("ports/port"):
-            if p.get("protocol") != "tcp":
+            protocol = p.get("protocol")
+            if protocol not in ("tcp", "udp"):
                 continue
             state = p.find("state")
             if state is None or state.get("state") != "open":
                 continue
             svc = p.find("service")
             number = _port_number(p.get("portid", ""))
-            host.ports[number] = Port(
+            ports = host.ports if protocol == "tcp" else host.udp_ports
+            ports[number] = Port(
                 number=number,
                 service=(svc.get("name", "") if svc is not None else ""),
                 tunnel=(svc.get("tunnel", "") if svc is not None else ""),
                 product=(svc.get("product", "") if svc is not None else ""),
+                version=(svc.get("version", "") if svc is not None else ""),
+                extrainfo=(svc.get("extrainfo", "") if svc is not None else ""),
+                cpe=([c.text for c in svc.findall("cpe") if c.text] if svc is not None else []),
+                scripts=_scripts(p),
             )
 
     return list(hosts.values())
@@ -136,14 +154,15 @@ def _parse_grepable(text: str) -> list[Host]:
             continue
         for entry in pm.group(1).split(", "):
             parts = entry.strip().split("/")
-            if len(parts) < 7 or parts[1] != "open" or parts[2] != "tcp":
+            if len(parts) < 7 or parts[1] != "open" or parts[2] not in ("tcp", "udp"):
                 continue
             service = parts[4]
             tunnel = ""
             if "|" in service:  # ssl|http
                 tunnel, service = service.split("|", 1)
             number = _port_number(parts[0])
-            host.ports[number] = Port(number=number, service=service, tunnel=tunnel, product=parts[6])
+            ports = host.ports if parts[2] == "tcp" else host.udp_ports
+            ports[number] = Port(number=number, service=service, tunnel=tunnel, product=parts[6])
 
     return list(hosts.values())
 
@@ -151,7 +170,7 @@ def _parse_grepable(text: str) -> list[Host]:
 # Nmap scan report for web01.local (10.0.0.5)  /  Nmap scan report for 10.0.0.5
 _NORMAL_HOST = re.compile(r"^Nmap scan report for (?:(\S+) \(([^)]+)\)|(\S+))\s*$")
 # 443/tcp open  ssl/http  nginx 1.18
-_NORMAL_PORT = re.compile(r"^(\d+)/tcp\s+open\s+(\S+)?\s*(.*)$")
+_NORMAL_PORT = re.compile(r"^(\d+)/(tcp|udp)\s+open\s+(\S+)?\s*(.*)$")
 
 
 def _parse_normal(text: str) -> list[Host]:
@@ -176,19 +195,20 @@ def _parse_normal(text: str) -> list[Host]:
         if current is None:
             continue
         if line.startswith("Host is down"):
-            current.ports.clear()
+            hosts.pop(current.ip, None)
             current = None
             continue
         pm = _NORMAL_PORT.match(line)
         if not pm:
             continue
-        service = pm.group(2) or ""
+        service = pm.group(3) or ""
         tunnel = ""
         if "/" in service:  # ssl/http
             tunnel, service = service.split("/", 1)
         number = _port_number(pm.group(1))
-        current.ports[number] = Port(
-            number=number, service=service.rstrip("?"), tunnel=tunnel, product=pm.group(3).strip()
+        ports = current.ports if pm.group(2) == "tcp" else current.udp_ports
+        ports[number] = Port(
+            number=number, service=service.rstrip("?"), tunnel=tunnel, product=pm.group(4).strip()
         )
 
     return list(hosts.values())
@@ -204,4 +224,8 @@ def merge(host_lists: list[list[Host]]) -> list[Host]:
                 if name not in target.hostnames:
                     target.hostnames.append(name)
             target.ports.update(h.ports)
+            target.udp_ports.update(h.udp_ports)
+            for script in h.scripts:
+                if script not in target.scripts:
+                    target.scripts.append(script)
     return list(hosts.values())

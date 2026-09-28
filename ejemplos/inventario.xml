@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Ejemplo sin conexiones: direcciones reservadas para documentación. -->
+<nmaprun>
+  <host>
+    <status state="up"/><address addr="192.0.2.10" addrtype="ipv4"/>
+    <hostnames><hostname name="web.ejemplo.test"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="22"><state state="open"/><service name="ssh" product="OpenSSH" version="9.6" extrainfo="Ubuntu Linux"><cpe>cpe:/a:openbsd:openssh:9.6</cpe></service><script id="ssh-hostkey" output="Clave pública de ejemplo"/></port>
+      <port protocol="tcp" portid="80"><state state="open"/><service name="http" product="nginx" version="1.24.0"/></port>
+      <port protocol="tcp" portid="443"><state state="open"/><service name="http" tunnel="ssl" product="nginx" version="1.24.0"/></port>
+    </ports>
+  </host>
+  <host>
+    <status state="up"/><address addr="192.0.2.20" addrtype="ipv4"/>
+    <hostnames><hostname name="directorio.ejemplo.test"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="53"><state state="open"/><service name="domain"/></port>
+      <port protocol="udp" portid="53"><state state="open"/><service name="domain"/></port>
+      <port protocol="tcp" portid="88"><state state="open"/><service name="kerberos-sec"/></port>
+      <port protocol="tcp" portid="389"><state state="open"/><service name="ldap" product="Microsoft Windows Active Directory LDAP"/></port>
+      <port protocol="tcp" portid="445"><state state="open"/><service name="microsoft-ds"/></port>
+      <port protocol="udp" portid="161"><state state="open|filtered"/><service name="snmp"/></port>
+    </ports>
+    <hostscript><script id="smb-os-discovery" output="Nombre de equipo: directorio"/></hostscript>
+  </host>
+  <host><status state="up"/><address addr="192.0.2.30" addrtype="ipv4"/></host>
+  <host><status state="up"/><address addr="2001:db8::1" addrtype="ipv6"/><ports><port protocol="tcp" portid="22"><state state="open"/><service name="ssh"/></port></ports></host>
+  <host><status state="down"/><address addr="192.0.2.40" addrtype="ipv4"/></host>
+</nmaprun>

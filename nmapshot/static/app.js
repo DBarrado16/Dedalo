@@ -31,6 +31,7 @@ const activeStates = new Set(["en_cola","en_curso","deteniendo"]);
 let token = "", currentId = "", current = null, activeTab = "gallery", files = [], shown = 60, engine = {};
 let renderKey = "", polling = false, mutating = false;
 let viewVersion = 0, deletionTarget = null;
+let inventory = null, inventoryError = "";
 const dateText = (value) => new Date(value).toLocaleString("es-ES", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
 const rangeText = (value) => value === "fuera_de_rango" ? "Fuera de rango" : value;
 const badgeClass = (state) => state === "completa" || state === "capturada" ? "complete" : activeStates.has(state) ? "running" : ["error","parcial","sin_captura","interrumpida"].includes(state) ? "error" : "";
@@ -53,16 +54,29 @@ function updateJobs(jobs) {
 async function selectJob(id) {
   const version = ++viewVersion;
   currentId = id;
+  inventory = null; inventoryError = "";
   location.hash = id;
   shown = 60;
   renderKey = "";
-  $("range-filter").value = $("subnet-filter").value = $("status-filter").value = $("search").value = "";
+  $("range-filter").value = $("subnet-filter").value = $("status-filter").value = $("service-filter").value = $("search").value = "";
   const detail = await request("/api/jobs/" + id);
   if (id !== currentId || version !== viewVersion) return;
   current = detail;
-  activeTab = detail.estado === "preparada" ? "targets" : "gallery";
+  activeTab = !detail.total ? "inventory" : detail.estado === "preparada" ? "targets" : "gallery";
   render();
+  await loadInventory(id, version);
   await poll();
+}
+async function loadInventory(id, version) {
+  try {
+    const data = await request("/api/jobs/" + id + "/inventory");
+    if (id !== currentId || version !== viewVersion) return;
+    inventory = data; inventoryError = "";
+  } catch (error) {
+    if (id !== currentId || version !== viewVersion) return;
+    inventoryError = error.message;
+  }
+  render();
 }
 function selectOptions(element, values, placeholder, display = (v) => v) {
   const selected = element.value;
@@ -73,8 +87,10 @@ function selectOptions(element, values, placeholder, display = (v) => v) {
   }
 }
 function updateFilters() {
-  selectOptions($("range-filter"), current.grupos.map(g => g.rango), "Todos los rangos", rangeText);
-  selectOptions($("subnet-filter"), current.grupos.filter(g => !$("range-filter").value || g.rango === $("range-filter").value).map(g => g.subred), "Todas las subredes");
+  const groups = activeTab === "inventory" ? inventory?.activos || [] : current.grupos;
+  selectOptions($("range-filter"), groups.map(g => g.rango), "Todos los rangos", rangeText);
+  selectOptions($("subnet-filter"), groups.filter(g => !$("range-filter").value || g.rango === $("range-filter").value).map(g => g.subred), "Todas las subredes");
+  if (activeTab === "inventory") selectOptions($("service-filter"), (inventory?.activos || []).flatMap(a => a.servicios.map(s => s.servicio || "Sin identificar")).sort(), "Todos los servicios");
 }
 function rows() {
   if (!current) return [];
@@ -89,7 +105,7 @@ function render() {
     $("page-title").textContent = "Capturas web";
     $("page-description").textContent = "Inspecciona los servicios web encontrados por Nmap.";
     $("job-state").hidden = true;
-    for (const id of ["stat-targets", "stat-shots", "stat-subnets", "stat-failures"]) $(id).textContent = "0";
+    for (const id of ["stat-assets", "stat-services", "stat-targets", "stat-shots", "stat-subnets", "stat-failures"]) $(id).textContent = "0";
     $("results").innerHTML = "";
     $("logs").textContent = "";
     renderKey = "";
@@ -103,6 +119,8 @@ function render() {
   $("job-state").className = "badge " + badgeClass(current.estado);
   $("job-state").textContent = labels[current.estado] || current.estado;
   $("stat-targets").textContent = current.total.toLocaleString("es-ES");
+  $("stat-assets").textContent = inventory ? inventory.activos_total.toLocaleString("es-ES") : "—";
+  $("stat-services").textContent = inventory ? inventory.servicios_total.toLocaleString("es-ES") : "—";
   $("stat-shots").textContent = current.capturas.toLocaleString("es-ES");
   $("stat-subnets").textContent = current.subredes;
   $("stat-failures").textContent = current.sin_captura;
@@ -125,7 +143,7 @@ function render() {
   let description = `${current.capturas} imágenes disponibles. ${current.sin_captura} objetivos sin captura.`;
   if (current.estado === "preparada") {
     title = current.total ? "Objetivos listos para revisar" : "No se han encontrado servicios web";
-    description = current.total ? "Se capturarán únicamente las IP y puertos seleccionados de tus archivos." : "Revisa los puertos del nmap o prepara otra ejecución con puertos adicionales.";
+    description = current.total ? "Se capturarán únicamente las IP y puertos seleccionados de tus archivos." : "Puedes consultar los activos y sus servicios en la pestaña Activos. No hay objetivos web que capturar con estas opciones.";
   } else if (current.estado === "en_cola") {
     title = "En cola";
     description = "La captura comenzará cuando termine el trabajo anterior.";
@@ -149,10 +167,26 @@ function render() {
   $("filters").hidden = activeTab === "logs";
   $("results").hidden = activeTab === "logs";
   $("logs").hidden = activeTab !== "logs";
+  $("inventory-tools").hidden = activeTab !== "inventory";
+  $("status-filter-label").hidden = activeTab === "inventory";
+  $("service-filter-label").hidden = activeTab !== "inventory";
+  $("search").placeholder = activeTab === "inventory" ? "IP, nombre, puerto o producto" : "IP, URL o título";
+  $("search").setAttribute("aria-label", activeTab === "inventory" ? "Buscar IP, nombre, puerto o producto" : "Buscar IP, URL o título");
+  for (const type of ["csv", "json"]) {
+    $("inventory-" + type).href = "/api/jobs/" + currentId + "/download/inventory-" + type;
+    $("inventory-" + type).hidden = !inventory;
+  }
   renderResults();
+}
+function networkActions(items) {
+  // El ZIP incluye todas las capturas de la subred, no solo las filtradas.
+  const gi = Number(items[0].key.split("-")[0]), total = current.grupos[gi].capturas;
+  const zip = total ? `<a class="secondary" href="/api/jobs/${currentId}/download/captures/${gi}" download>Descargar capturas (${total})</a>` : "";
+  return `<div class="network-actions"><span class="network-count">${items.length} objetivos mostrados</span>${zip}</div>`;
 }
 function renderResults() {
   if (!current || activeTab === "logs") { $("more").hidden = true; return; }
+  if (activeTab === "inventory") { renderInventory(); return; }
   const filtered = rows(), visible = filtered.slice(0, shown);
   $("result-count").textContent = filtered.length + " objetivo(s)";
   $("more").hidden = filtered.length <= shown;
@@ -175,11 +209,48 @@ function renderResults() {
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key).push(row);
   }
-  $("results").innerHTML = [...grouped.values()].map(items => `<section class="network-section"><header class="network-heading"><div><h3>Subred <span>${escapeHtml(items[0].subnet)}</span></h3><p>${items[0].range === "fuera_de_rango" ? "Sin rango asignado" : "Rango " + escapeHtml(items[0].range)}</p></div><span class="network-count">${items.length} objetivos mostrados</span></header><div class="card-grid">${items.map(row => `<article class="capture-card">
+  $("results").innerHTML = [...grouped.values()].map(items => `<section class="network-section"><header class="network-heading"><div><h3>Subred <span>${escapeHtml(items[0].subnet)}</span></h3><p>${items[0].range === "fuera_de_rango" ? "Sin rango asignado" : "Rango " + escapeHtml(items[0].range)}</p></div>${networkActions(items)}</header><div class="card-grid">${items.map(row => `<article class="capture-card">
     <div class="card-top"><strong>${escapeHtml(row.ip)}</strong><span class="protocol">${row.url.startsWith("https:") ? "HTTPS" : "HTTP"} :${row.puerto}</span></div>
     ${row.imagen ? `<button class="shot-button" data-image="${row.key}" aria-label="Ampliar captura de ${escapeHtml(row.ip)} puerto ${row.puerto}"><img src="${row.imagen}" alt="Captura de ${escapeHtml(row.url)}" loading="lazy"><span class="shot-hint">Ampliar captura</span></button>` : `<div class="shot-placeholder"><span>${labels[row.estado] || row.estado}</span>${row.error ? `<p class="capture-error">${escapeHtml(row.error)}</p>` : ""}</div>`}
     <div class="card-info"><p class="card-title" title="${escapeHtml(row.titulo)}">${escapeHtml(row.titulo || (row.imagen ? "Página sin título" : row.estado === "sin_captura" ? "No se pudo obtener la imagen" : "Pendiente de captura"))}</p><div class="card-bottom"><p class="card-url">${escapeHtml(row.url)}</p>${row.codigo ? `<span class="response-code">HTTP ${row.codigo}</span>` : ""}</div></div>
     </article>`).join("")}</div></section>`).join("");
+}
+function renderInventory() {
+  if (!inventory) {
+    $("more").hidden = true;
+    $("result-count").textContent = "";
+    $("results").innerHTML = `<div class="empty-results">${escapeHtml(inventoryError || "Cargando inventario…")}${inventoryError ? '<p><button class="secondary" data-retry-inventory>Reintentar</button></p>' : ""}</div>`;
+    renderKey = "";
+    return;
+  }
+  const query = $("search").value.toLowerCase().trim(), range = $("range-filter").value, subnet = $("subnet-filter").value, service = $("service-filter").value;
+  const captures = new Map(current.grupos.flatMap((g, gi) => g.objetivos.map((t, ti) => [t.ip + ":" + t.puerto, {...t, key:gi+"-"+ti}])));
+  const filtered = inventory.activos.flatMap(asset => (asset.servicios.length ? asset.servicios : [null]).map(port => ({asset, port})))
+    .filter(({asset, port}) => (!range || asset.rango === range) && (!subnet || asset.subred === subnet) && (!service || (port && (port.servicio || "Sin identificar") === service)) &&
+      (!query || [asset.ip, ...asset.nombres, asset.subred, port?.puerto, port?.protocolo, port?.servicio, port?.producto, port?.version, port?.detalle, ...(port?.cpe || [])].join(" ").toLowerCase().includes(query)));
+  const visible = filtered.slice(0, shown);
+  $("result-count").textContent = `${new Set(filtered.map(row => row.asset.ip)).size} activos / ${filtered.filter(row => row.port).length} servicios`;
+  $("more").hidden = filtered.length <= shown;
+  $("more").textContent = "Mostrar más (" + Math.max(0, filtered.length - shown) + " restantes)";
+  const key = JSON.stringify(["inventory", visible, currentId, [...captures.values()].map(t => [t.key, t.imagen, t.estado])]);
+  if (key === renderKey) return;
+  renderKey = key;
+  if (!filtered.length) {
+    $("results").innerHTML = '<div class="empty-results">No hay activos o servicios que coincidan con estos filtros.</div>';
+    return;
+  }
+  const grouped = new Map();
+  for (const row of visible) {
+    const groupKey = row.asset.rango + "|" + row.asset.subred;
+    if (!grouped.has(groupKey)) grouped.set(groupKey, []);
+    grouped.get(groupKey).push(row);
+  }
+  $("results").innerHTML = [...grouped.values()].map(items => `<section class="network-section"><header class="network-heading"><div><h3>Subred <span>${escapeHtml(items[0].asset.subred)}</span></h3><p>${escapeHtml(rangeText(items[0].asset.rango))}</p></div></header><div class="table-wrap"><table class="inventory-table"><thead><tr><th>IP / Nombre</th><th>Puerto</th><th>Servicio</th><th>Producto / Versión</th><th>Captura web</th></tr></thead><tbody>${items.map(({asset, port}) => {
+    const capture = port?.protocolo === "tcp" ? captures.get(asset.ip + ":" + port.puerto) : null;
+    const scripts = [...asset.scripts, ...(port?.scripts || [])];
+    const details = [port?.detalle, ...(port?.cpe || []), ...scripts.map(s => s.id + ": " + s.output)].filter(Boolean).join("\n\n");
+    return `<tr><td>${escapeHtml(asset.ip)}${asset.nombres.length ? `<small>${escapeHtml(asset.nombres.join(", "))}</small>` : ""}</td><td>${port ? port.puerto + "/" + escapeHtml(port.protocolo.toUpperCase()) : "—"}</td><td>${port ? escapeHtml((port.tunel ? port.tunel + "/" : "") + (port.servicio || "Sin identificar")) : "Sin puertos abiertos"}</td><td class="service-data">${escapeHtml([port?.producto, port?.version].filter(Boolean).join(" ") || "—")}${details ? `<details><summary>Datos Nmap</summary><pre>${escapeHtml(details)}</pre></details>` : ""}</td><td>${capture?.imagen ? `<button class="secondary" data-image="${capture.key}">Ver captura</button>` : capture ? escapeHtml(labels[capture.estado] || capture.estado) : "—"}</td></tr>`;
+  }).join("")}</tbody></table></div></section>`).join("");
 }
 async function loadLogs() {
   const id = currentId;
@@ -263,8 +334,8 @@ $("upload-form").addEventListener("submit", async event => {
   finally { button.disabled = false; button.textContent = "Revisar objetivos"; }
 });
 $("jobs").addEventListener("click", event => { const button = event.target.closest("[data-id]"); if (button) selectJob(button.dataset.id).catch(error => notice(error.message)); });
-for (const id of ["range-filter","subnet-filter","status-filter","search"]) $(id).addEventListener(id === "search" ? "input" : "change", () => { shown=60; updateFilters(); renderResults(); });
-document.querySelectorAll("[data-tab]").forEach(button => button.addEventListener("click", () => { activeTab=button.dataset.tab; render(); if (activeTab === "logs") loadLogs().catch(error=>notice(error.message)); }));
+for (const id of ["range-filter","subnet-filter","status-filter","service-filter","search"]) $(id).addEventListener(id === "search" ? "input" : "change", () => { shown=60; updateFilters(); renderResults(); });
+document.querySelectorAll("[data-tab]").forEach(button => button.addEventListener("click", () => { activeTab=button.dataset.tab; shown=60; render(); if (activeTab === "logs") loadLogs().catch(error=>notice(error.message)); }));
 $("more").addEventListener("click", () => { shown += 60; renderResults(); });
 async function action(type) {
   if (mutating) return;
@@ -318,6 +389,7 @@ $("confirm-delete").addEventListener("click", async () => {
   }
 });
 $("results").addEventListener("click", event => {
+  if (event.target.closest("[data-retry-inventory]")) { loadInventory(currentId, viewVersion); return; }
   const button = event.target.closest("[data-image]");
   if (!button) return;
   const [gi,ti] = button.dataset.image.split("-").map(Number), group=current.grupos[gi], target=group.objetivos[ti];

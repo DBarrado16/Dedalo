@@ -127,6 +127,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--action); }
 .network-heading h3 span { font: 600 16px var(--font-data); margin-left: 6px; }
 .network-heading p { color: var(--muted); font-size: 11px; margin: 4px 0 0; }
 .network-count { color: var(--muted); font-size: 12px; flex-shrink: 0; }
+.network-actions { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+.network-actions .secondary { font-size: 12px; min-height: 32px; padding: 5px 10px; }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(min(290px,100%),1fr)); gap: 28px 22px; }
 .capture-card { min-width: 0; }
 .card-top { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 5px 10px; margin-bottom: 10px; }
@@ -146,6 +148,14 @@ input:focus, select:focus, textarea:focus { border-color: var(--action); }
 .card-url { font-family: var(--font-data); font-size: 13px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; margin: 0; }
 .response-code { flex-shrink: 0; }
 .table-wrap { overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; }
+.inventory-tools { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
+.inventory-tools p { font-size: 12px; color: var(--muted); margin: 0; flex: 1 1 260px; }
+.inventory-table td { vertical-align: top; }
+.inventory-table td small { display: block; color: var(--muted); margin-top: 5px; white-space: normal; overflow-wrap: anywhere; max-width: 260px; }
+.inventory-table .service-data { white-space: normal; min-width: 160px; max-width: 350px; overflow-wrap: anywhere; }
+.inventory-table details { margin-top: 8px; font-family: var(--font-ui); }
+.inventory-table summary { cursor: pointer; color: var(--link); }
+.inventory-table pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--font-data); max-height: 220px; overflow: auto; }
 table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
 th { font-weight: 600; font-size: 12px; background: var(--inset); color: var(--muted); }
 th, td { padding: 12px 16px; white-space: nowrap; }
@@ -232,8 +242,9 @@ input[type=checkbox] { accent-color: var(--action); width: 16px; height: 16px; }
   .runbar { flex-wrap: wrap; }
   .network-heading { align-items: flex-start; padding: 12px; flex-wrap: wrap; }
   .network-count { font-size: 11px; }
-  .tabs { gap: 22px; }
-  .tabs>span { font-size: 11px; }
+  .network-actions { width: 100%; justify-content: space-between; }
+  .tabs { flex-wrap: wrap; column-gap: 18px; row-gap: 0; }
+  .tabs>span { font-size: 11px; flex-basis: 100%; text-align: right; padding-bottom: 8px; }
   .filters { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
   .filters label:last-child { grid-column: 1/-1; }
   .filters select { font-size: 12px; padding-inline: 6px; }
