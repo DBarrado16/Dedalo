@@ -45,7 +45,7 @@ CREATE TABLE ejecucion (
   tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura')),
   origen_id    TEXT REFERENCES ejecucion(id),   -- captura -> importación de la que salen sus objetivos
   nombre       TEXT NOT NULL,
-  estado       TEXT NOT NULL,          -- estados de CONTRATOS.md 0.4
+  estado       TEXT NOT NULL CHECK (estado IN (...)),  -- los nueve estados de CONTRATOS.md 0.4
   opciones     TEXT NOT NULL DEFAULT '{}',      -- JSON: hilos, timeout, formato...
   creada       TEXT NOT NULL,
   iniciada     TEXT,
@@ -122,6 +122,8 @@ CREATE TABLE captura (
   UNIQUE (ejecucion_id, url)
 );
 ```
+
+La migración 1 añade índices para las búsquedas habituales: ejecuciones por auditoría, observaciones por servicio y por activo, y capturas por servicio. El esquema exacto está en `nmapshot/db.py`.
 
 La situación de alcance de un activo (en alcance, excluido o fuera) **no se guarda**: se calcula con las reglas vigentes. Así, cambiar el alcance nunca deja datos desactualizados.
 

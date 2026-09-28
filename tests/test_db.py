@@ -1,0 +1,83 @@
+import sqlite3
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from nmapshot import db
+
+TABLES = {"auditoria", "alcance", "ejecucion", "activo", "servicio", "observacion_activo",
+          "observacion", "evidencia", "captura"}
+
+
+class DatabaseTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.con = db.connect(self.temp.name)
+
+    def tearDown(self):
+        self.con.close()
+        self.temp.cleanup()
+
+    def audit(self, con=None):
+        con = con or self.con
+        with con:
+            con.execute("INSERT INTO auditoria (id, nombre, creada) VALUES ('a1', 'Cliente', '2026-09-28T00:00:00Z')")
+            con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, nombre, estado, creada) "
+                        "VALUES ('e1', 'a1', 'importacion', 'Nmap lunes', 'completa', '2026-09-28T00:00:00Z')")
+            asset = con.execute("INSERT INTO activo (auditoria_id, ip) VALUES ('a1', '10.10.5.3')").lastrowid
+            service = con.execute("INSERT INTO servicio (activo_id, protocolo, puerto) VALUES (?, 'tcp', 443)", (asset,)).lastrowid
+            con.execute("INSERT INTO observacion (ejecucion_id, servicio_id, nombre, producto) VALUES ('e1', ?, 'https', 'nginx')", (service,))
+        return asset, service
+
+    def test_creates_schema_with_current_version(self):
+        tables = {row[0] for row in self.con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        self.assertEqual(tables, TABLES)
+        self.assertEqual(self.con.execute("PRAGMA user_version").fetchone()[0], max(db.MIGRATIONS))
+        self.assertEqual(self.con.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+        self.assertEqual(self.con.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+
+    def test_reopening_keeps_data_and_does_not_migrate_again(self):
+        self.audit()
+        self.con.close()
+        self.con = db.connect(self.temp.name)
+        self.assertEqual(self.con.execute("SELECT producto FROM observacion").fetchone()[0], "nginx")
+
+    def test_rejects_invalid_values_and_broken_references(self):
+        asset, _ = self.audit()
+        invalid = [
+            ("INSERT INTO alcance (auditoria_id, tipo, cidr) VALUES ('a1', 'quizas', '10.0.0.0/8')", ()),
+            ("INSERT INTO servicio (activo_id, protocolo, puerto) VALUES (?, 'tcp', 70000)", (asset,)),
+            ("INSERT INTO servicio (activo_id, protocolo, puerto) VALUES (?, 'sctp', 80)", (asset,)),
+            ("INSERT INTO servicio (activo_id, protocolo, puerto) VALUES (?, 'tcp', 443)", (asset,)),
+            ("INSERT INTO activo (auditoria_id, ip) VALUES ('a1', '10.10.5.3')", ()),
+            ("INSERT INTO activo (auditoria_id, ip) VALUES ('no-existe', '10.10.5.4')", ()),
+            ("UPDATE ejecucion SET estado = 'terminada'", ()),
+        ]
+        for sql, parameters in invalid:
+            with self.subTest(sql=sql), self.assertRaises(sqlite3.IntegrityError):
+                with self.con:
+                    self.con.execute(sql, parameters)
+
+    def test_deleting_audit_removes_everything_it_owns(self):
+        self.audit()
+        with self.con:
+            self.con.execute("DELETE FROM auditoria WHERE id = 'a1'")
+        for table in TABLES:
+            with self.subTest(table=table):
+                self.assertEqual(self.con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0)
+
+    def test_failed_migration_is_rolled_back(self):
+        self.con.close()
+        broken = {**db.MIGRATIONS, 2: "CREATE TABLE nueva (a TEXT); ESTO NO ES SQL;"}
+        with patch.dict(db.MIGRATIONS, broken), self.assertRaises(sqlite3.Error):
+            db.connect(self.temp.name)
+        self.con = db.connect(self.temp.name)
+        self.assertEqual(self.con.execute("PRAGMA user_version").fetchone()[0], 1)
+        self.assertIsNone(self.con.execute("SELECT name FROM sqlite_master WHERE name = 'nueva'").fetchone())
+
+    def test_refuses_database_from_newer_version(self):
+        self.con.execute("PRAGMA user_version = 99")
+        self.con.close()
+        with self.assertRaisesRegex(ValueError, "más nueva"):
+            db.connect(self.temp.name)
+        self.con = sqlite3.connect(":memory:")  # tearDown cierra algo válido
