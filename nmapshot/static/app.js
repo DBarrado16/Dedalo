@@ -134,6 +134,8 @@ function render() {
   $("delete-job").title = running ? "Detén la ejecución y espera a que termine antes de borrarla" : "Borrar esta ejecución y sus archivos";
   $("start-job").hidden = current.estado !== "preparada";
   $("start-job").disabled = mutating || !current.total || !engine.ready;
+  $("start-job").title = !engine.ready ? "El motor de capturas no está disponible: " + engine.error
+    : !current.total ? "No hay puertos web que capturar en estos archivos (80/443 u otros configurados en las opciones)" : "";
   $("cancel-job").hidden = !running;
   $("cancel-job").disabled = mutating || current.estado === "deteniendo";
   $("cancel-job").textContent = current.estado === "en_cola" ? "Cancelar trabajo" : current.estado === "deteniendo" ? "Parada solicitada…" : "Detener tras esta subred";
