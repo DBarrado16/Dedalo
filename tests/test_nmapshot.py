@@ -260,3 +260,41 @@ class WorkflowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ManifestWriteTests(unittest.TestCase):
+    def test_manifest_is_replaced_while_the_portal_is_reading_it(self):
+        # En Windows, sustituir un archivo abierto por otro falla; el motor no debe caer por ello.
+        import threading
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report.save_manifest(root, {"version": 1, "grupos": [], "estado": "en_curso"})
+            reader = (root / report.MANIFEST).open(encoding="utf-8")
+            timer = threading.Timer(0.3, reader.close)
+            timer.start()
+            try:
+                report.save_manifest(root, {"version": 1, "grupos": [], "estado": "completa"})
+            finally:
+                timer.join()
+                reader.close()
+            self.assertEqual(report.load_manifest(root)["estado"], "completa")
+
+    def test_folder_resolved_with_long_path_prefix_is_still_inside(self):
+        # Windows puede resolver con \\?\ una carpeta que se está creando en ese momento.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            real = Path.resolve
+            prefixed = lambda self, strict=False: Path("\\\\?\\" + str(real(self))) if self.name == "b_24" else real(self)
+            with patch.object(Path, "resolve", prefixed):
+                self.assertEqual(report.inside(root, "a_17/b_24"), real(root) / "a_17" / "b_24")
+                for evil in ("../b_24", "\\\\?\\C:\\b_24"):
+                    with self.subTest(evil=evil), self.assertRaises(ValueError):
+                        report.inside(root, evil)
+
+    def test_replace_gives_up_if_the_file_stays_locked(self):
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("nmapshot.report.os.replace", side_effect=PermissionError("ocupado")) as replace, \
+                patch("nmapshot.report.time.sleep"):
+            with self.assertRaises(PermissionError):
+                report.replace(Path(temporary) / "a", Path(temporary) / "b", attempts=3)
+        self.assertEqual(replace.call_count, 3 if os.name == "nt" else 1)
