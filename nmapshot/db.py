@@ -114,6 +114,30 @@ CREATE INDEX observacion_servicio ON observacion (servicio_id);
 CREATE INDEX observacion_activo_activo ON observacion_activo (activo_id);
 CREATE INDEX captura_servicio ON captura (servicio_id);
 """,
+    # Ejecuciones de descubrimiento y, al borrar una importación, también las
+    # capturas que salieron de ella. SQLite no cambia un CHECK: se reconstruye.
+    2: """
+CREATE TABLE nueva_ejecucion (
+  id           TEXT PRIMARY KEY,
+  auditoria_id TEXT NOT NULL REFERENCES auditoria(id) ON DELETE CASCADE,
+  tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'descubrimiento')),
+  origen_id    TEXT REFERENCES ejecucion(id) ON DELETE CASCADE,
+  nombre       TEXT NOT NULL,
+  estado       TEXT NOT NULL CHECK (estado IN ('preparada', 'en_cola', 'en_curso', 'deteniendo', 'completa',
+                                               'parcial', 'error', 'cancelada', 'interrumpida')),
+  opciones     TEXT NOT NULL DEFAULT '{}',
+  creada       TEXT NOT NULL,
+  iniciada     TEXT,
+  terminada    TEXT,
+  error        TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO nueva_ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada, iniciada, terminada, error)
+  SELECT id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada, iniciada, terminada, error FROM ejecucion;
+DROP TABLE ejecucion;
+ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
+CREATE INDEX ejecucion_auditoria ON ejecucion (auditoria_id);
+CREATE INDEX ejecucion_origen ON ejecucion (origen_id);
+""",
 }
 
 

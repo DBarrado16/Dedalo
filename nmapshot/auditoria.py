@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlite3
 import uuid
 
-from . import targets
+from . import report, targets
 from .parser import Host, Port
 
 IMPORTED = "Importadas"
@@ -162,3 +162,93 @@ def delete_execution(con: sqlite3.Connection, execution_id: str) -> None:
                     "AND NOT EXISTS (SELECT 1 FROM captura WHERE servicio_id = servicio.id)")
         con.execute("DELETE FROM activo WHERE NOT EXISTS (SELECT 1 FROM observacion_activo WHERE activo_id = activo.id) "
                     "AND NOT EXISTS (SELECT 1 FROM servicio WHERE activo_id = activo.id)")
+
+
+FINAL = {"completa", "parcial", "error", "cancelada", "interrumpida"}
+
+
+def _service_id(con: sqlite3.Connection, audit_id: str, ip: str, port: int) -> int:
+    row = con.execute("SELECT s.id FROM servicio s JOIN activo a ON a.id = s.activo_id "
+                      "WHERE a.auditoria_id = ? AND a.ip = ? AND s.protocolo = 'tcp' AND s.puerto = ?",
+                      (audit_id, ip, port)).fetchone()
+    if row is None:
+        raise ValueError(f"{ip}:{port}/tcp no está en el inventario de la ficha")
+    return row[0]
+
+
+def capture_of(con: sqlite3.Connection, import_id: str) -> str | None:
+    """La ejecución de captura que salió de una importación, si ya se lanzó."""
+    row = con.execute("SELECT id FROM ejecucion WHERE origen_id = ? AND tipo = 'captura' ORDER BY creada LIMIT 1",
+                      (import_id,)).fetchone()
+    return row["id"] if row else None
+
+
+def start_capture(con: sqlite3.Connection, import_id: str, options: dict, groups: list[dict]) -> str:
+    """Crea la ejecución de captura en cola, con cada URL planificada como pendiente.
+
+    Cada URL queda ligada al servicio que la originó, así que desde cualquier
+    imagen se llega al Nmap original (docs/MODELO_DATOS.md, Trazabilidad).
+    """
+    source = con.execute("SELECT auditoria_id, nombre FROM ejecucion WHERE id = ? AND tipo = 'importacion'",
+                         (import_id,)).fetchone()
+    if source is None:
+        raise FileNotFoundError("Importación no encontrada")
+    capture_id, stamp = uuid.uuid4().hex, now()
+    with con:
+        con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada) "
+                    "VALUES (?, ?, 'captura', ?, ?, 'en_cola', ?, ?)",
+                    (capture_id, source["auditoria_id"], import_id, source["nombre"],
+                     json.dumps(options, ensure_ascii=False), stamp))
+        con.executemany("INSERT INTO captura (ejecucion_id, servicio_id, url, estado) VALUES (?, ?, ?, 'pendiente')",
+                        [(capture_id, _service_id(con, source["auditoria_id"], target["ip"], target["port"]), target["url"])
+                         for group in groups for target in group["objetivos"]])
+    return capture_id
+
+
+def set_state(con: sqlite3.Connection, execution_id: str, state: str, error: str = "") -> None:
+    """Cambia el estado de una ejecución y anota cuándo empezó y terminó."""
+    stamp = now()
+    with con:
+        con.execute("UPDATE ejecucion SET estado = ?, error = ?, "
+                    "iniciada = CASE WHEN ? = 'en_curso' THEN COALESCE(iniciada, ?) ELSE iniciada END, "
+                    "terminada = CASE WHEN ? THEN ? ELSE terminada END WHERE id = ?",
+                    (state, error, state, stamp, state in FINAL, stamp, execution_id))
+
+
+def _evidence(con, execution_id: str, kind: str, path: Path, root: Path, stamp: str) -> int:
+    data = path.read_bytes()
+    route = path.resolve().relative_to(root.resolve()).as_posix()
+    con.execute("INSERT INTO evidencia (ejecucion_id, tipo, ruta, sha256, bytes, creada) VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (ejecucion_id, ruta) DO UPDATE SET sha256 = excluded.sha256, bytes = excluded.bytes",
+                (execution_id, kind, route, hashlib.sha256(data).hexdigest(), len(data), stamp))
+    return con.execute("SELECT id FROM evidencia WHERE ejecucion_id = ? AND ruta = ?", (execution_id, route)).fetchone()[0]
+
+
+def record_captures(con: sqlite3.Connection, execution_id: str, manifest: dict, result_dir: Path, root: Path,
+                    logs: list[Path] = ()) -> None:
+    """Vuelca en la base los resultados del manifiesto del motor; se puede repetir.
+
+    Las subredes a las que no llegó la captura dejan sus URL como pendientes.
+    Cada imagen y cada registro quedan como evidencia con su huella.
+    """
+    audit_id = con.execute("SELECT auditoria_id FROM ejecucion WHERE id = ?", (execution_id,)).fetchone()[0]
+    stamp = now()
+    with con:
+        for group in manifest["grupos"]:
+            for row in group.get("resultados") or []:
+                shot = None
+                if row.get("estado") == "capturada" and row.get("captura"):
+                    shot = _evidence(con, execution_id, "captura", report.inside(result_dir, row["captura"]), root, stamp)
+                code = row.get("codigo_http")
+                con.execute(
+                    "INSERT INTO captura (ejecucion_id, servicio_id, url, estado, url_final, codigo_http, titulo, error, evidencia_id, fecha) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (ejecucion_id, url) DO UPDATE SET "
+                    "estado = excluded.estado, url_final = excluded.url_final, codigo_http = excluded.codigo_http, "
+                    "titulo = excluded.titulo, error = excluded.error, evidencia_id = excluded.evidencia_id, fecha = excluded.fecha",
+                    (execution_id, _service_id(con, audit_id, row["ip"], int(row["puerto"])), row["url"],
+                     "capturada" if shot else "sin_captura", row.get("url_final") or "",
+                     int(code) if str(code or "").isdigit() else None, row.get("titulo") or "",
+                     "" if shot else row.get("error") or "", shot, stamp))
+        for path in logs:
+            if Path(path).is_file():
+                _evidence(con, execution_id, "registro", Path(path), root, stamp)

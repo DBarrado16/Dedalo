@@ -42,8 +42,8 @@ CREATE TABLE alcance (
 CREATE TABLE ejecucion (
   id           TEXT PRIMARY KEY,       -- uuid hex; en importaciones coincide con la carpeta de portal_datos
   auditoria_id TEXT NOT NULL REFERENCES auditoria(id) ON DELETE CASCADE,
-  tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura')),
-  origen_id    TEXT REFERENCES ejecucion(id),   -- captura -> importación de la que salen sus objetivos
+  tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'descubrimiento')),
+  origen_id    TEXT REFERENCES ejecucion(id) ON DELETE CASCADE,  -- captura -> importación de la que salen sus objetivos
   nombre       TEXT NOT NULL,
   estado       TEXT NOT NULL CHECK (estado IN (...)),  -- los nueve estados de CONTRATOS.md 0.4
   opciones     TEXT NOT NULL DEFAULT '{}',      -- JSON: hilos, timeout, formato...
@@ -123,7 +123,7 @@ CREATE TABLE captura (
 );
 ```
 
-La migración 1 añade índices para las búsquedas habituales: ejecuciones por auditoría, observaciones por servicio y por activo, y capturas por servicio. El esquema exacto está en `nmapshot/db.py`.
+La migración 1 añade índices para las búsquedas habituales: ejecuciones por auditoría, observaciones por servicio y por activo, y capturas por servicio. La migración 2 reconstruye `ejecucion` para admitir el tipo `descubrimiento` y para que borrar una importación borre también las capturas que salieron de ella; añade el índice por `origen_id`. El esquema exacto está en `nmapshot/db.py`.
 
 La situación de alcance de un activo (en alcance, excluido o fuera) **no se guarda**: se calcula con las reglas vigentes. Así, cambiar el alcance nunca deja datos desactualizados.
 
@@ -149,6 +149,6 @@ evidencia (imagen) ← captura → servicio 443/tcp → activo 10.10.5.3 → aud
 1. ✅ `db.py`: conexión, migración 1 y pruebas de que el esquema se crea, se reabre y rechaza datos inválidos.
 2. ✅ Importación (`auditoria.py`): de un Nmap a activos, servicios y observaciones, sustituyendo a `inventario.json`. Las ejecuciones antiguas se importan al consultar su inventario.
 3. ✅ Auditorías y alcance en el portal («fichas de cliente»): crear, elegir y editar reglas; revisar objetivos marcando su situación. La consola aplica el alcance con `--solo-rangos` y `--excluir` justo antes de capturar.
-4. Capturas: registrar cada intento y evidencia en la base y aplicar la regla de solo en alcance.
+4. ✅ Capturas: al iniciar, el portal crea la ejecución `captura` (con `origen_id` en la importación) y cada URL en alcance como `pendiente`, ligada a su servicio. Los cambios de estado se reflejan en la base; al terminar se vuelcan los resultados, las imágenes como evidencia `captura` y los registros como `registro`, con su SHA-256. Si el portal se cierra a mitad, al reabrirlo se completa desde el manifiesto del motor. La consola no escribe en la base; el alcance lo sigue aplicando el motor justo antes de conectar.
 5. Migración del historial.
 6. Retirar la lectura de `trabajo.json` e `inventario.json` cuando todo lo anterior esté probado.

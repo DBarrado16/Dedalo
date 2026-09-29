@@ -256,6 +256,124 @@ class PortalTests(unittest.TestCase):
         finally:
             release.set()
 
+    def run_engine(self, job_id, stop_after_first=False):
+        """Arranca la captura con el motor real de la consola y un gowitness simulado.
+
+        Con stop_after_first se pulsa «Detener» durante la primera subred."""
+        def run(command, **kwargs):
+            from contextlib import redirect_stdout
+            def scan(binary, directory, urls, opts):
+                fake_database(directory, urls)
+                if stop_after_first:
+                    Path(command[command.index("--stop-file") + 1]).touch()
+            with patch("nmapshot.cli.gowitness.scan_subnet", side_effect=scan), redirect_stdout(io.StringIO()):
+                code = cli.main(command[4:])  # sin «python -u -m nmapshot»
+            class Result:
+                returncode = code
+            return Result()
+        with patch("nmapshot.web.gowitness.find_gowitness", return_value="fake"), \
+                patch("nmapshot.web.gowitness.find_chrome", return_value="fake"), \
+                patch("nmapshot.web.subprocess.run", side_effect=run):
+            self.assertEqual(self.request("/api/jobs/" + job_id + "/start", {})[0], 202)
+            deadline = time.monotonic() + 10
+            while self.store.detail(job_id)["estado"] in ("en_cola", "en_curso") and time.monotonic() < deadline:
+                time.sleep(.02)
+        with closing(self.store.database()) as con:
+            capture = auditoria.capture_of(con, job_id)
+            deadline = time.monotonic() + 5
+            while con.execute("SELECT estado FROM ejecucion WHERE id = ?", (capture,)).fetchone()[0] in ("en_cola", "en_curso") \
+                    and time.monotonic() < deadline:
+                time.sleep(.02)
+        return capture
+
+    def test_capture_is_recorded_in_the_database_with_its_evidence(self):
+        job = self.create()
+        capture = self.run_engine(job["id"])
+        with closing(self.store.database()) as con:
+            execution = con.execute("SELECT * FROM ejecucion WHERE id = ?", (capture,)).fetchone()
+            self.assertEqual((execution["tipo"], execution["origen_id"], execution["estado"]), ("captura", job["id"], "completa"))
+            self.assertTrue(execution["iniciada"] and execution["terminada"])
+            self.assertEqual(json.loads(execution["opciones"])["timeout"], 5)
+            rows = con.execute("SELECT c.url, c.estado, c.codigo_http, c.titulo, a.ip, s.puerto, e.ruta, e.sha256 FROM captura c "
+                               "JOIN servicio s ON s.id = c.servicio_id JOIN activo a ON a.id = s.activo_id "
+                               "JOIN evidencia e ON e.id = c.evidencia_id WHERE c.ejecucion_id = ? ORDER BY c.url", (capture,)).fetchall()
+            # 192.168.1.8 queda fuera del alcance de la ficha: ni se captura ni se registra.
+            self.assertEqual([(r["url"], r["estado"], r["codigo_http"], r["titulo"], r["ip"], r["puerto"]) for r in rows], [
+                ("http://10.10.5.10/", "capturada", 200, "=test", "10.10.5.10", 80),
+                ("http://10.10.6.20/", "capturada", 200, "=test", "10.10.6.20", 80),
+                ("https://10.10.5.10/", "capturada", 200, "=test", "10.10.5.10", 443),
+            ])
+            for row in rows:
+                image = Path(self.temp.name) / row["ruta"]
+                self.assertEqual(row["sha256"], hashlib.sha256(image.read_bytes()).hexdigest())
+            logs = [r[0] for r in con.execute("SELECT ruta FROM evidencia WHERE ejecucion_id = ? AND tipo = 'registro'", (capture,))]
+            self.assertIn(job["id"] + "/proceso.log", logs)
+        self.assertEqual(self.request("/api/jobs/" + job["id"] + "/delete", {})[0], 200)
+        with closing(self.store.database()) as con:
+            for table in ("ejecucion", "captura", "evidencia", "activo"):
+                self.assertEqual(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0, table)
+
+    def test_interrupted_capture_keeps_unreached_targets_pending(self):
+        job = self.create()
+        capture = self.run_engine(job["id"], stop_after_first=True)
+        with closing(self.store.database()) as con:
+            self.assertEqual(con.execute("SELECT estado FROM ejecucion WHERE id = ?", (capture,)).fetchone()[0], "interrumpida")
+            rows = con.execute("SELECT url, estado, evidencia_id IS NOT NULL FROM captura WHERE ejecucion_id = ? ORDER BY url",
+                               (capture,)).fetchall()
+        self.assertEqual([tuple(r) for r in rows], [("http://10.10.5.10/", "capturada", 1),
+                                                     ("http://10.10.6.20/", "pendiente", 0),
+                                                     ("https://10.10.5.10/", "capturada", 1)])
+
+    def test_cancelled_queued_capture_is_recorded_as_cancelled(self):
+        first, second = self.create(), self.create()
+        begun, release = threading.Event(), threading.Event()
+        def run(*args, **kwargs):
+            begun.set()
+            release.wait(5)
+            class Result:
+                returncode = 130
+            return Result()
+        try:
+            with patch("nmapshot.web.gowitness.find_gowitness", return_value="fake"), \
+                    patch("nmapshot.web.gowitness.find_chrome", return_value="fake"), \
+                    patch("nmapshot.web.subprocess.run", side_effect=run):
+                self.request("/api/jobs/" + first["id"] + "/start", {})
+                self.assertTrue(begun.wait(2))
+                self.request("/api/jobs/" + second["id"] + "/start", {})
+                with closing(self.store.database()) as con:
+                    ids = {job: auditoria.capture_of(con, job) for job in (first["id"], second["id"])}
+                    state = lambda job: con.execute("SELECT estado, terminada FROM ejecucion WHERE id = ?", (ids[job],)).fetchone()
+                    self.assertEqual(state(first["id"])["estado"], "en_curso")
+                    self.assertEqual(tuple(state(second["id"])), ("en_cola", None))
+                    self.assertEqual(con.execute("SELECT COUNT(*) FROM captura WHERE ejecucion_id = ? AND estado = 'pendiente'",
+                                                 (ids[second["id"]],)).fetchone()[0], 3)
+                    self.request("/api/jobs/" + second["id"] + "/cancel", {})
+                    self.assertEqual(state(second["id"])["estado"], "cancelada")
+                    self.assertTrue(state(second["id"])["terminada"])
+                    self.request("/api/jobs/" + first["id"] + "/cancel", {})
+                    self.assertEqual(state(first["id"])["estado"], "deteniendo")
+        finally:
+            release.set()
+
+    def test_reopening_after_a_crash_closes_the_capture_in_the_database(self):
+        job = self.create()
+        with closing(self.store.database()) as con:
+            capture = auditoria.start_capture(con, job["id"], {}, self.store.jobs[job["id"]]["grupos"])
+            auditoria.set_state(con, capture, "en_curso")
+        # Simula un cierre inesperado a mitad: el trabajo en disco sigue en curso.
+        meta = self.store.jobs[job["id"]]
+        meta["estado"] = "en_curso"
+        self.store._save(meta)
+        self.store.close()
+        self.store = PortalStore(self.temp.name)
+        self.server.store = self.store
+        self.assertEqual(self.store.detail(job["id"])["estado"], "interrumpida")
+        with closing(self.store.database()) as con:
+            row = con.execute("SELECT estado, error, terminada FROM ejecucion WHERE id = ?", (capture,)).fetchone()
+            self.assertEqual(row["estado"], "interrumpida")
+            self.assertIn("se cerró", row["error"])
+            self.assertTrue(row["terminada"])
+
     def test_second_portal_cannot_claim_same_history(self):
         with self.assertRaisesRegex(ValueError, "Ya hay"):
             PortalStore(self.temp.name)

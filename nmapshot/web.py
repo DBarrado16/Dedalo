@@ -130,12 +130,46 @@ class PortalStore:
                 self.jobs[meta["id"]] = meta
             except (OSError, ValueError, KeyError, TypeError):
                 continue
+        self._recover()
         self.worker = threading.Thread(target=self._worker, name="nmapshot-capturas", daemon=True)
         self.worker.start()
 
     def database(self):
         # Una conexión por operación: los hilos del servidor no comparten conexiones.
         return db.connect(self.root)
+
+    def _recover(self):
+        """Tras un cierre inesperado, la base recoge el estado final y lo ya capturado."""
+        try:
+            with closing(self.database()) as con:
+                stale = con.execute("SELECT origen_id FROM ejecucion WHERE tipo = 'captura' "
+                                    "AND estado IN ('en_cola', 'en_curso', 'deteniendo')").fetchall()
+        except (OSError, sqlite3.Error) as exc:
+            print(f"Error del portal: no se pudo revisar la base: {exc}", file=sys.stderr)
+            return
+        for row in stale:
+            meta = self.jobs.get(row["origen_id"])
+            if meta and meta["estado"] in auditoria.FINAL:
+                self._capture_state(meta["id"], meta["estado"], meta.get("error", ""), record=True)
+
+    def _capture_state(self, job_id, state, error="", record=False):
+        """Refleja en la base el estado de la captura de un trabajo y, si se pide, sus
+        resultados. Un fallo aquí no para la cola: se avisa y se recupera al reabrir."""
+        try:
+            with closing(self.database()) as con:
+                capture_id = auditoria.capture_of(con, job_id)
+                if capture_id is None:
+                    return
+                if record:
+                    result = self.directory(job_id) / "resultado"
+                    if (result / report.MANIFEST).is_file():
+                        manifest = report.load_manifest(result)
+                        logs = [self.directory(job_id) / "proceso.log"] + [
+                            report.inside(result, g["carpeta"]) / "gowitness.log" for g in manifest["grupos"]]
+                        auditoria.record_captures(con, capture_id, manifest, result, self.root, logs)
+                auditoria.set_state(con, capture_id, state, error)
+        except Exception as exc:
+            print(f"Error del portal: no se pudo registrar en la base la captura de {job_id}: {exc}", file=sys.stderr)
 
     def directory(self, job_id):
         if not re.fullmatch(r"[a-f0-9]{32}", job_id):
@@ -389,8 +423,17 @@ class PortalStore:
             self._replan(job_id)
             if meta["total"] == 0:
                 raise Conflict("No hay objetivos web en el alcance de la ficha. Revisa sus rangos.")
-            meta.update(estado="en_cola", error="")
-            self._save(meta)
+            # La captura existe en la base antes de encolarse: sin registro no se conecta.
+            with closing(self.database()) as con:
+                capture_id = auditoria.start_capture(con, job_id, meta["opciones"], meta["grupos"])
+                try:
+                    meta.update(estado="en_cola", error="")
+                    self._save(meta)
+                except Exception:
+                    meta["estado"] = "preparada"
+                    with con:
+                        con.execute("DELETE FROM ejecucion WHERE id = ?", (capture_id,))
+                    raise
             self.pending.put((job_id, binary, chrome))
         return self.detail(job_id)
 
@@ -405,6 +448,7 @@ class PortalStore:
             else:
                 raise Conflict("Este trabajo no está en ejecución")
             self._save(meta)
+            self._capture_state(job_id, meta["estado"])
         return self.detail(job_id)
 
     def _worker(self):
@@ -419,6 +463,8 @@ class PortalStore:
                     continue
                 meta["estado"] = "en_curso"
                 self._save(meta)
+                # Dentro del bloqueo: una parada pedida justo ahora no queda pisada.
+                self._capture_state(job_id, "en_curso")
                 options = dict(meta["opciones"])
             directory = self.directory(job_id)
             command = [sys.executable, "-u", "-m", "nmapshot", "capturar"]
@@ -449,6 +495,9 @@ class PortalStore:
             with self.lock:
                 meta.update(estado=status, error=error, fin=now())
                 self._save(meta)
+            # Primero el trabajo y después la base: si el portal cae entre medias, al
+            # reabrir se ve la captura activa en la base y se completa desde aquí.
+            self._capture_state(job_id, status, error, record=True)
 
     def delete(self, job_id):
         with self.lock:
