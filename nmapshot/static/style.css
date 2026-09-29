@@ -141,7 +141,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--action); }
 .network-heading h3 span { font: 600 16px var(--font-data); margin-left: 6px; }
 .network-heading p { color: var(--muted); font-size: 11px; margin: 4px 0 0; }
 .network-count { color: var(--muted); font-size: 12px; flex-shrink: 0; }
-.network-actions { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+.network-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px 14px; flex-shrink: 0; }
 .network-actions .secondary { font-size: 12px; min-height: 32px; padding: 5px 10px; }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(min(290px,100%),1fr)); gap: 28px 22px; }
 .capture-card { min-width: 0; }

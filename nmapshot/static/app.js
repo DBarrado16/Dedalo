@@ -249,8 +249,35 @@ function render() {
 function networkActions(items) {
   // El ZIP incluye todas las capturas de la subred, no solo las filtradas.
   const gi = Number(items[0].key.split("-")[0]), total = current.grupos[gi].capturas;
-  const zip = total ? `<a class="secondary" href="/api/jobs/${currentId}/download/captures/${gi}" download>Descargar capturas (${total})</a>` : "";
+  const zip = total ? `<a class="secondary" href="/api/jobs/${currentId}/download/captures/${gi}" download>Descargar capturas (${total})</a>` +
+    `<button class="secondary" type="button" data-onenote="${gi}" title="Copia «IP:puerto» y su captura debajo, para pegar en OneNote con Ctrl+V">Copiar para OneNote</button>` : "";
   return `<div class="network-actions"><span class="network-count">${items.length} objetivos mostrados</span>${zip}</div>`;
+}
+const dataUrl = (blob) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result);
+  reader.onerror = () => reject(reader.error);
+  reader.readAsDataURL(blob);
+});
+function copyForOneNote(gi, button) {
+  // Todas las capturas de la subred: «IP:puerto» y la imagen debajo, embebida para
+  // que lo pegado en OneNote no dependa de que el portal siga abierto.
+  const group = current.grupos[gi], shots = group.objetivos.filter(target => target.imagen);
+  const hostPort = (target) => (target.ip.includes(":") ? `[${target.ip}]` : target.ip) + ":" + target.puerto;
+  const html = Promise.all(shots.map(async target => {
+    const response = await fetch(target.imagen);
+    if (!response.ok) throw new Error("no se pudo leer la captura de " + hostPort(target));
+    return `<p><b>${escapeHtml(hostPort(target))}</b></p><p><img src="${await dataUrl(await response.blob())}" width="720" alt="${escapeHtml(hostPort(target))}"></p>`;
+  })).then(parts => new Blob([parts.join("")], {type: "text/html"}));
+  const text = new Blob([shots.map(hostPort).join("\n") + "\n"], {type: "text/plain"});
+  button.disabled = true;
+  button.textContent = "Copiando…";
+  // write() se llama dentro del clic, con promesas: el navegador conserva el permiso
+  // aunque las imágenes tarden en cargarse.
+  navigator.clipboard.write([new ClipboardItem({"text/html": html, "text/plain": text})])
+    .then(() => notice(`Copiadas ${shots.length} capturas de ${group.subred}. Pégalas en OneNote con Ctrl+V.`))
+    .catch(error => notice("No se pudo copiar al portapapeles: " + error.message))
+    .finally(() => { button.disabled = false; button.textContent = "Copiar para OneNote"; });
 }
 function renderResults() {
   if (!current || activeTab === "logs") { $("more").hidden = true; return; }
@@ -524,6 +551,8 @@ $("confirm-delete").addEventListener("click", async () => {
 });
 $("results").addEventListener("click", event => {
   if (event.target.closest("[data-retry-inventory]")) { loadInventory(currentId, viewVersion); return; }
+  const onenote = event.target.closest("[data-onenote]");
+  if (onenote) { copyForOneNote(Number(onenote.dataset.onenote), onenote); return; }
   const button = event.target.closest("[data-image]");
   if (!button) return;
   const [gi,ti] = button.dataset.image.split("-").map(Number), group=current.grupos[gi], target=group.objetivos[ti];
