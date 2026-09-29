@@ -49,6 +49,12 @@ def atomic_json(path, value):
     temporary.replace(path)
 
 
+def write_scope_files(directory, scope):
+    """Alcance que usará el motor de capturas: rangos incluidos y exclusiones."""
+    (directory / "rangos.txt").write_text("".join(f"{net}\n" for net in scope.include), encoding="utf-8")
+    (directory / "excluir.txt").write_text("".join(f"{net}\n" for net in scope.exclude), encoding="utf-8")
+
+
 def text_field(value, label, maximum):
     if not isinstance(value, str) or len(value) > maximum:
         raise ValueError(f"{label}: texto inválido o demasiado largo")
@@ -159,7 +165,7 @@ class PortalStore:
         if not isinstance(files, list) or not 1 <= len(files) <= 20:
             raise ValueError("Selecciona entre 1 y 20 archivos nmap")
         options = options_from(payload.get("opciones", {}))
-        ranges = text_field(payload.get("rangos", ""), "Rangos", 256_000).lstrip("\ufeff")
+        audit_id = payload.get("auditoria")
         hosts, uploads = [], []
         for item in files:
             if not isinstance(item, dict):
@@ -171,20 +177,21 @@ class PortalStore:
             except (ValueError, ParseError) as exc:
                 raise ValueError(f"{filename}: {exc}") from exc
             uploads.append((filename, content))
-        networks = [line.split("#", 1)[0].strip() for line in ranges.splitlines() if line.split("#", 1)[0].strip()]
         merged = parser.merge(hosts)
-        inventory.build(merged, networks)  # valida rangos y límites antes de guardar nada
-        groups = cli.group_hosts(merged, networks, options["puertos"], options["por_servicio"])
-        total = sum(len(g["objetivos"]) for g in groups)
-        if total > 100_000:
-            raise ValueError("Demasiados objetivos para una ejecución web; divide los archivos (máximo 100.000).")
+        inventory.build(merged, [])  # valida los límites antes de guardar nada
         job_id = uuid.uuid4().hex
         meta = {"id": job_id, "nombre": name, "fecha": now(), "estado": "preparada",
-                "archivos": [n for n, _ in uploads], "opciones": options, "total": total,
-                "subredes": len(groups), "error": "", "grupos": groups}
+                "archivos": [n for n, _ in uploads], "opciones": options, "error": ""}
         with self.lock:
             if self.closing:
                 raise Conflict("El portal se está cerrando")
+            with closing(self.database()) as con:
+                if audit_id is None:
+                    audit_id = auditoria.default_audit(con)
+                elif not isinstance(audit_id, str) or not auditoria.audit_exists(con, audit_id):
+                    raise ValueError("Elige una ficha de cliente existente")
+                scope = auditoria.scope(con, audit_id)
+            self._plan(meta, merged, scope)
             directory = self.directory(job_id)
             (directory / "entradas").mkdir(parents=True)
             try:
@@ -192,9 +199,9 @@ class PortalStore:
                 for index, (_, content) in enumerate(uploads):
                     paths.append(directory / "entradas" / f"nmap-{index:02d}.txt")
                     paths[-1].write_text(content, encoding="utf-8")
-                (directory / "rangos.txt").write_text(ranges, encoding="utf-8")
+                write_scope_files(directory, scope)
                 with closing(self.database()) as con:
-                    auditoria.import_nmap(con, auditoria.default_audit(con), job_id, name, merged, paths, self.root, meta["fecha"])
+                    auditoria.import_nmap(con, audit_id, job_id, name, merged, paths, self.root, meta["fecha"])
                 self._save(meta)
             except Exception:
                 # Sin importación completa no queda una ejecución a medias.
@@ -203,21 +210,86 @@ class PortalStore:
             self.jobs[job_id] = meta
         return self.detail(job_id)
 
+    @staticmethod
+    def _plan(meta, hosts, scope):
+        """Objetivos web de una ejecución: solo lo que está en alcance (docs/CONTRATOS.md 0.3)."""
+        options = meta["opciones"]
+        groups = cli.group_hosts(hosts, [str(net) for net in scope.include], options["puertos"], options["por_servicio"])
+        planned, skipped = [], {scope.OUT: 0, scope.EXCLUDED: 0}
+        for group in groups:
+            kept = []
+            for target in group["objetivos"]:
+                status = scope.status(target["ip"])
+                if status == scope.IN:
+                    kept.append(target)
+                else:
+                    skipped[status] += 1
+            if kept:
+                planned.append({**group, "objetivos": kept})
+        total = sum(len(g["objetivos"]) for g in planned)
+        if total > 100_000:
+            raise ValueError("Demasiados objetivos para una ejecución web; divide los archivos (máximo 100.000).")
+        meta.update(grupos=planned, total=total, subredes=len(planned), fuera_alcance=skipped)
+
+    def _imported(self, con, job_id, meta):
+        """Garantiza que la ejecución está en la base y devuelve su ficha."""
+        if not auditoria.has_execution(con, job_id):
+            # Ejecuciones anteriores a la base: se importan desde sus Nmap guardados.
+            inputs = sorted((self.directory(job_id) / "entradas").glob("nmap-*.txt"))
+            if not inputs:
+                raise FileNotFoundError("No se conservan los Nmap de esta ejecución para reconstruir el inventario.")
+            hosts = parser.merge([parser.parse_file(item) for item in inputs])
+            auditoria.import_nmap(con, auditoria.default_audit(con), job_id, meta["nombre"], hosts, inputs,
+                                  self.root, meta["fecha"])
+        return auditoria.audit_of(con, job_id)
+
+    def _replan(self, job_id):
+        """Recalcula una ejecución sin lanzar con el alcance vigente de su ficha."""
+        meta = self._meta(job_id)
+        directory = self.directory(job_id)
+        with closing(self.database()) as con:
+            scope = auditoria.scope(con, self._imported(con, job_id, meta))
+        hosts = parser.merge([parser.parse_file(p) for p in sorted((directory / "entradas").glob("nmap-*.txt"))])
+        self._plan(meta, hosts, scope)
+        write_scope_files(directory, scope)
+        self._save(meta)
+
     def inventory(self, job_id):
         with self.lock:
             meta = self._meta(job_id)
             directory = self.directory(job_id)
             with closing(self.database()) as con:
-                if not auditoria.has_execution(con, job_id):
-                    # Ejecuciones anteriores a la base: se importan desde sus Nmap guardados.
-                    inputs = sorted((directory / "entradas").glob("nmap-*.txt"))
-                    if not inputs:
-                        raise FileNotFoundError("No se conservan los Nmap de esta ejecución para reconstruir el inventario.")
-                    hosts = parser.merge([parser.parse_file(item) for item in inputs])
-                    auditoria.import_nmap(con, auditoria.default_audit(con), job_id, meta["nombre"], hosts, inputs,
-                                          self.root, meta["fecha"])
+                scope = auditoria.scope(con, self._imported(con, job_id, meta))
                 hosts = auditoria.observed_hosts(con, job_id)
-            return inventory.build(hosts, targets.read_networks_file(directory / "rangos.txt"))
+            data = inventory.build(hosts, targets.read_networks_file(directory / "rangos.txt"))
+            for asset in data["activos"]:
+                asset["alcance"] = scope.status(asset["ip"])
+            return data
+
+    def audits(self):
+        with self.lock, closing(self.database()) as con:
+            return auditoria.audits(con)
+
+    def create_audit(self, payload):
+        if not isinstance(payload, dict):
+            raise ValueError("Carga inválida")
+        with self.lock, closing(self.database()) as con:
+            audit_id = auditoria.create_audit(con, payload.get("nombre"), payload.get("incluir", ""), payload.get("excluir", ""))
+            return next(a for a in auditoria.audits(con) if a["id"] == audit_id)
+
+    def update_audit(self, audit_id, payload):
+        if not isinstance(payload, dict):
+            raise ValueError("Carga inválida")
+        with self.lock:
+            with closing(self.database()) as con:
+                auditoria.update_audit(con, audit_id, payload.get("nombre"), payload.get("incluir", ""), payload.get("excluir", ""))
+                owners = auditoria.audits_by_execution(con)
+            # Lo ya lanzado no cambia; lo preparado se recalcula con el alcance nuevo.
+            for job_id, meta in self.jobs.items():
+                if meta["estado"] == "preparada" and owners.get(job_id) == audit_id:
+                    self._replan(job_id)
+            with closing(self.database()) as con:
+                return next(a for a in auditoria.audits(con) if a["id"] == audit_id)
 
     def _manifest(self, meta):
         path = self.directory(meta["id"]) / "resultado" / report.MANIFEST
@@ -236,10 +308,21 @@ class PortalStore:
             "procesadas": done,
         }
 
+    def _owners(self, job_ids):
+        with closing(self.database()) as con:
+            owners = auditoria.audits_by_execution(con)
+            # Las ejecuciones que aún no están en la base se importarán a «Importadas».
+            if any(job_id not in owners for job_id in job_ids):
+                default = auditoria.default_audit(con)
+                owners = {job_id: owners.get(job_id, default) for job_id in job_ids}
+        return owners
+
     def list(self):
         with self.lock:
             snapshots = copy.deepcopy(list(self.jobs.values()))
-        return [self.summary(meta) for meta in sorted(snapshots, key=lambda m: m["fecha"], reverse=True)]
+        owners = self._owners([meta["id"] for meta in snapshots])
+        return [self.summary(meta) | {"auditoria": owners[meta["id"]]}
+                for meta in sorted(snapshots, key=lambda m: m["fecha"], reverse=True)]
 
     def detail(self, job_id):
         with self.lock:
@@ -249,7 +332,8 @@ class PortalStore:
         root = self.directory(job_id) / "resultado"
         response = self.summary(meta)
         response.update(archivos=meta["archivos"], opciones=meta["opciones"], grupos=[],
-                        csv=(root / "indice.csv").is_file())
+                        csv=(root / "indice.csv").is_file(), auditoria=self._owners([job_id])[job_id],
+                        fuera_alcance=meta.get("fuera_alcance"))
         for index, group in enumerate(groups):
             rows = {r["url"]: r for r in group.get("resultados", [])}
             errors = gowitness.read_errors(report.inside(root, group["carpeta"]))
@@ -287,8 +371,10 @@ class PortalStore:
             meta = self._meta(job_id)
             if self.closing or meta["estado"] != "preparada":
                 raise Conflict("Este trabajo ya está iniciado o finalizado")
+            # El alcance puede haber cambiado desde que se preparó.
+            self._replan(job_id)
             if meta["total"] == 0:
-                raise Conflict("No hay puertos web abiertos seleccionados")
+                raise Conflict("No hay objetivos web en el alcance de la ficha. Revisa sus rangos.")
             meta.update(estado="en_cola", error="")
             self._save(meta)
             self.pending.put((job_id, binary, chrome))
@@ -323,7 +409,8 @@ class PortalStore:
             directory = self.directory(job_id)
             command = [sys.executable, "-u", "-m", "nmapshot", "capturar"]
             command += [str(p) for p in sorted((directory / "entradas").glob("nmap-*.txt"))]
-            command += ["-r", str(directory / "rangos.txt"), "-o", str(directory / "resultado"),
+            command += ["-r", str(directory / "rangos.txt"), "--solo-rangos", "--excluir", str(directory / "excluir.txt"),
+                        "-o", str(directory / "resultado"),
                         "--gowitness", binary, "--stop-file", str(directory / "parar"),
                         "--puertos", options["puertos"], "--formato", options["formato"],
                         "--hilos", str(options["hilos"]), "--timeout", str(options["timeout"]),
@@ -496,6 +583,17 @@ class PortalHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def reject(self, error, status):
+        # Leer el cuerpo pendiente antes de rechazar: en Windows, cerrar con datos
+        # sin leer corta la conexión y el cliente puede no ver la respuesta.
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if 0 < length <= MAX_BODY:
+            self.rfile.read(length)
+        self.json({"error": error}, status)
+
     def json(self, value, status=200):
         self.send_bytes(status, json.dumps(value, ensure_ascii=False).encode("utf-8"))
 
@@ -508,17 +606,17 @@ class PortalHandler(BaseHTTPRequestHandler):
     def dispatch(self, mutate):
         try:
             if not self.allowed():
-                self.json({"error": "Origen no permitido"}, 403)
+                self.reject("Origen no permitido", 403)
                 return
             store = self.server.store
             path = urlsplit(self.path).path
             parts = path.strip("/").split("/")
             if mutate:
                 if self.headers.get("X-Nmapshot-Token") != store.token:
-                    self.json({"error": "Sesión caducada; recarga la página"}, 403)
+                    self.reject("Sesión caducada; recarga la página", 403)
                     return
                 if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
-                    self.json({"error": "Se esperaba JSON"}, 415)
+                    self.reject("Se esperaba JSON", 415)
                     return
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= MAX_BODY:
@@ -530,6 +628,12 @@ class PortalHandler(BaseHTTPRequestHandler):
                 payload = json.loads(data)
                 if path == "/api/jobs":
                     self.json(store.create(payload), 201)
+                    return
+                if path == "/api/audits":
+                    self.json(store.create_audit(payload), 201)
+                    return
+                if len(parts) == 3 and parts[:2] == ["api", "audits"] and re.fullmatch(r"[a-f0-9]{32}", parts[2]):
+                    self.json(store.update_audit(parts[2], payload))
                     return
                 if len(parts) == 4 and parts[:2] == ["api", "jobs"]:
                     if parts[3] == "start":
@@ -553,6 +657,9 @@ class PortalHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/jobs":
                 self.json(store.list())
+                return
+            if path == "/api/audits":
+                self.json(store.audits())
                 return
             if len(parts) >= 3 and parts[:2] == ["api", "jobs"]:
                 job_id = parts[2]

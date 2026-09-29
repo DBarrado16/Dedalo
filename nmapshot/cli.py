@@ -43,6 +43,8 @@ def build_parser() -> argparse.ArgumentParser:
     capture = subcommands.add_parser("capturar", help="Leer nmap y capturar sus servicios web")
     capture.add_argument("ficheros", nargs="+", help="Salidas nmap XML, grepable o normal")
     capture.add_argument("-r", "--rangos", help="Fichero con un CIDR por línea")
+    capture.add_argument("--solo-rangos", action="store_true", help="Capturar solo las IP dentro de --rangos; sin rangos, ninguna")
+    capture.add_argument("--excluir", help="Fichero con IP o CIDR que nunca se capturan")
     capture.add_argument("-o", "--salida", help="Carpeta nueva o vacía; por defecto salida/FECHA-HORA")
     capture.add_argument("--simular", "--dry-run", action="store_true", help="Mostrar URLs y subredes sin conectar ni crear archivos")
     capture.add_argument("--puertos", default="", help="Puertos adicionales: 8080=http,8443=https")
@@ -84,6 +86,14 @@ def folder_name(cidr: str) -> str:
 def plan(args) -> list[dict]:
     hosts = parser.merge([parser.parse_file(path) for path in args.ficheros])
     ranges = targets.read_networks_file(args.rangos) if args.rangos else []
+    excluded = targets.read_networks_file(args.excluir) if getattr(args, "excluir", None) else []
+    if getattr(args, "solo_rangos", False) or excluded:
+        # El alcance se aplica aquí, justo antes de conectar (docs/CONTRATOS.md 0.3).
+        scope = targets.Scope(ranges if args.solo_rangos else ["0.0.0.0/0", "::/0"], excluded)
+        kept = [host for host in hosts if scope.status(host.ip) == scope.IN]
+        if len(kept) < len(hosts):
+            print(f"{len(hosts) - len(kept)} IP fuera de alcance o excluidas: no se capturan.", flush=True)
+        hosts = kept
     return group_hosts(hosts, ranges, args.puertos, args.por_servicio)
 
 

@@ -70,11 +70,11 @@ python -m nmapshot web --abrir
 
 El portal está en [http://127.0.0.1:8787](http://127.0.0.1:8787). Desde ahí:
 
-1. Pulsa **Nueva captura** y pon nombre a la ejecución.
-2. Arrastra o selecciona uno o varios nmap (XML, grepable o normal).
-3. Pega los rangos CIDR o carga un archivo de rangos.
+1. En **Cliente**, elige la ficha del cliente o pulsa **Nueva ficha**: nombre, **rangos autorizados** (un CIDR o IP por línea, o desde un .txt) y, si hace falta, **exclusiones** con su motivo tras `#` (por ejemplo `172.31.253.241  # A10 producción`). Los rangos se escriben una sola vez y los usan todas las capturas de ese cliente. La lista de ejecuciones muestra solo las del cliente elegido.
+2. Pulsa **Nueva captura**, pon nombre a la ejecución y arrastra o selecciona uno o varios nmap (XML, grepable o normal). El formulario muestra el alcance de la ficha.
+3. **Solo se capturan las IP en alcance**: dentro de un rango autorizado y no excluidas. El resto se importa y aparece en Activos con la etiqueta «Fuera de alcance» o «Excluida», pero Dedalo no se conecta a ellas. Una ficha sin rangos autorizados no puede lanzar capturas. Si editas la ficha, las ejecuciones aún no lanzadas se recalculan; las ya lanzadas no cambian.
 4. Si hace falta, ajusta puertos adicionales, concurrencia, timeout, espera, formato o página completa.
-5. Pulsa **Revisar objetivos**: se muestra el reparto por rango y subred sin hacer conexiones a los objetivos.
+5. Pulsa **Revisar objetivos**: se muestra el reparto por rango y subred, y cuántos objetivos web quedan fuera de alcance o excluidos, sin hacer conexiones a los objetivos.
 6. Pulsa **Iniciar captura**. Los trabajos se encolan y se ejecutan de uno en uno.
 7. Consulta las imágenes y filtra por rango, subred, estado o texto. Puedes ampliar y descargar imágenes, descargar CSV/JSON o consultar el registro sin salir del portal. **Descargar capturas** en la cabecera de cada subred descarga un ZIP con todas sus capturas, aunque haya filtros activos. Cada imagen se llama `IP_PUERTO_ESQUEMA` (por ejemplo `10.10.5.1_443_https.jpeg`) y el `indice.csv` del ZIP recoge su URL, URL final, código HTTP y título.
 8. En **Activos**, busca por IP, nombre, puerto, servicio o producto y filtra por rango, subred o servicio. **Ocultar hosts sin puertos abiertos** viene marcado: un Nmap lanzado con `-Pn` da por activas todas las IP del rango aunque no respondan, y así solo quedan las que tienen algún puerto abierto. Entre paréntesis se indica cuántas se ocultan.
@@ -175,6 +175,8 @@ Si la misma IP aparece en varios archivos, se unen sus puertos abiertos; no se i
 | Opción | Función |
 | --- | --- |
 | `-r, --rangos` | Archivo de rangos. Opcional; sin él todas las IP van a `fuera_de_rango`. |
+| `--solo-rangos` | Captura solo las IP dentro de `--rangos`; sin rangos no captura nada. El portal lo usa siempre. |
+| `--excluir ARCHIVO` | IP o CIDR (uno por línea) que nunca se capturan, aunque estén en un rango. |
 | `-o, --salida` | Carpeta nueva o vacía. Si se omite: `salida/FECHA-HORA-MICROSEGUNDOS`. |
 | `--simular` / `--dry-run` | Muestra IP, URL y agrupación sin ejecutar gowitness. |
 | `--puertos "8080=http,8443=https"` | Añade puertos al mapa de 80/443; si se repite un puerto, sustituye su esquema. |
@@ -199,7 +201,7 @@ Ejemplo en Kali:
 python3 -m nmapshot capturar escaneo.gnmap -r rangos.txt -o salida/cliente-04 --chrome /usr/bin/chromium
 ```
 
-Los rangos no son un filtro de alcance: una IP que no pertenezca a ninguno se conserva en `fuera_de_rango`. Un /17 se organiza en sus /24, creando únicamente las subredes con objetivos. Si se solapan rangos, gana el más específico. Un /25 o /26 se conserva sin ampliarlo a /24. Para IPv6 se agrupa por /64; sus nombres de carpeta sustituyen `:` por `_`.
+En consola, sin `--solo-rangos`, los rangos solo agrupan: una IP que no pertenezca a ninguno se conserva en `fuera_de_rango` y se captura. El portal, en cambio, aplica siempre el alcance de la ficha del cliente. Un /17 se organiza en sus /24, creando únicamente las subredes con objetivos. Si se solapan rangos, gana el más específico. Un /25 o /26 se conserva sin ampliarlo a /24. Para IPv6 se agrupa por /64; sus nombres de carpeta sustituyen `:` por `_`.
 
 ## Archivos de salida
 

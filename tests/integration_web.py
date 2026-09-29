@@ -61,8 +61,9 @@ def main():
                 raw = response.read()
                 return json.loads(raw) if response.headers.get("Content-Type","").startswith("application/json") else raw
         token = request("/api/bootstrap")["token"]
+        audit = request("/api/audits", {"nombre":"Validación del portal", "incluir":"127.0.0.0/17"})
         job = request("/api/jobs", {"nombre":"Validación del portal · HTTP y HTTPS",
-            "archivos":[{"nombre":"local.xml","contenido":content}], "rangos":"127.0.0.0/17",
+            "archivos":[{"nombre":"local.xml","contenido":content}], "auditoria":audit["id"],
             "opciones":{"puertos":ports,"timeout":12,"hilos":2,"delay":1,"formato":"png"}})
         assert job["total"] == 3 and job["subredes"] == 2 and job["estado"] == "preparada"
         job_id = job["id"]

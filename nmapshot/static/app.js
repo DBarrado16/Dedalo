@@ -32,6 +32,11 @@ let token = "", currentId = "", current = null, activeTab = "gallery", files = [
 let renderKey = "", polling = false, mutating = false;
 let viewVersion = 0, deletionTarget = null;
 let inventory = null, inventoryError = "";
+let audits = [], currentAudit = "", editingAudit = null, resumeUpload = false, firstPoll = true, knownJobs = [];
+try { currentAudit = localStorage.getItem("dedalo-audit") || ""; } catch {}
+const auditById = (id) => audits.find(audit => audit.id === id);
+const scopeLines = (rules) => rules.map(rule => rule.cidr + (rule.motivo ? "  # " + rule.motivo : "")).join("\n");
+const scopeTag = (value) => value === "excluida" ? '<span class="scope-tag excluded">Excluida</span>' : value === "fuera" ? '<span class="scope-tag">Fuera de alcance</span>' : "";
 const dateText = (value) => new Date(value).toLocaleString("es-ES", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
 const rangeText = (value) => value === "fuera_de_rango" ? "Fuera de rango" : value;
 const badgeClass = (state) => state === "completa" || state === "capturada" ? "complete" : activeStates.has(state) ? "running" : ["error","parcial","sin_captura","interrumpida"].includes(state) ? "error" : "";
@@ -45,6 +50,25 @@ async function request(path, body) {
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "No se pudo completar la operación");
   return data;
+}
+function setAudit(id) {
+  currentAudit = id;
+  try { localStorage.setItem("dedalo-audit", id); } catch {}
+}
+function renderAudits() {
+  const html = audits.length ? audits.map(audit => `<option value="${audit.id}">${escapeHtml(audit.nombre)}</option>`).join("") : '<option value="">Sin fichas</option>';
+  if ($("audit-select").innerHTML !== html) $("audit-select").innerHTML = html;
+  $("audit-select").value = currentAudit;
+  $("audit-select").disabled = !audits.length;
+  $("edit-audit").hidden = !auditById(currentAudit);
+}
+function clearSelection() {
+  ++viewVersion;
+  currentId = ""; current = null; inventory = null;
+  history.replaceState(null, "", location.pathname);
+  // Sin esperar a la siguiente consulta: nunca mostrar ejecuciones de otro cliente.
+  updateJobs(knownJobs.filter(job => job.auditoria === currentAudit));
+  render();
 }
 function updateJobs(jobs) {
   $("job-count").textContent = jobs.length;
@@ -149,7 +173,10 @@ function render() {
   $("workspace").hidden = false;
   $("empty-state").hidden = true;
   $("page-title").textContent = current.nombre;
-  $("page-description").textContent = dateText(current.fecha) + " / " + current.archivos.length + " archivo(s) de Nmap";
+  const client = auditById(current.auditoria)?.nombre;
+  $("page-description").textContent = (client ? client + " / " : "") + dateText(current.fecha) + " / " + current.archivos.length + " archivo(s) de Nmap";
+  const outside = current.fuera_alcance || {fuera: 0, excluida: 0}, skipped = outside.fuera + outside.excluida;
+  const skippedText = skipped ? ` ${outside.fuera} fuera de alcance y ${outside.excluida} excluido(s) no se capturarán.` : "";
   $("job-state").hidden = false;
   $("job-state").className = "badge " + badgeClass(current.estado);
   $("job-state").textContent = labels[current.estado] || current.estado;
@@ -165,7 +192,8 @@ function render() {
   $("start-job").hidden = current.estado !== "preparada";
   $("start-job").disabled = mutating || !current.total || !engine.ready;
   $("start-job").title = !engine.ready ? "El motor de capturas no está disponible: " + engine.error
-    : !current.total ? "No hay puertos web que capturar en estos archivos (80/443 u otros configurados en las opciones)" : "";
+    : !current.total ? (skipped ? "Ningún objetivo web está en el alcance de la ficha del cliente"
+      : "No hay puertos web que capturar en estos archivos (80/443 u otros configurados en las opciones)") : "";
   $("cancel-job").hidden = !running;
   $("cancel-job").disabled = mutating || current.estado === "deteniendo";
   $("cancel-job").textContent = current.estado === "en_cola" ? "Cancelar trabajo" : current.estado === "deteniendo" ? "Parada solicitada…" : "Detener tras esta subred";
@@ -179,8 +207,10 @@ function render() {
   let title = "Captura finalizada";
   let description = `${current.capturas} imágenes disponibles. ${current.sin_captura} objetivos sin captura.`;
   if (current.estado === "preparada") {
-    title = current.total ? "Objetivos listos para revisar" : "No se han encontrado servicios web";
-    description = current.total ? "Se capturarán únicamente las IP y puertos seleccionados de tus archivos." : "Puedes consultar los activos y sus servicios en la pestaña Activos. No hay objetivos web que capturar con estas opciones.";
+    title = current.total ? "Objetivos listos para revisar" : skipped ? "Ningún objetivo web en alcance" : "No se han encontrado servicios web";
+    description = current.total ? `Se capturarán ${current.total} objetivos web en alcance.${skippedText}`
+      : skipped ? `Hay objetivos web, pero ninguno dentro del alcance de la ficha.${skippedText} Si falta algún rango, edita la ficha.`
+      : "Puedes consultar los activos y sus servicios en la pestaña Activos. No hay objetivos web que capturar con estas opciones.";
   } else if (current.estado === "en_cola") {
     title = "En cola";
     description = "La captura comenzará cuando termine el trabajo anterior.";
@@ -286,7 +316,7 @@ function renderInventory() {
     const capture = port?.protocolo === "tcp" ? captures.get(asset.ip + ":" + port.puerto) : null;
     const scripts = [...asset.scripts, ...(port?.scripts || [])];
     const details = [port?.detalle, ...(port?.cpe || []), ...scripts.map(s => s.id + ": " + s.output)].filter(Boolean).join("\n\n");
-    return `<tr><td>${escapeHtml(asset.ip)}${asset.nombres.length ? `<small>${escapeHtml(asset.nombres.join(", "))}</small>` : ""}</td><td>${port ? port.puerto + "/" + escapeHtml(port.protocolo.toUpperCase()) : "—"}</td><td>${port ? escapeHtml((port.tunel ? port.tunel + "/" : "") + (port.servicio || "Sin identificar")) : "Sin puertos abiertos"}</td><td class="service-data">${escapeHtml([port?.producto, port?.version].filter(Boolean).join(" ") || "—")}${details ? `<details><summary>Datos Nmap</summary><pre>${escapeHtml(details)}</pre></details>` : ""}</td><td>${capture?.imagen ? `<button class="secondary" data-image="${capture.key}">Ver captura</button>` : capture ? escapeHtml(labels[capture.estado] || capture.estado) : "—"}</td></tr>`;
+    return `<tr><td>${escapeHtml(asset.ip)}${scopeTag(asset.alcance)}${asset.nombres.length ? `<small>${escapeHtml(asset.nombres.join(", "))}</small>` : ""}</td><td>${port ? port.puerto + "/" + escapeHtml(port.protocolo.toUpperCase()) : "—"}</td><td>${port ? escapeHtml((port.tunel ? port.tunel + "/" : "") + (port.servicio || "Sin identificar")) : "Sin puertos abiertos"}</td><td class="service-data">${escapeHtml([port?.producto, port?.version].filter(Boolean).join(" ") || "—")}${details ? `<details><summary>Datos Nmap</summary><pre>${escapeHtml(details)}</pre></details>` : ""}</td><td>${capture?.imagen ? `<button class="secondary" data-image="${capture.key}">Ver captura</button>` : capture ? escapeHtml(labels[capture.estado] || capture.estado) : "—"}</td></tr>`;
   }).join("")}</tbody></table></div></section>`).join("");
 }
 async function loadLogs() {
@@ -299,8 +329,16 @@ async function poll() {
   polling = true;
   const version = viewVersion;
   try {
-    const jobs = await request("/api/jobs");
+    const [allJobs, auditList] = await Promise.all([request("/api/jobs"), request("/api/audits")]);
     if (version !== viewVersion || mutating) return;
+    audits = auditList;
+    knownJobs = allJobs;
+    const hashJob = allJobs.find(job => job.id === location.hash.slice(1));
+    // Un enlace a una ejecución abre su cliente; si no, se mantiene el elegido.
+    if ((firstPoll && hashJob) || !auditById(currentAudit)) setAudit(hashJob?.auditoria || allJobs[0]?.auditoria || audits[0]?.id || "");
+    firstPoll = false;
+    renderAudits();
+    const jobs = allJobs.filter(job => job.auditoria === currentAudit);
     updateJobs(jobs);
     if (currentId && !jobs.some(job => job.id === currentId)) {
       currentId = ""; current = null;
@@ -308,8 +346,7 @@ async function poll() {
       render();
     }
     if (!currentId && jobs.length) {
-      const hash = location.hash.slice(1);
-      const id = jobs.some(j => j.id === hash) ? hash : jobs[0].id;
+      const id = jobs.some(j => j.id === hashJob?.id) ? hashJob.id : jobs[0].id;
       polling = false;
       await selectJob(id);
       return;
@@ -335,21 +372,79 @@ function addFiles(incoming) {
   fileList();
   if (!$("job-name").value && files.length) $("job-name").value = files[0].name.replace(/\.[^.]+$/, "");
 }
+function scopeSummary(audit) {
+  const list = (rules) => "<ul>" + rules.slice(0, 6).map(rule => `<li><code>${escapeHtml(rule.cidr)}</code>${rule.motivo ? " · " + escapeHtml(rule.motivo) : ""}</li>`).join("") +
+    (rules.length > 6 ? `<li>y ${rules.length - 6} más</li>` : "") + "</ul>";
+  return `<strong>${escapeHtml(audit.nombre)}</strong>` +
+    (audit.incluir.length ? `<p>Rangos autorizados (${audit.incluir.length})</p>${list(audit.incluir)}`
+      : '<p class="scope-warning">Esta ficha no tiene rangos autorizados: podrás revisar los activos, pero no capturar.</p>') +
+    (audit.excluir.length ? `<p>Excluidos (${audit.excluir.length})</p>${list(audit.excluir)}` : "") +
+    '<button type="button" class="link-button" data-edit-audit>Editar ficha</button>';
+}
 function openUpload() {
+  const audit = auditById(currentAudit);
+  if (!audit) {
+    resumeUpload = true;
+    openAudit(null, "Antes de subir un Nmap, crea la ficha del cliente con sus rangos autorizados.");
+    return;
+  }
   $("upload-form").reset();
   files = [];
   fileList();
+  $("upload-scope").innerHTML = scopeSummary(audit);
   $("upload-error").hidden = true;
   $("upload-dialog").showModal();
   $("job-name").focus();
+}
+function openAudit(audit, message = "") {
+  editingAudit = audit;
+  $("audit-title").textContent = audit ? "Editar ficha de cliente" : "Nueva ficha de cliente";
+  $("audit-name").value = audit?.nombre || "";
+  $("audit-include").value = audit ? scopeLines(audit.incluir) : "";
+  $("audit-exclude").value = audit ? scopeLines(audit.excluir) : "";
+  $("audit-include-file").value = "";
+  $("audit-error").textContent = message;
+  $("audit-error").hidden = !message;
+  $("audit-dialog").showModal();
+  $("audit-name").focus();
 }
 document.querySelectorAll(".new-job").forEach(button => button.addEventListener("click", openUpload));
 document.querySelector(".close-upload").addEventListener("click", () => $("upload-dialog").close());
 $("nmap-files").addEventListener("change", (event) => addFiles(event.target.files));
 $("file-list").addEventListener("click", event => { const button = event.target.closest("[data-remove]"); if (button) { files.splice(Number(button.dataset.remove),1); fileList(); } });
-$("range-file").addEventListener("change", async (event) => {
-  try { const file = event.target.files[0]; if (file) { if (file.size > 256000) throw new Error("El fichero de rangos es demasiado grande"); $("ranges").value = await file.text(); } }
-  catch (error) { $("upload-error").hidden = false; $("upload-error").textContent = error.message; }
+$("upload-scope").addEventListener("click", event => {
+  if (!event.target.closest("[data-edit-audit]")) return;
+  $("upload-dialog").close();
+  openAudit(auditById(currentAudit));
+});
+$("audit-select").addEventListener("change", () => { setAudit($("audit-select").value); renderAudits(); clearSelection(); poll(); });
+$("new-audit").addEventListener("click", () => { resumeUpload = false; openAudit(null); });
+$("edit-audit").addEventListener("click", () => { resumeUpload = false; openAudit(auditById(currentAudit)); });
+document.querySelector(".close-audit").addEventListener("click", () => $("audit-dialog").close());
+$("audit-include-file").addEventListener("change", async (event) => {
+  try { const file = event.target.files[0]; if (file) { if (file.size > 256000) throw new Error("El fichero de rangos es demasiado grande"); $("audit-include").value = await file.text(); } }
+  catch (error) { $("audit-error").hidden = false; $("audit-error").textContent = error.message; }
+});
+$("audit-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const button = $("save-audit");
+  button.disabled = true;
+  $("audit-error").hidden = true;
+  try {
+    const body = {nombre: $("audit-name").value, incluir: $("audit-include").value, excluir: $("audit-exclude").value};
+    const saved = await request(editingAudit ? "/api/audits/" + editingAudit.id : "/api/audits", body);
+    audits = [saved, ...audits.filter(audit => audit.id !== saved.id)];
+    const switched = saved.id !== currentAudit;
+    setAudit(saved.id);
+    renderAudits();
+    $("audit-dialog").close();
+    if (switched) clearSelection();
+    else if (currentId) await loadInventory(currentId, viewVersion);  // el alcance cambia las etiquetas
+    notice(editingAudit ? "Ficha guardada. Las capturas sin lanzar se han recalculado con el alcance nuevo." : "");
+    await poll();
+    if (resumeUpload) { resumeUpload = false; openUpload(); }
+  } catch (error) { $("audit-error").hidden = false; $("audit-error").textContent = error.message; }
+  finally { button.disabled = false; }
 });
 for (const type of ["dragenter","dragover"]) $("dropzone").addEventListener(type, event => { event.preventDefault(); $("dropzone").classList.add("dragging"); });
 for (const type of ["dragleave","drop"]) $("dropzone").addEventListener(type, event => { event.preventDefault(); $("dropzone").classList.remove("dragging"); if (type === "drop") addFiles(event.dataTransfer.files); });
@@ -361,7 +456,7 @@ $("upload-form").addEventListener("submit", async event => {
   try {
     if (!files.length || files.length > 20) throw new Error("Selecciona entre 1 y 20 archivos de nmap.");
     if (files.some(f => f.size > 10 * 1024 * 1024) || files.reduce((s,f)=>s+f.size,0) > 24 * 1024 * 1024) throw new Error("Máximo 10 MB por archivo y 24 MB en total.");
-    const payload = {nombre:$("job-name").value,rangos:$("ranges").value,archivos:await Promise.all(files.map(async file => ({nombre:file.name,contenido:await file.text()}))),
+    const payload = {nombre:$("job-name").value,auditoria:currentAudit,archivos:await Promise.all(files.map(async file => ({nombre:file.name,contenido:await file.text()}))),
       opciones:{hilos:Number($("threads").value),timeout:Number($("timeout").value),delay:Number($("delay").value),formato:$("format").value,puertos:$("ports").value,por_servicio:$("by-service").checked,pagina_completa:$("fullpage").checked}};
     const result = await request("/api/jobs", payload);
     $("upload-dialog").close();

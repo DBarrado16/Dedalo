@@ -147,7 +147,7 @@ evidencia (imagen) ← captura → servicio 443/tcp → activo 10.10.5.3 → aud
 
 1. ✅ `db.py`: conexión, migración 1 y pruebas de que el esquema se crea, se reabre y rechaza datos inválidos.
 2. ✅ Importación (`auditoria.py`): de un Nmap a activos, servicios y observaciones, sustituyendo a `inventario.json`. Las ejecuciones antiguas se importan al consultar su inventario.
-3. Auditorías y alcance en el portal: crear, elegir y editar reglas; revisar objetivos marcando su situación.
+3. ✅ Auditorías y alcance en el portal («fichas de cliente»): crear, elegir y editar reglas; revisar objetivos marcando su situación. La consola aplica el alcance con `--solo-rangos` y `--excluir` justo antes de capturar.
 4. Capturas: registrar cada intento y evidencia en la base y aplicar la regla de solo en alcance.
 5. Migración del historial.
 6. Retirar la lectura de `trabajo.json` e `inventario.json` cuando todo lo anterior esté probado.

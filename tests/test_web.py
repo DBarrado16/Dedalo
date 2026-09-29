@@ -23,7 +23,7 @@ from tests.test_nmapshot import ROOT, fake_database
 
 def payload():
     return {"nombre": "Prueba de portal", "archivos": [{"nombre": "escaneo.xml", "contenido": (ROOT / "ejemplos/escaneo.xml").read_text()}],
-            "rangos": "10.10.0.0/17", "opciones": {"timeout": 5, "delay": 0}}
+            "opciones": {"timeout": 5, "delay": 0}}
 
 
 class PortalTests(unittest.TestCase):
@@ -35,6 +35,11 @@ class PortalTests(unittest.TestCase):
         self.thread.start()
         self.url = "http://127.0.0.1:" + str(self.server.server_address[1])
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        # El ejemplo trae 10.10.5.10 (80, 443), 10.10.6.20 (80) y 192.168.1.8 (443), que queda fuera.
+        self.audit = self.store.create_audit({"nombre": "Cliente de prueba", "incluir": "10.10.0.0/17"})
+
+    def payload(self):
+        return payload() | {"auditoria": self.audit["id"]}
 
     def tearDown(self):
         self.server.shutdown()
@@ -56,15 +61,17 @@ class PortalTests(unittest.TestCase):
             return response.status, content
 
     def create(self):
-        status, content = self.request("/api/jobs", payload())
+        status, content = self.request("/api/jobs", self.payload())
         self.assertEqual(status, 201, content)
         return json.loads(content)
 
     def test_upload_preview_is_persistent_and_does_not_capture(self):
         with patch("nmapshot.web.subprocess.run") as run:
             job = self.create()
-            self.assertEqual(job["total"], 4)
-            self.assertEqual(job["subredes"], 3)
+            self.assertEqual(job["total"], 3)
+            self.assertEqual(job["subredes"], 2)
+            self.assertEqual(job["fuera_alcance"], {"fuera": 1, "excluida": 0})
+            self.assertEqual(job["auditoria"], self.audit["id"])
             self.assertEqual(job["estado"], "preparada")
             run.assert_not_called()
         meta = self.store.directory(job["id"]) / "trabajo.json"
@@ -74,16 +81,21 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(json.loads(content)[0]["id"], job["id"])
 
     def test_invalid_upload_and_options(self):
-        data = payload()
+        data = self.payload()
         data["archivos"][0]["contenido"] = "no es nmap"
         self.assertEqual(self.request("/api/jobs", data)[0], 400)
-        data = payload()
+        data = self.payload()
         data["opciones"]["hilos"] = 999
         self.assertEqual(self.request("/api/jobs", data)[0], 400)
-        data = payload()
-        data["rangos"] = "10.0.0.0/80"
+        data = self.payload()
+        data["auditoria"] = "a" * 32
         self.assertEqual(self.request("/api/jobs", data)[0], 400)
         self.assertFalse(self.store.jobs)
+        for scope in ({"nombre": "X", "incluir": "10.0.0.0/80"}, {"nombre": "", "incluir": "10.0.0.0/8"},
+                      {"nombre": "X", "incluir": "10.0.0.0/8", "excluir": "no-es-ip"}):
+            with self.subTest(scope=scope):
+                self.assertEqual(self.request("/api/audits", scope)[0], 400)
+        self.assertEqual(len(json.loads(self.request("/api/audits")[1])), 1)
 
     def test_delete_removes_only_selected_job_and_persists_after_restart(self):
         job, other = self.create(), self.create()
@@ -130,11 +142,11 @@ class PortalTests(unittest.TestCase):
         self.assertTrue(self.store.directory(job["id"]).exists())
 
     def test_csrf_origin_host_and_body_size(self):
-        self.assertEqual(self.request("/api/jobs", payload(), {"X-Nmapshot-Token": "wrong"})[0], 403)
-        self.assertEqual(self.request("/api/jobs", payload(), {"Origin": "https://example.org"})[0], 403)
+        self.assertEqual(self.request("/api/jobs", self.payload(), {"X-Nmapshot-Token": "wrong"})[0], 403)
+        self.assertEqual(self.request("/api/jobs", self.payload(), {"Origin": "https://example.org"})[0], 403)
         self.assertEqual(self.request("/api/jobs", headers={"Host": "example.org"})[0], 403)
-        self.assertEqual(self.request("/api/jobs", payload(), {"Content-Length": str(40*1024*1024)})[0], 413)
-        self.assertEqual(self.request("/api/jobs", payload(), {"Content-Type": "text/plain"})[0], 415)
+        self.assertEqual(self.request("/api/jobs", self.payload(), {"Content-Length": str(40*1024*1024)})[0], 413)
+        self.assertEqual(self.request("/api/jobs", self.payload(), {"Content-Type": "text/plain"})[0], 415)
 
     def test_images_and_downloads_are_scoped_to_job(self):
         job = self.create()
@@ -224,11 +236,11 @@ class PortalTests(unittest.TestCase):
         self.server.store = self.store
         detail = self.store.detail(job["id"])
         self.assertEqual(detail["estado"], "preparada")
-        self.assertEqual(detail["total"], 4)
+        self.assertEqual(detail["total"], 3)
         self.assertEqual(detail["archivos"], ["escaneo.xml"])
 
     def test_inventory_is_available_before_capture_and_survives_restart(self):
-        data = payload()
+        data = self.payload()
         data["archivos"] = [{"nombre": "inventario.xml", "contenido": (ROOT / "ejemplos/inventario.xml").read_text(encoding="utf-8")}]
         with patch("nmapshot.web.subprocess.run") as run:
             status, content = self.request("/api/jobs", data)
@@ -239,7 +251,9 @@ class PortalTests(unittest.TestCase):
             self.assertEqual(status, 200)
             inventory = json.loads(content)
             self.assertEqual((inventory["activos_total"], inventory["servicios_total"]), (4, 9))
-            self.assertEqual(job["total"], 2)
+            # Sus IP de documentación no están en la ficha: se ven, pero no se capturan.
+            self.assertEqual((job["total"], job["fuera_alcance"]["fuera"]), (0, 2))
+            self.assertEqual({a["alcance"] for a in inventory["activos"]}, {"fuera"})
             self.assertEqual(self.request(route + "/download/inventory-json")[0], 200)
             status, content = self.request(route + "/download/inventory-csv")
             self.assertEqual(status, 200)
@@ -286,12 +300,12 @@ class PortalTests(unittest.TestCase):
 
     def test_failed_import_leaves_no_job_behind(self):
         with patch("nmapshot.web.auditoria.import_nmap", side_effect=sqlite3.OperationalError("disco lleno")):
-            self.assertEqual(self.request("/api/jobs", payload())[0], 500)
+            self.assertEqual(self.request("/api/jobs", self.payload())[0], 500)
         self.assertFalse(self.store.jobs)
         self.assertEqual([p.name for p in Path(self.temp.name).iterdir() if p.is_dir()], [])
 
     def test_upload_with_only_non_web_services_retains_inventory(self):
-        data = payload()
+        data = self.payload()
         data["archivos"][0]["contenido"] = "Nmap scan report for 192.0.2.1\n22/tcp open ssh OpenSSH 9.6\n53/udp open domain\n"
         status, content = self.request("/api/jobs", data)
         self.assertEqual(status, 201)
@@ -305,6 +319,47 @@ class PortalTests(unittest.TestCase):
         self.assertIn(b"Nueva captura", content)
         self.assertEqual(self.request("/app.js")[0], 200)
         self.assertEqual(self.request("/style.css")[0], 200)
+
+
+    def test_audit_scope_decides_what_is_captured_and_replans_prepared_jobs(self):
+        job = self.create()
+        directory = self.store.directory(job["id"])
+        self.assertEqual((directory / "rangos.txt").read_text(), "10.10.0.0/17\n")
+        route = "/api/audits/" + self.audit["id"]
+        # Excluir 10.10.5.10 deja solo 10.10.6.20:80.
+        status, content = self.request(route, {"nombre": "Cliente", "incluir": "10.10.0.0/17",
+                                               "excluir": "10.10.5.10  # impresora"})
+        self.assertEqual(status, 200, content)
+        self.assertEqual(json.loads(content)["excluir"], [{"cidr": "10.10.5.10/32", "motivo": "impresora"}])
+        detail = self.store.detail(job["id"])
+        self.assertEqual((detail["total"], detail["fuera_alcance"]), (1, {"fuera": 1, "excluida": 2}))
+        self.assertEqual((directory / "excluir.txt").read_text(), "10.10.5.10/32\n")
+        inventory = {a["ip"]: a["alcance"] for a in self.store.inventory(job["id"])["activos"]}
+        self.assertEqual(inventory, {"10.10.5.10": "excluida", "10.10.6.20": "en_alcance", "192.168.1.8": "fuera"})
+        # Sin rangos incluidos no se puede lanzar nada.
+        self.assertEqual(self.request(route, {"nombre": "Cliente", "incluir": ""})[0], 200)
+        with patch("nmapshot.web.gowitness.find_gowitness", return_value="fake"), patch("nmapshot.web.gowitness.find_chrome", return_value="fake"):
+            status, content = self.request("/api/jobs/" + job["id"] + "/start", {})
+        self.assertEqual(status, 409)
+        self.assertIn("alcance", json.loads(content)["error"])
+        self.assertEqual(self.request("/api/audits/" + "b" * 32, {"nombre": "X", "incluir": ""})[0], 404)
+
+    def test_capture_command_enforces_scope(self):
+        job = self.create()
+        started = threading.Event()
+        def run(command, **kwargs):
+            self.command = command
+            started.set()
+            class Result:
+                returncode = 0
+            return Result()
+        with patch("nmapshot.web.gowitness.find_gowitness", return_value="fake"), patch("nmapshot.web.gowitness.find_chrome", return_value=None), \
+             patch("nmapshot.web.subprocess.run", side_effect=run):
+            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/start", {})[0], 202)
+            self.assertTrue(started.wait(3))
+        directory = self.store.directory(job["id"])
+        self.assertIn("--solo-rangos", self.command)
+        self.assertEqual(self.command[self.command.index("--excluir") + 1], str(directory / "excluir.txt"))
 
 
 class PortTests(unittest.TestCase):

@@ -6,6 +6,11 @@
 <aside class="sidebar">
   <a class="brand" href="/" aria-label="Dedalo, inicio"><svg class="brand-mark" viewBox="0 0 36 36" fill="none" aria-hidden="true"><path d="M18 3H3v30h30V3h-8M10 3v14h7V10h9v16H10v-2M3 24h7M17 17h9M18 26v7" stroke="currentColor" stroke-width="2.5" stroke-linecap="square" stroke-linejoin="miter"/></svg><span>Dedalo<small>Capturas de red</small></span></a>
   <button class="primary new-job">Nueva captura</button>
+  <div class="audit-picker">
+    <label class="sidebar-heading" for="audit-select">Cliente</label>
+    <select id="audit-select"><option value="">Sin fichas</option></select>
+    <div class="audit-actions"><button id="edit-audit" class="link-button" type="button">Editar ficha</button><button id="new-audit" class="link-button" type="button">Nueva ficha</button></div>
+  </div>
   <div class="sidebar-heading">Ejecuciones <span id="job-count">0</span></div>
   <nav id="jobs" aria-label="Historial de ejecuciones"></nav>
   <div class="sidebar-footer"><span class="dot" id="engine-dot"></span><div id="engine-status">Conectando con el motor…</div><small>Guardado en este equipo</small></div>
@@ -59,10 +64,9 @@
         <label id="dropzone" class="dropzone" for="nmap-files"><svg viewBox="0 0 32 36" width="32" height="36" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M7 3h12l7 7v23H7zM19 3v8h7M12 18h9M12 23h9M12 28h6"/></svg><strong>Selecciona o arrastra tus archivos</strong><small>XML, grepable o texto. Hasta 20 archivos.</small><input id="nmap-files" type="file" multiple accept=".xml,.gnmap,.nmap,.txt" aria-label="Archivos de nmap"></label>
         <ul id="file-list" class="file-list"></ul>
       </section>
-      <section><label class="field-label" for="ranges">Rangos del cliente <small>Opcional</small></label>
-        <textarea id="ranges" rows="6" placeholder="10.10.0.0/17&#10;172.16.20.0/22" aria-label="Rangos del cliente"></textarea>
-        <label class="file-link">Cargar rangos desde un .txt<input id="range-file" type="file" accept=".txt,.cidr" aria-label="Archivo de rangos"></label>
-        <p class="hint">Un CIDR por línea. Cada rango se organiza en /24; las IP restantes van a «Fuera de rango».</p>
+      <section><span class="field-label">Alcance del cliente</span>
+        <div id="upload-scope" class="scope-summary"></div>
+        <p class="hint">Solo se capturan las IP de los rangos autorizados que no estén excluidas. Todo lo demás se ve en Activos, pero no se contacta.</p>
       </section>
     </div>
     <details class="advanced"><summary>Opciones de captura <span>HTTP :80 / HTTPS :443</span></summary>
@@ -77,6 +81,25 @@
     </details>
     <p id="upload-error" class="form-error" role="alert" hidden></p>
     <div class="dialog-bottom"><p>La captura comienza después de revisar los objetivos y pulsar «Iniciar captura».</p><button id="prepare-job" class="primary" type="submit">Revisar objetivos</button></div>
+  </form>
+</dialog>
+<dialog id="audit-dialog" aria-labelledby="audit-title">
+  <form id="audit-form">
+    <div class="dialog-heading"><div><h2 id="audit-title">Nueva ficha de cliente</h2><p>Los rangos se escriben una vez aquí y los usan todas las capturas de este cliente.</p></div><button type="button" class="icon-button close-audit" aria-label="Cerrar ficha">×</button></div>
+    <label class="field">Nombre del cliente<input id="audit-name" maxlength="120" placeholder="Ej. Cliente X — septiembre" required></label>
+    <div class="form-columns">
+      <section><label class="field-label" for="audit-include">Rangos autorizados</label>
+        <textarea id="audit-include" rows="8" placeholder="172.31.0.0/16&#10;10.10.0.0/17"></textarea>
+        <label class="file-link">Cargar desde un .txt<input id="audit-include-file" type="file" accept=".txt,.cidr" aria-label="Archivo de rangos autorizados"></label>
+        <p class="hint">Un CIDR o una IP por línea. Solo se captura lo que esté aquí. Cada rango se organiza en /24.</p>
+      </section>
+      <section><label class="field-label" for="audit-exclude">Excluir <small>Opcional</small></label>
+        <textarea id="audit-exclude" rows="8" placeholder="172.31.253.241  # A10 producción"></textarea>
+        <p class="hint">Nunca se contactan, aunque estén dentro de un rango autorizado. Escribe el motivo tras «#».</p>
+      </section>
+    </div>
+    <p id="audit-error" class="form-error" role="alert" hidden></p>
+    <div class="dialog-bottom"><p>Las capturas ya lanzadas no cambian; las preparadas se recalculan con el alcance nuevo.</p><button id="save-audit" class="primary" type="submit">Guardar ficha</button></div>
   </form>
 </dialog>
 <dialog id="image-dialog" aria-label="Detalle de captura"><div class="image-heading"><div><strong id="image-title"></strong><p id="image-url"></p></div><button id="close-image" class="icon-button" aria-label="Cerrar captura">×</button></div><img id="full-image" alt="Captura ampliada"><div class="image-bottom"><span id="image-meta"></span><a id="image-download" class="secondary" download>Descargar imagen</a></div></dialog>

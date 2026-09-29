@@ -108,3 +108,40 @@ class SubnetResolver:
 def read_networks_file(path: str) -> list[str]:
     with open(path, encoding="utf-8-sig") as fh:
         return [line.split("#", 1)[0].strip() for line in fh if line.split("#", 1)[0].strip()]
+
+
+def parse_scope_lines(text: str, limit: int = 10_000) -> list[tuple[str, str]]:
+    """'CIDR o IP  # motivo' por línea -> [(cidr normalizado, motivo)], sin duplicados."""
+    rules: dict[str, str] = {}
+    for number, line in enumerate(text.lstrip("﻿").splitlines(), 1):
+        value, _, reason = line.partition("#")
+        if not value.strip():
+            continue
+        try:
+            network = ipaddress.ip_network(value.strip(), strict=False)
+        except ValueError:
+            raise ValueError(f"Línea {number}: «{value.strip()}» no es una IP ni un CIDR válido") from None
+        rules.setdefault(str(network), reason.strip()[:200])
+    if len(rules) > limit:
+        raise ValueError(f"Como máximo {limit} reglas de alcance")
+    return list(rules.items())
+
+
+class Scope:
+    """Alcance de una auditoría (docs/CONTRATOS.md 0.3): incluir menos excluir.
+
+    La exclusión siempre gana y, sin reglas de inclusión, nada está en alcance."""
+
+    IN, EXCLUDED, OUT = "en_alcance", "excluida", "fuera"
+
+    def __init__(self, include: list[str], exclude: list[str] = ()):
+        self.include = [ipaddress.ip_network(n, strict=False) for n in include]
+        self.exclude = [ipaddress.ip_network(n, strict=False) for n in exclude]
+
+    def status(self, ip: str) -> str:
+        addr = ipaddress.ip_address(ip)
+        if any(net.version == addr.version and addr in net for net in self.exclude):
+            return self.EXCLUDED
+        if any(net.version == addr.version and addr in net for net in self.include):
+            return self.IN
+        return self.OUT
