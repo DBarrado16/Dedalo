@@ -484,7 +484,7 @@ $("upload-form").addEventListener("submit", async event => {
     if (!files.length || files.length > 20) throw new Error("Selecciona entre 1 y 20 archivos de nmap.");
     if (files.some(f => f.size > 10 * 1024 * 1024) || files.reduce((s,f)=>s+f.size,0) > 24 * 1024 * 1024) throw new Error("Máximo 10 MB por archivo y 24 MB en total.");
     const payload = {nombre:$("job-name").value,auditoria:currentAudit,archivos:await Promise.all(files.map(async file => ({nombre:file.name,contenido:await file.text()}))),
-      opciones:{hilos:Number($("threads").value),timeout:Number($("timeout").value),delay:Number($("delay").value),formato:$("format").value,puertos:$("ports").value,por_servicio:$("by-service").checked,pagina_completa:$("fullpage").checked}};
+      opciones:{hilos:Number($("threads").value),timeout:Number($("timeout").value),delay:Number($("delay").value),formato:$("format").value,puertos:$("ports").value,por_servicio:$("by-service").checked,pagina_completa:$("fullpage").checked,driver:$("driver").value,reintentar:$("retry").checked}};
     const result = await request("/api/jobs", payload);
     $("upload-dialog").close();
     notice("");

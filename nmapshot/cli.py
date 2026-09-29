@@ -54,6 +54,10 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--delay", type=nonnegative, default=10, help="Espera antes de capturar, segundos (10)")
     capture.add_argument("--formato", choices=["jpeg", "png"], default="jpeg")
     capture.add_argument("--pagina-completa", action="store_true", help="Capturar la página completa")
+    capture.add_argument("--driver", choices=gowitness.DRIVERS, default=gowitness.DRIVERS[0],
+                         help=f"Motor con el que gowitness maneja el navegador ({gowitness.DRIVERS[0]})")
+    capture.add_argument("--sin-reintento", action="store_true",
+                         help="No reintentar con el otro motor las páginas que cargan pero no dan imagen")
     capture.add_argument("--chrome", help="Ruta o nombre del ejecutable Chrome/Chromium/Edge")
     capture.add_argument("--gowitness", help="Ruta o nombre del ejecutable gowitness v3")
     capture.add_argument("--stop-file", help=argparse.SUPPRESS)
@@ -132,7 +136,8 @@ def capture(args) -> int:
     binary = gowitness.find_gowitness(args.gowitness)
     chrome = gowitness.find_chrome(args.chrome)
     opts = {"threads": args.hilos, "timeout": args.timeout, "delay": args.delay,
-            "format": args.formato, "chrome": chrome, "fullpage": args.pagina_completa}
+            "format": args.formato, "chrome": chrome, "fullpage": args.pagina_completa,
+            "driver": args.driver, "retry": not args.sin_reintento}
     root = Path(args.salida or ("salida/" + datetime.now().strftime("%Y%m%d-%H%M%S-%f"))).resolve()
     if root.exists() and (not root.is_dir() or any(root.iterdir())):
         raise ValueError(f"La salida no está vacía: {root}. Usa una carpeta nueva para no mezclar ejecuciones.")
@@ -161,6 +166,18 @@ def capture(args) -> int:
         error = ""
         try:
             gowitness.scan_subnet(binary, directory, urls, opts)
+            stopping = getattr(args, "stop_file", None) and Path(args.stop_file).exists()
+            retry = gowitness.retry_candidates(directory, urls) if opts["retry"] and not stopping else []
+            if retry:
+                # La página respondió pero no hubo imagen: el otro motor a veces sí la obtiene.
+                other = gowitness.other_driver(opts["driver"])
+                print(f"  {len(retry)} sin imagen; se reintentan con el motor {other}...", flush=True)
+                try:
+                    gowitness.scan_subnet(binary, directory, retry, {**opts, "driver": other},
+                                          gowitness.RETRY_URLS, gowitness.RETRY_LOG)
+                except (OSError, subprocess.CalledProcessError) as exc:
+                    # Lo capturado en la primera pasada sigue siendo válido.
+                    print(f"  El reintento no pudo completarse: {exc}. Consulta {gowitness.RETRY_LOG}", file=sys.stderr)
         except KeyboardInterrupt:
             interrupted = True
             error = "Captura interrumpida por el usuario"

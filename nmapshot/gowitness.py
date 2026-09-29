@@ -17,6 +17,15 @@ import urllib.request
 DB_NAME = "gowitness.sqlite3"
 SHOTS_DIR = "capturas"
 URLS_FILE = "urls.txt"
+LOG_NAME = "gowitness.log"
+# Segunda pasada con el otro motor para las URL cuya página cargó pero no dio imagen.
+RETRY_URLS = "urls-reintento.txt"
+RETRY_LOG = "gowitness-reintento.log"
+# Motores de gowitness para manejar el navegador. gorod va primero: chromedp se
+# queda sin imagen en páginas que gorod captura (probado con scanme.nmap.org y
+# una espera de 3 s o más).
+DRIVERS = ("gorod", "chromedp")
+GRAB_FAILED = "could not grab screenshot"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 VERSION = "3.2.0"
@@ -142,18 +151,21 @@ def find_chrome(explicit: str | None) -> str | None:
     return None
 
 
-def scan_subnet(binary: str, workdir: str | Path, urls: list[str], opts: dict) -> None:
+def scan_subnet(binary: str, workdir: str | Path, urls: list[str], opts: dict,
+                urls_file: str = URLS_FILE, log_name: str = LOG_NAME) -> None:
+    """Captura las URL en la base de la subred; una segunda pasada añade filas a la misma base."""
     directory = Path(workdir)
     (directory / SHOTS_DIR).mkdir(parents=True, exist_ok=True)
     # gowitness expande a 80 Y 443 las URLs sin puerto explícito. Escribirlo
     # siempre, incluso para los puertos estándar, limita la captura a nmap.
     exact_urls = [explicit_port(url) for url in urls]
-    (directory / URLS_FILE).write_text("\n".join(exact_urls) + "\n", encoding="utf-8")
+    (directory / urls_file).write_text("\n".join(exact_urls) + "\n", encoding="utf-8")
     cmd = [
-        binary, "scan", "file", "-f", URLS_FILE,
+        binary, "scan", "file", "-f", urls_file,
         "--write-db", "--write-db-uri", f"sqlite://{DB_NAME}",
         "-s", SHOTS_DIR, "-t", str(opts["threads"]), "-T", str(opts["timeout"]),
         "--delay", str(opts["delay"]), "--screenshot-format", opts["format"],
+        "--driver", opts.get("driver") or DRIVERS[0],
         "--log-scan-errors", "--no-log-color",
     ]
     if opts.get("chrome"):
@@ -165,8 +177,23 @@ def scan_subnet(binary: str, workdir: str | Path, urls: list[str], opts: dict) -
         # Edge se relanza al heredar capas de compatibilidad y pierde el canal
         # DevTools que espera gowitness. El ajuste solo afecta a este proceso.
         environment.pop("__COMPAT_LAYER", None)
-    with (directory / "gowitness.log").open("w", encoding="utf-8") as log:
+    with (directory / log_name).open("w", encoding="utf-8") as log:
         subprocess.run(cmd, cwd=directory, check=True, stdout=log, stderr=subprocess.STDOUT, env=environment)
+
+
+def other_driver(driver: str) -> str:
+    return DRIVERS[1] if driver == DRIVERS[0] else DRIVERS[0]
+
+
+def retry_candidates(directory: Path, urls: list[str]) -> list[str]:
+    """URL cuya página respondió pero el navegador no pudo sacar la imagen.
+
+    Solo ese fallo se reintenta con el otro motor: un error de conexión o de
+    carga se repetiría igual y solo alargaría la subred.
+    """
+    failed = {key for key, kind, _ in _log_errors(Path(directory) / LOG_NAME) if kind == GRAB_FAILED}
+    captured = read_results(Path(directory) / DB_NAME)
+    return [url for url in urls if normalize_url(url) in failed and normalize_url(url) not in captured]
 
 
 def explicit_port(url: str) -> str:
@@ -188,27 +215,35 @@ def normalize_url(url: str) -> str:
     return urlunsplit((parts.scheme.lower(), host.lower(), parts.path or "/", parts.query, ""))
 
 
-def read_errors(directory: Path) -> dict[str, str]:
-    """Recuperar el error de cada URL, también para ejecuciones antiguas."""
-    errors = {}
+def _log_errors(path: Path):
+    """(URL normalizada, tipo de fallo, mensaje) de cada error de un registro de gowitness."""
     try:
-        with (directory / "gowitness.log").open(encoding="utf-8", errors="replace") as log:
+        with path.open(encoding="utf-8", errors="replace") as log:
             for line in log:
-                match = re.search(r'(?:failed to witness target|could not grab screenshot) target=(\S+) err=("(?:[^"\\]|\\.)*")', line)
+                match = re.search(r'(failed to witness target|could not grab screenshot) target=(\S+) err=("(?:[^"\\]|\\.)*")', line)
                 if not match:
                     continue
                 try:
-                    message = json.loads(match[2])
-                    key = normalize_url(match[1])
+                    yield normalize_url(match[2]), match[1], json.loads(match[3])
                 except (ValueError, KeyError):
                     continue
-                if "ERR_NETWORK_ACCESS_DENIED" in message:
-                    message = "Acceso a la red denegado (ERR_NETWORK_ACCESS_DENIED). Comprueba que el portal se haya iniciado con acceso a la red/VPN."
-                elif "ERR_INVALID_AUTH_CREDENTIALS" in message:
-                    message = "El servidor requiere autenticación HTTP (ERR_INVALID_AUTH_CREDENTIALS). El motor no utiliza las credenciales guardadas en tu navegador."
-                errors[key] = message
     except OSError:
-        pass
+        return
+
+
+def read_errors(directory: Path) -> dict[str, str]:
+    """Recuperar el error de cada URL, también para ejecuciones antiguas.
+
+    Si la URL se reintentó con el otro motor, prevalece el error del reintento.
+    """
+    errors = {}
+    for name, prefix in ((LOG_NAME, ""), (RETRY_LOG, "También sin imagen al reintentar con el otro motor: ")):
+        for key, _, message in _log_errors(Path(directory) / name):
+            if "ERR_NETWORK_ACCESS_DENIED" in message:
+                message = "Acceso a la red denegado (ERR_NETWORK_ACCESS_DENIED). Comprueba que el portal se haya iniciado con acceso a la red/VPN."
+            elif "ERR_INVALID_AUTH_CREDENTIALS" in message:
+                message = "El servidor requiere autenticación HTTP (ERR_INVALID_AUTH_CREDENTIALS). El motor no utiliza las credenciales guardadas en tu navegador."
+            errors[key] = prefix + message
     return errors
 
 

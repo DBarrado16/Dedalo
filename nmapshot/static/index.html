@@ -75,9 +75,10 @@
         <label class="field">Timeout (s)<input id="timeout" type="number" min="1" max="300" value="60" required></label>
         <label class="field">Espera antes de capturar (s)<input id="delay" type="number" min="0" max="30" value="10" required><small>Da tiempo a cargar el contenido dinámico. Por defecto 10 s; para webs lentas, prueba 20–30 s.</small></label>
         <label class="field">Formato<select id="format"><option value="jpeg">JPEG</option><option value="png">PNG</option></select></label>
+        <label class="field">Motor del navegador<select id="driver"><option value="gorod">gorod</option><option value="chromedp">chromedp</option></select><small>Cómo gowitness maneja el navegador. gorod obtiene imagen en páginas donde chromedp se queda esperando.</small></label>
       </div>
       <label class="field">Puertos adicionales<input id="ports" placeholder="8080=http,8443=https"></label>
-      <div class="checks"><label><input id="by-service" type="checkbox"> Incluir otros servicios HTTP detectados</label><label><input id="fullpage" type="checkbox"> Página completa</label></div>
+      <div class="checks"><label><input id="by-service" type="checkbox"> Incluir otros servicios HTTP detectados</label><label><input id="fullpage" type="checkbox"> Página completa</label><label><input id="retry" type="checkbox" checked> Reintentar con el otro motor las páginas que cargan sin imagen</label></div>
     </details>
     <p id="upload-error" class="form-error" role="alert" hidden></p>
     <div class="dialog-bottom"><p>La captura comienza después de revisar los objetivos y pulsar «Iniciar captura».</p><button id="prepare-job" class="primary" type="submit">Revisar objetivos</button></div>

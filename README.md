@@ -73,7 +73,7 @@ El portal está en [http://127.0.0.1:8787](http://127.0.0.1:8787). Desde ahí:
 1. En **Cliente**, elige la ficha del cliente o pulsa **Nueva ficha**: nombre, **rangos autorizados** (un CIDR o IP por línea, o desde un .txt) y, si hace falta, **exclusiones** con su motivo tras `#` (por ejemplo `172.31.253.241  # A10 producción`). Los rangos se escriben una sola vez y los usan todas las capturas de ese cliente. La lista de ejecuciones muestra solo las del cliente elegido.
 2. Pulsa **Nueva captura**, pon nombre a la ejecución y arrastra o selecciona uno o varios nmap (XML, grepable o normal). El formulario muestra el alcance de la ficha.
 3. **Solo se capturan las IP en alcance**: dentro de un rango autorizado y no excluidas. El resto se importa y aparece en Activos con la etiqueta «Fuera de alcance» o «Excluida», pero Dedalo no se conecta a ellas. Una ficha sin rangos autorizados no puede lanzar capturas. Si editas la ficha, las ejecuciones aún no lanzadas se recalculan; las ya lanzadas no cambian.
-4. Si hace falta, ajusta puertos adicionales, concurrencia, timeout, espera, formato o página completa.
+4. Si hace falta, ajusta puertos adicionales, concurrencia, timeout, espera, formato, página completa o el motor del navegador (ver «Motor del navegador y reintento»).
 5. Pulsa **Revisar objetivos**: se muestra el reparto por rango y subred, y cuántos objetivos web quedan fuera de alcance o excluidos, sin hacer conexiones a los objetivos.
 6. Pulsa **Iniciar captura**. Los trabajos se encolan y se ejecutan de uno en uno.
 7. Consulta las imágenes y filtra por rango, subred, estado o texto. Puedes ampliar y descargar imágenes, descargar CSV/JSON o consultar el registro sin salir del portal. **Descargar capturas** en la cabecera de cada subred descarga un ZIP con todas sus capturas, aunque haya filtros activos. Cada imagen se llama `IP_PUERTO_ESQUEMA` (por ejemplo `10.10.5.1_443_https.jpeg`) y el `indice.csv` del ZIP recoge su URL, URL final, código HTTP y título. **Copiar para OneNote** copia al portapapeles todas las capturas de la subred como `IP:puerto` en negrita con su imagen debajo; pégalas en una página de OneNote con Ctrl+V. Las imágenes van incluidas en lo copiado, así que no hace falta que el portal siga abierto al pegar.
@@ -188,6 +188,8 @@ Si la misma IP aparece en varios archivos, se unen sus puertos abiertos; no se i
 | `--delay 10` | Espera antes de la captura, segundos (10 por defecto). Para contenido lento, prueba 20–30. |
 | `--formato jpeg` | `jpeg` o `png`. |
 | `--pagina-completa` | Solicita captura de página completa a gowitness. |
+| `--driver gorod` | Motor con el que gowitness maneja el navegador: `gorod` (por defecto) o `chromedp`. |
+| `--sin-reintento` | No reintenta con el otro motor las páginas que cargan pero no dan imagen. |
 | `--chrome RUTA` | Navegador que debe utilizar. |
 | `--gowitness RUTA` | Ejecutable de gowitness v3. |
 
@@ -322,7 +324,8 @@ Sube nmap y rangos de prueba, inicia el trabajo y verifica capturas HTTP/HTTPS, 
 - Las tarjetas muestran el error específico del motor, también en ejecuciones antiguas. Un error `ERR_INVALID_AUTH_CREDENTIALS` indica autenticación HTTP requerida; el perfil temporal no comparte las credenciales de tu navegador.
 - Selección automática en Windows: Chrome instalado, Chromium headless de una instalación existente de Playwright y, por último, Edge. `--chrome` tiene prioridad. Chromium headless resolvió un bloqueo de Edge al generar capturas de un panel ORION; no se instala ni se descarga ningún navegador adicional mediante esta detección.
 
-- Probado en Windows con gowitness 3.2.0 y Edge. El código contempla Linux, pero no se ha ejecutado aquí una prueba real en Kali.
+- **Motor del navegador y reintento.** gowitness maneja el navegador con uno de sus dos motores internos, `gorod` o `chromedp`; no hay que instalar nada. Dedalo usa `gorod` por defecto: con `chromedp` y una espera de 3 s o más, scanme.nmap.org respondía 200 con título pero la captura acababa en `context deadline exceeded`, y con `gorod` se capturaba en unos 5 s. Si una página carga pero se queda sin imagen (`could not grab screenshot`), al terminar su subred se reintenta una vez con el otro motor, en la misma base y con su propio registro `gowitness-reintento.log`. Los errores de conexión no se reintentan. Si el reintento también falla, la tarjeta lo indica. En el portal ambos ajustes están en **Opciones de captura**.
+- Probado en Windows con gowitness 3.2.0, Chrome y Edge. El código contempla Linux, pero no se ha ejecutado aquí una prueba real en Kali.
 - Las URI de SQLite que recibe gowitness son relativas a su carpeta, evitando el conflicto de `C:\...` con el formato URI.
 - En Windows, al lanzar Edge, se omite `__COMPAT_LAYER` solo en el entorno del proceso hijo. La capa heredada puede hacer que Edge se relance y rompa su conexión de automatización. No se modifica el entorno del equipo.
 - El navegador usa el perfil temporal de gowitness, sin reutilizar las sesiones personales.

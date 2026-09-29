@@ -543,6 +543,35 @@ class PortalTests(unittest.TestCase):
         directory = self.store.directory(job["id"])
         self.assertIn("--solo-rangos", self.command)
         self.assertEqual(self.command[self.command.index("--excluir") + 1], str(directory / "excluir.txt"))
+        # Por defecto, gorod y reintento con el otro motor.
+        self.assertEqual(self.command[self.command.index("--driver") + 1], "gorod")
+        self.assertNotIn("--sin-reintento", self.command)
+
+    def test_browser_engine_options_reach_the_engine(self):
+        data = self.payload()
+        data["opciones"].update(driver="chromedp", reintentar=False)
+        status, content = self.request("/api/jobs", data)
+        self.assertEqual(status, 201, content)
+        job = json.loads(content)
+        self.assertEqual((job["opciones"]["driver"], job["opciones"]["reintentar"]), ("chromedp", False))
+        started = threading.Event()
+        def run(command, **kwargs):
+            self.command = command
+            started.set()
+            class Result:
+                returncode = 0
+            return Result()
+        with patch("nmapshot.web.gowitness.find_gowitness", return_value="fake"), patch("nmapshot.web.gowitness.find_chrome", return_value=None), \
+             patch("nmapshot.web.subprocess.run", side_effect=run):
+            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/start", {})[0], 202)
+            self.assertTrue(started.wait(3))
+        self.assertEqual(self.command[self.command.index("--driver") + 1], "chromedp")
+        self.assertIn("--sin-reintento", self.command)
+        for invalid in ({"driver": "firefox"}, {"reintentar": "si"}):
+            data = self.payload()
+            data["opciones"].update(invalid)
+            with self.subTest(invalid=invalid):
+                self.assertEqual(self.request("/api/jobs", data)[0], 400)
 
 
 class PortTests(unittest.TestCase):

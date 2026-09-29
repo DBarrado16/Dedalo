@@ -77,10 +77,13 @@ def options_from(raw):
     result["puertos"] = text_field(raw.get("puertos", ""), "Puertos", 2000)
     from .targets import parse_port_map
     parse_port_map(result["puertos"])
-    for key in ("por_servicio", "pagina_completa"):
-        result[key] = raw.get(key, False)
+    for key, default in (("por_servicio", False), ("pagina_completa", False), ("reintentar", True)):
+        result[key] = raw.get(key, default)
         if type(result[key]) is not bool:
             raise ValueError(f"{key}: valor inválido")
+    result["driver"] = raw.get("driver", gowitness.DRIVERS[0])
+    if result["driver"] not in gowitness.DRIVERS:
+        raise ValueError("Motor del navegador inválido")
     return result
 
 
@@ -165,7 +168,8 @@ class PortalStore:
                     if (result / report.MANIFEST).is_file():
                         manifest = report.load_manifest(result)
                         logs = [self.directory(job_id) / "proceso.log"] + [
-                            report.inside(result, g["carpeta"]) / "gowitness.log" for g in manifest["grupos"]]
+                            report.inside(result, g["carpeta"]) / name for g in manifest["grupos"]
+                            for name in (gowitness.LOG_NAME, gowitness.RETRY_LOG)]
                         auditoria.record_captures(con, capture_id, manifest, result, self.root, logs)
                 auditoria.set_state(con, capture_id, state, error)
         except Exception as exc:
@@ -474,7 +478,11 @@ class PortalStore:
                         "--gowitness", binary, "--stop-file", str(directory / "parar"),
                         "--puertos", options["puertos"], "--formato", options["formato"],
                         "--hilos", str(options["hilos"]), "--timeout", str(options["timeout"]),
-                        "--delay", str(options["delay"])]
+                        "--delay", str(options["delay"]),
+                        # Ejecuciones preparadas antes de existir estas opciones: valores por defecto.
+                        "--driver", options.get("driver", gowitness.DRIVERS[0])]
+            if not options.get("reintentar", True):
+                command.append("--sin-reintento")
             if chrome:
                 command += ["--chrome", chrome]
             if options["por_servicio"]:
@@ -576,10 +584,12 @@ class PortalStore:
         paths = [directory / "proceso.log"]
         manifest = self._manifest(meta)
         if manifest:
-            paths += [report.inside(directory / "resultado", g["carpeta"]) / "gowitness.log"
-                      for g in manifest["grupos"] if g["estado"] in ("en_curso", "parcial", "error", "interrumpido")]
+            paths += [report.inside(directory / "resultado", g["carpeta"]) / name
+                      for g in manifest["grupos"] if g["estado"] in ("en_curso", "parcial", "error", "interrumpido")
+                      for name in (gowitness.LOG_NAME, gowitness.RETRY_LOG)]
         lines = []
-        for path in paths[-8:]:
+        # El registro del proceso y los siete últimos de gowitness que existan.
+        for path in paths[:1] + [p for p in paths[1:] if p.is_file()][-7:]:
             if path.is_file():
                 with path.open("rb") as file:
                     file.seek(max(0, path.stat().st_size - 16000))

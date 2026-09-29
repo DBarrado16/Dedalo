@@ -155,6 +155,78 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("10.10.5.0/24", output)
 
+    def fake_engine(self, calls, retry_works=True):
+        """gowitness simulado: en la primera pasada las HTTPS cargan pero se quedan sin imagen."""
+        def scan(binary, directory, urls, opts, urls_file=gowitness.URLS_FILE, log_name=gowitness.LOG_NAME):
+            directory = Path(directory)
+            calls.append((opts["driver"], log_name, list(urls)))
+            (directory / "capturas").mkdir(parents=True, exist_ok=True)
+            con = sqlite3.connect(directory / gowitness.DB_NAME)
+            con.execute("CREATE TABLE IF NOT EXISTS results (id INTEGER PRIMARY KEY, url TEXT, final_url TEXT, "
+                        "response_code INTEGER, title TEXT, filename TEXT, failed INTEGER)")
+            errors = []
+            for url in urls:
+                exact = gowitness.explicit_port(url)
+                if url.startswith("https://") and (log_name == gowitness.LOG_NAME or not retry_works):
+                    con.execute("INSERT INTO results (url, final_url, response_code, title, filename, failed) "
+                                "VALUES (?, ?, 200, 'Sin imagen', '', 0)", (exact, url))
+                    errors.append(f'ERRO could not grab screenshot target={exact} err="context deadline exceeded"')
+                else:
+                    name = f"{len(calls)}-{url.split('//')[1].strip('/').replace(':', '_')}.png"
+                    (directory / "capturas" / name).write_bytes(b"test-image")
+                    con.execute("INSERT INTO results (url, final_url, response_code, title, filename, failed) "
+                                "VALUES (?, ?, 200, 'Con imagen', ?, 0)", (exact, url, name))
+            con.commit()
+            con.close()
+            (directory / log_name).write_text("".join(line + "\n" for line in errors), encoding="utf-8")
+        return scan
+
+    def run_with(self, destination, scan, extra=()):
+        with patch("nmapshot.gowitness.find_gowitness", return_value="fake"), \
+                patch("nmapshot.gowitness.find_chrome", return_value="fake"), \
+                patch("nmapshot.gowitness.scan_subnet", side_effect=scan):
+            return self.call(self.arguments(destination) + list(extra))
+
+    def test_pages_without_image_are_retried_with_the_other_engine(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination, calls = Path(temporary) / "salida", []
+            code, output = self.run_with(destination, self.fake_engine(calls))
+            self.assertEqual(code, 0, output)
+            self.assertEqual([c for c in calls if c[1] == gowitness.RETRY_LOG], [
+                ("chromedp", gowitness.RETRY_LOG, ["https://10.10.5.10/"]),
+                ("chromedp", gowitness.RETRY_LOG, ["https://192.168.1.8/"]),
+            ])
+            self.assertTrue(all(c[0] == "gorod" for c in calls if c[1] == gowitness.LOG_NAME))
+            data = report.load_manifest(destination)
+            self.assertEqual((data["estado"], data["opciones"]["driver"], data["opciones"]["retry"]), ("completa", "gorod", True))
+            titles = {r["url"]: r["titulo"] for g in data["grupos"] for r in g["resultados"]}
+            self.assertEqual(titles["https://10.10.5.10/"], "Con imagen")
+            self.assertIn("se reintentan con el motor chromedp", output)
+
+    def test_retry_can_be_disabled_and_reports_when_it_also_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            calls = []
+            code, _ = self.run_with(Path(temporary) / "sin", self.fake_engine(calls), ["--sin-reintento", "--driver", "chromedp"])
+            self.assertEqual(code, 3)
+            self.assertEqual({c[:2] for c in calls}, {("chromedp", gowitness.LOG_NAME)})
+            calls = []
+            destination = Path(temporary) / "falla"
+            code, _ = self.run_with(destination, self.fake_engine(calls, retry_works=False))
+            self.assertEqual(code, 3)
+            rows = {r["url"]: r for g in report.load_manifest(destination)["grupos"] for r in g["resultados"]}
+            self.assertEqual(rows["https://10.10.5.10/"]["estado"], "sin_captura")
+            self.assertEqual(rows["https://10.10.5.10/"]["error"],
+                             "También sin imagen al reintentar con el otro motor: context deadline exceeded")
+
+    def test_connection_errors_are_not_retried(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / gowitness.LOG_NAME).write_text(
+                'ERRO failed to witness target target=http://10.0.0.1:80/ err="page load error net::ERR_CONNECTION_REFUSED"\n'
+                'ERRO could not grab screenshot target=http://10.0.0.2:80/ err="context deadline exceeded"\n', encoding="utf-8")
+            self.assertEqual(gowitness.retry_candidates(directory, ["http://10.0.0.1/", "http://10.0.0.2/", "http://10.0.0.3/"]),
+                             ["http://10.0.0.2/"])
+
     def test_failed_binary_continues_other_groups(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "salida"
@@ -254,6 +326,8 @@ class WorkflowTests(unittest.TestCase):
                         "threads": 1, "timeout": 5, "delay": 0, "format": "png", "chrome": "msedge.exe",
                     })
                 self.assertNotIn("__COMPAT_LAYER", run.call_args.kwargs["env"])
+                command = run.call_args.args[0]
+                self.assertEqual(command[command.index("--driver") + 1], "gorod")
                 self.assertEqual(os.environ["__COMPAT_LAYER"], "DetectorsAppHealth")
                 self.assertEqual((Path(temporary) / "urls.txt").read_text().strip(), "http://127.0.0.1:80/")
 
