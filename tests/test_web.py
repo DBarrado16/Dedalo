@@ -304,6 +304,40 @@ class PortalTests(unittest.TestCase):
         self.assertFalse(self.store.jobs)
         self.assertEqual([p.name for p in Path(self.temp.name).iterdir() if p.is_dir()], [])
 
+    def test_long_import_does_not_block_the_portal_and_uses_the_latest_scope(self):
+        started, release = threading.Event(), threading.Event()
+        original = auditoria.import_nmap
+
+        def slow_import(*args, **kwargs):
+            started.set()
+            release.wait(5)
+            return original(*args, **kwargs)
+
+        result = {}
+        with patch("nmapshot.web.auditoria.import_nmap", side_effect=slow_import):
+            upload = threading.Thread(target=lambda: result.update(response=self.request("/api/jobs", self.payload())))
+            upload.start()
+            self.assertTrue(started.wait(5))
+            # Con la importación en marcha, el portal responde y la ficha se puede editar.
+            self.assertEqual(self.request("/api/jobs")[0], 200)
+            status, _ = self.request("/api/audits/" + self.audit["id"], {"nombre": "Cliente", "incluir": "10.10.0.0/17",
+                                                                        "excluir": "10.10.5.10"})
+            self.assertEqual(status, 200)
+            release.set()
+            upload.join(10)
+        status, content = result["response"]
+        self.assertEqual(status, 201, content)
+        job = json.loads(content)
+        self.assertEqual((job["total"], job["fuera_alcance"]), (1, {"fuera": 1, "excluida": 2}))
+
+    def test_failure_after_import_removes_it_from_the_database(self):
+        with patch.object(self.store, "_save", side_effect=OSError("Archivo ocupado")):
+            self.assertEqual(self.request("/api/jobs", self.payload())[0], 500)
+        self.assertFalse(self.store.jobs)
+        with closing(self.store.database()) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM ejecucion").fetchone()[0], 0)
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM activo").fetchone()[0], 0)
+
     def test_upload_with_only_non_web_services_retains_inventory(self):
         data = self.payload()
         data["archivos"][0]["contenido"] = "Nmap scan report for 192.0.2.1\n22/tcp open ssh OpenSSH 9.6\n53/udp open domain\n"

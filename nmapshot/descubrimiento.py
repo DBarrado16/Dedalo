@@ -21,11 +21,15 @@ import struct
 import threading
 import time
 
+from . import targets
+
 MODES = ("nombres", "servidores")
 MAX_ADDRESSES = 65_536
 # Códigos de respuesta DNS que interesa distinguir en el informe.
 RCODES = {0: "correcta", 1: "error de formato", 2: "fallo del servidor",
           3: "dominio inexistente", 4: "no implementado", 5: "consulta rechazada"}
+OUT_OF_SCOPE = {targets.Scope.EXCLUDED: "Excluida del alcance: no se consulta",
+                targets.Scope.OUT: "Fuera de alcance: no se consulta"}
 
 
 def expand(networks: list[str], limit: int = MAX_ADDRESSES) -> list[str]:
@@ -72,19 +76,23 @@ def dns_server(ip: str, domain: str, timeout: float = 2.0, port: int = 53) -> tu
     family = socket.AF_INET6 if ":" in ip else socket.AF_INET
     try:
         with socket.socket(family, socket.SOCK_DGRAM) as sock:
-            sock.settimeout(timeout)
-            sock.sendto(packet, (ip, port))
-            # Descartar respuestas que no correspondan a esta consulta.
+            # Socket conectado: el sistema descarta respuestas de otra IP o puerto,
+            # así que una respuesta ajena nunca se atribuye a esta dirección.
+            sock.connect((ip, port))
+            sock.send(packet)
+            # Descartar respuestas que no correspondan a esta consulta, sin pasar del límite.
             deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                data, _ = sock.recvfrom(4096)
+            while (remaining := deadline - time.monotonic()) > 0:
+                sock.settimeout(remaining)
+                data = sock.recv(4096)
                 if len(data) >= 12 and data[:2] == packet[:2] and data[2] & 0x80:
                     flags, _questions, answers = struct.unpack(">HHH", data[2:8])
                     code = flags & 0x0F
                     detail = RCODES.get(code, f"código {code}")
                     return True, f"{detail}; {answers} respuesta(s)", ""
-    except (socket.timeout, ConnectionResetError):
-        # Sin respuesta, o puerto cerrado: no es un servidor DNS, y no es un fallo.
+    except (socket.timeout, ConnectionResetError, ConnectionRefusedError):
+        # Sin respuesta, o puerto cerrado (Windows: reset; Linux: refused): no es un
+        # servidor DNS, y no es un fallo.
         return False, "", ""
     except OSError as exc:
         return False, "", str(exc)
@@ -108,16 +116,23 @@ class _Pacer:
             time.sleep(pause)
 
 
-def sweep(addresses: list[str], mode: str, domain: str = "", *, timeout: float = 2.0,
+def sweep(addresses: list[str], mode: str, domain: str = "", *, scope=None, timeout: float = 2.0,
           delay: float = 0.0, workers: int = 4, stop=None, progress=None) -> list[dict]:
     """Recorre las direcciones en uno de los dos modos, en el orden recibido.
 
+    `scope` (un targets.Scope o cualquier objeto con `status(ip)`) se consulta
+    justo antes de cada consulta (docs/CONTRATOS.md 0.3): lo que no está en
+    alcance se devuelve con el motivo y sin consultar. Es obligatorio en el modo
+    `servidores`, que conecta con los objetivos.
+
     `stop()` devuelve True para cancelar entre consultas y `progress(hechas, total)`
-    informa del avance. Las direcciones no consultadas simplemente no aparecen.
+    informa del avance. Las direcciones no consultadas por cancelación no aparecen.
     """
     if mode not in MODES:
         raise ValueError(f"Modo de descubrimiento desconocido: {mode!r}")
     if mode == "servidores":
+        if scope is None:
+            raise ValueError("El modo «servidores» conecta con los objetivos y necesita el alcance de la ficha")
         query_packet(domain, 0)  # valida el dominio antes de abrir ningún socket
     pacer = _Pacer(delay)
     done = threading.Lock()
@@ -129,7 +144,10 @@ def sweep(addresses: list[str], mode: str, domain: str = "", *, timeout: float =
         pacer.wait()
         if stop and stop():
             return None
-        if mode == "nombres":
+        status = scope.status(ip) if scope is not None else targets.Scope.IN
+        if status != targets.Scope.IN:
+            row = {"ip": ip, "encontrado": False, "nombre": "", "detalle": "", "error": OUT_OF_SCOPE[status]}
+        elif mode == "nombres":
             name, error = reverse_name(ip)
             row = {"ip": ip, "encontrado": bool(name), "nombre": name, "detalle": "", "error": error}
         else:

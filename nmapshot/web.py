@@ -89,6 +89,7 @@ class PortalStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self.binary_option, self.chrome_option = binary, chrome
         self.lock = threading.RLock()
+        self.imports = threading.Lock()
         self.pending = queue.Queue()
         self.closing = False
         self.token = secrets.token_urlsafe(32)
@@ -191,23 +192,35 @@ class PortalStore:
                 elif not isinstance(audit_id, str) or not auditoria.audit_exists(con, audit_id):
                     raise ValueError("Elige una ficha de cliente existente")
                 scope = auditoria.scope(con, audit_id)
-            self._plan(meta, merged, scope)
-            directory = self.directory(job_id)
-            (directory / "entradas").mkdir(parents=True)
-            try:
-                paths = []
-                for index, (_, content) in enumerate(uploads):
-                    paths.append(directory / "entradas" / f"nmap-{index:02d}.txt")
-                    paths[-1].write_text(content, encoding="utf-8")
-                write_scope_files(directory, scope)
+        self._plan(meta, merged, scope)  # valida el límite de objetivos antes de escribir
+        directory = self.directory(job_id)
+        (directory / "entradas").mkdir(parents=True)
+        imported = False
+        try:
+            paths = []
+            for index, (_, content) in enumerate(uploads):
+                paths.append(directory / "entradas" / f"nmap-{index:02d}.txt")
+                paths[-1].write_text(content, encoding="utf-8")
+            # Una importación grande tarda: sin el bloqueo global, el portal sigue
+            # respondiendo. Las importaciones van de una en una entre sí.
+            with self.imports, closing(self.database()) as con:
+                auditoria.import_nmap(con, audit_id, job_id, name, merged, paths, self.root, meta["fecha"])
+            imported = True
+            with self.lock:
+                # La ficha pudo editarse mientras tanto: se planifica con el alcance vigente.
                 with closing(self.database()) as con:
-                    auditoria.import_nmap(con, audit_id, job_id, name, merged, paths, self.root, meta["fecha"])
+                    scope = auditoria.scope(con, audit_id)
+                self._plan(meta, merged, scope)
+                write_scope_files(directory, scope)
                 self._save(meta)
-            except Exception:
-                # Sin importación completa no queda una ejecución a medias.
-                shutil.rmtree(directory, ignore_errors=True)
-                raise
-            self.jobs[job_id] = meta
+                self.jobs[job_id] = meta
+        except Exception:
+            # Sin importación completa no queda una ejecución a medias.
+            shutil.rmtree(directory, ignore_errors=True)
+            if imported:
+                with closing(self.database()) as con:
+                    auditoria.delete_execution(con, job_id)
+            raise
         return self.detail(job_id)
 
     @staticmethod

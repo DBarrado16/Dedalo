@@ -141,6 +141,7 @@ evidencia (imagen) ← captura → servicio 443/tcp → activo 10.10.5.3 → aud
 - La base se guarda en `portal_datos/dedalo.sqlite3`, ya excluida de git por `*.sqlite3`.
 - Se abre con `PRAGMA foreign_keys = ON` y `journal_mode = WAL`, que permite leer mientras se escribe.
 - Las migraciones son funciones numeradas en `nmapshot/db.py` (`1: esquema inicial`, `2: …`). La base guarda su versión en `PRAGMA user_version` y al abrirla se aplican en una transacción las que falten. Nunca se edita una migración ya publicada; se añade otra.
+- Cambiar un `CHECK` (por ejemplo, añadir el tipo `descubrimiento`) obliga a reconstruir la tabla: `CREATE TABLE nueva_X`, copiar, `DROP TABLE X`, `ALTER TABLE nueva_X RENAME TO X`. `migrate()` desactiva las claves foráneas durante las migraciones para que ese `DROP` no borre en cascada lo que depende de la tabla, y rechaza la migración si `PRAGMA foreign_key_check` encuentra referencias rotas.
 - **Migración del historial:** la primera vez se crea la auditoría «Importadas». Cada carpeta antigua de `portal_datos/` genera una ejecución `importacion` (con sus Nmap como evidencia) y, si se capturó, una `captura` con sus resultados e imágenes. Las carpetas originales no se modifican.
 
 ## Plan de trabajo

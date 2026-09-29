@@ -75,6 +75,43 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(self.con.execute("PRAGMA user_version").fetchone()[0], 1)
         self.assertIsNone(self.con.execute("SELECT name FROM sqlite_master WHERE name = 'nueva'").fetchone())
 
+    def test_rebuilding_a_parent_table_keeps_what_hangs_from_it(self):
+        # Ampliar un CHECK obliga a reconstruir la tabla; el DROP no debe borrar en cascada.
+        self.audit()
+        self.con.close()
+        rebuild = """
+CREATE TABLE nueva_ejecucion (
+  id TEXT PRIMARY KEY, auditoria_id TEXT NOT NULL REFERENCES auditoria(id) ON DELETE CASCADE,
+  tipo TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'prueba')), origen_id TEXT REFERENCES ejecucion(id),
+  nombre TEXT NOT NULL, estado TEXT NOT NULL, opciones TEXT NOT NULL DEFAULT '{}', creada TEXT NOT NULL,
+  iniciada TEXT, terminada TEXT, error TEXT NOT NULL DEFAULT '');
+INSERT INTO nueva_ejecucion SELECT * FROM ejecucion;
+DROP TABLE ejecucion;
+ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
+"""
+        with patch.dict(db.MIGRATIONS, {**db.MIGRATIONS, 2: rebuild}):
+            self.con = db.connect(self.temp.name)
+        self.assertEqual(self.con.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual(self.con.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+        self.assertEqual(self.con.execute("SELECT producto FROM observacion").fetchone()[0], "nginx")
+        with self.con:
+            self.con.execute("UPDATE ejecucion SET tipo = 'prueba'")
+        # Las referencias siguen apuntando a la tabla reconstruida.
+        with self.con:
+            self.con.execute("DELETE FROM ejecucion")
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM observacion").fetchone()[0], 0)
+
+    def test_migration_that_breaks_references_is_rolled_back(self):
+        self.audit()
+        self.con.close()
+        with patch.dict(db.MIGRATIONS, {**db.MIGRATIONS, 2: "DELETE FROM activo;"}), \
+                self.assertRaisesRegex(sqlite3.IntegrityError, "referencias rotas"):
+            db.connect(self.temp.name)
+        self.con = db.connect(self.temp.name)
+        self.assertEqual(self.con.execute("PRAGMA user_version").fetchone()[0], 1)
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM activo").fetchone()[0], 1)
+        self.assertEqual(self.con.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+
     def test_refuses_database_from_newer_version(self):
         self.con.execute("PRAGMA user_version = 99")
         self.con.close()

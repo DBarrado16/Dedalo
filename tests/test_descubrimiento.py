@@ -5,17 +5,21 @@ import time
 import unittest
 from unittest.mock import patch
 
-from nmapshot import descubrimiento
+from nmapshot import descubrimiento, targets
 
 
 class FakeDNS:
     """Servidor DNS mínimo en 127.0.0.1 para probar el modo «servidores»."""
 
-    def __init__(self, rcode=0, answers=1, reply_id=None):
+    def __init__(self, rcode=0, answers=1, reply_id=None, other_source=False):
         self.rcode, self.answers, self.reply_id = rcode, answers, reply_id
         self.queries = []
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(("127.0.0.1", 0))
+        # Con other_source la respuesta sale de otro puerto, como si la diera otra máquina.
+        self.sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) if other_source else self.socket
+        if other_source:
+            self.sender.bind(("127.0.0.1", 0))
         self.socket.settimeout(0.2)
         self.port = self.socket.getsockname()[1]
         self.running = True
@@ -31,12 +35,13 @@ class FakeDNS:
             self.queries.append(data)
             query_id = self.reply_id if self.reply_id is not None else struct.unpack(">H", data[:2])[0]
             header = struct.pack(">HHHHHH", query_id, 0x8180 | self.rcode, 1, self.answers, 0, 0)
-            self.socket.sendto(header + data[12:], address)
+            self.sender.sendto(header + data[12:], address)
 
     def close(self):
         self.running = False
         self.thread.join(2)
         self.socket.close()
+        self.sender.close()
 
 
 class ExpandTests(unittest.TestCase):
@@ -90,6 +95,15 @@ class QueryTests(unittest.TestCase):
         self.assertEqual((answered, error), (False, ""))
         self.assertTrue(server.queries)
 
+    def test_ignores_a_matching_reply_from_another_address(self):
+        server = FakeDNS(other_source=True)
+        try:
+            answered, _, error = descubrimiento.dns_server("127.0.0.1", "ejemplo.test", 0.4, server.port)
+        finally:
+            server.close()
+        self.assertEqual((answered, error), (False, ""))
+        self.assertTrue(server.queries)
+
     def test_silence_or_closed_port_is_not_a_server(self):
         free = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         free.bind(("127.0.0.1", 0))
@@ -128,4 +142,40 @@ class SweepTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Modo"):
                 descubrimiento.sweep(["192.0.2.1"], "otro")
             with self.assertRaisesRegex(ValueError, "Dominio inválido"):
-                descubrimiento.sweep(["192.0.2.1"], "servidores", "")
+                descubrimiento.sweep(["192.0.2.1"], "servidores", "", scope=targets.Scope(["192.0.2.0/24"]))
+
+    def test_server_mode_requires_scope_and_never_queries_outside_it(self):
+        with patch("nmapshot.descubrimiento.dns_server", side_effect=AssertionError("no consultar")),                 self.assertRaisesRegex(ValueError, "necesita el alcance"):
+            descubrimiento.sweep(["192.0.2.1"], "servidores", "ejemplo.test")
+        scope = targets.Scope(["192.0.2.0/30"], ["192.0.2.2"])
+        queried = []
+        with patch("nmapshot.descubrimiento.dns_server",
+                   side_effect=lambda ip, *args: (queried.append(ip), (True, "correcta; 1 respuesta(s)", ""))[1]):
+            rows = descubrimiento.sweep(["192.0.2.1", "192.0.2.2", "198.51.100.7"], "servidores", "ejemplo.test", scope=scope)
+        self.assertEqual(queried, ["192.0.2.1"])
+        self.assertEqual([(row["ip"], row["encontrado"], row["error"]) for row in rows], [
+            ("192.0.2.1", True, ""),
+            ("192.0.2.2", False, "Excluida del alcance: no se consulta"),
+            ("198.51.100.7", False, "Fuera de alcance: no se consulta"),
+        ])
+
+    def test_scope_is_checked_at_query_time_not_when_planning(self):
+        # Una exclusión añadida durante el barrido se respeta en las IP que faltan.
+        class LiveScope:
+            rules = targets.Scope(["192.0.2.0/24"])
+
+            def status(self, ip):
+                return self.rules.status(ip)
+
+        live, queried = LiveScope(), []
+
+        def query(ip, *args):
+            queried.append(ip)
+            live.rules = targets.Scope(["192.0.2.0/24"], ["192.0.2.0/24"])
+            return False, "", ""
+
+        with patch("nmapshot.descubrimiento.dns_server", side_effect=query):
+            rows = descubrimiento.sweep([f"192.0.2.{n}" for n in range(1, 5)], "servidores", "ejemplo.test",
+                                        scope=live, workers=1)
+        self.assertEqual(queried, ["192.0.2.1"])
+        self.assertEqual([row["error"] for row in rows[1:]], ["Excluida del alcance: no se consulta"] * 3)

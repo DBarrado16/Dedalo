@@ -118,18 +118,35 @@ CREATE INDEX captura_servicio ON captura (servicio_id);
 
 
 def migrate(con: sqlite3.Connection) -> int:
-    """Aplica en orden las migraciones pendientes; cada una es todo o nada."""
+    """Aplica en orden las migraciones pendientes; cada una es todo o nada.
+
+    SQLite no permite cambiar un CHECK: hay que reconstruir la tabla (crear
+    `nueva_X`, copiar, DROP X, renombrar). Con las claves foráneas activas, ese
+    DROP borraría en cascada todo lo que cuelga de X, y PRAGMA foreign_keys no
+    tiene efecto dentro de una transacción. Por eso se desactivan antes de
+    empezar y cada migración comprueba las referencias antes de confirmarse.
+    """
     latest = max(MIGRATIONS)
     current = con.execute("PRAGMA user_version").fetchone()[0]
     if current > latest:
         raise ValueError(f"La base de datos es de una versión más nueva de Dedalo (esquema {current}); actualiza el programa.")
-    for version in range(current + 1, latest + 1):
-        try:
-            con.executescript(f"BEGIN;\n{MIGRATIONS[version]}\nPRAGMA user_version = {version};\nCOMMIT;")
-        except sqlite3.Error:
-            if con.in_transaction:
-                con.rollback()
-            raise
+    if current == latest:
+        return latest
+    enforced = con.execute("PRAGMA foreign_keys").fetchone()[0]
+    con.execute("PRAGMA foreign_keys = OFF")
+    try:
+        for version in range(current + 1, latest + 1):
+            try:
+                con.executescript(f"BEGIN;\n{MIGRATIONS[version]}\nPRAGMA user_version = {version};")
+                if con.execute("PRAGMA foreign_key_check").fetchone():
+                    raise sqlite3.IntegrityError(f"La migración {version} deja referencias rotas; no se aplica.")
+                con.commit()
+            except sqlite3.Error:
+                if con.in_transaction:
+                    con.rollback()
+                raise
+    finally:
+        con.execute(f"PRAGMA foreign_keys = {'ON' if enforced else 'OFF'}")
     return latest
 
 
