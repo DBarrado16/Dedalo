@@ -1,5 +1,5 @@
 import argparse
-from contextlib import closing
+from contextlib import closing, redirect_stderr
 import csv
 import hashlib
 import io
@@ -75,9 +75,13 @@ class PortalTests(unittest.TestCase):
             self.assertEqual(job["auditoria"], self.audit["id"])
             self.assertEqual(job["estado"], "preparada")
             run.assert_not_called()
-        meta = self.store.directory(job["id"]) / "trabajo.json"
-        self.assertTrue(meta.is_file())
-        self.assertFalse((meta.parent / "resultado").exists())
+        # El estado y las opciones están en la base, no en un trabajo.json.
+        directory = self.store.directory(job["id"])
+        self.assertFalse((directory / "trabajo.json").exists())
+        self.assertFalse((directory / "resultado").exists())
+        with closing(self.store.database()) as con:
+            stored = auditoria.portal_options(con, job["id"])
+        self.assertEqual((stored["archivos"], stored["captura"]["timeout"]), (["escaneo.xml"], 5))
         status, content = self.request("/api/jobs")
         self.assertEqual(json.loads(content)[0]["id"], job["id"])
 
@@ -109,7 +113,7 @@ class PortalTests(unittest.TestCase):
         self.assertFalse(directory.exists())
         self.assertEqual(self.request(route)[0], 404)
         self.assertEqual(self.request(route + "/delete", {})[0], 404)
-        self.assertTrue((self.store.directory(other["id"]) / "trabajo.json").is_file())
+        self.assertTrue((self.store.directory(other["id"]) / "entradas" / "nmap-00.txt").is_file())
         self.store.close()
         self.store = PortalStore(self.temp.name)
         self.server.store = self.store
@@ -355,24 +359,75 @@ class PortalTests(unittest.TestCase):
         finally:
             release.set()
 
-    def test_reopening_after_a_crash_closes_the_capture_in_the_database(self):
-        job = self.create()
-        with closing(self.store.database()) as con:
-            capture = auditoria.start_capture(con, job["id"], {}, self.store.jobs[job["id"]]["grupos"])
-            auditoria.set_state(con, capture, "en_curso")
-        # Simula un cierre inesperado a mitad: el trabajo en disco sigue en curso.
-        meta = self.store.jobs[job["id"]]
-        meta["estado"] = "en_curso"
-        self.store._save(meta)
+    def reopen(self):
         self.store.close()
         self.store = PortalStore(self.temp.name)
         self.server.store = self.store
-        self.assertEqual(self.store.detail(job["id"])["estado"], "interrumpida")
+
+    def test_reopening_after_a_crash_closes_the_capture_in_the_database(self):
+        # Una captura que no llegó a empezar y otra que el motor terminó sin que el portal lo anotase.
+        unstarted, finished = self.create(), self.create()
+        finished_capture = self.run_engine(finished["id"])
         with closing(self.store.database()) as con:
-            row = con.execute("SELECT estado, error, terminada FROM ejecucion WHERE id = ?", (capture,)).fetchone()
+            unstarted_capture = auditoria.start_capture(con, unstarted["id"], {}, self.store.jobs[unstarted["id"]]["grupos"])
+            with con:
+                con.execute("UPDATE ejecucion SET estado = 'en_curso', terminada = NULL WHERE id IN (?, ?)",
+                            (unstarted_capture, finished_capture))
+                con.execute("UPDATE captura SET estado = 'pendiente', evidencia_id = NULL WHERE ejecucion_id = ?", (finished_capture,))
+        self.reopen()
+        self.assertEqual(self.store.detail(unstarted["id"])["estado"], "interrumpida")
+        self.assertEqual(self.store.detail(finished["id"])["estado"], "completa")
+        with closing(self.store.database()) as con:
+            row = con.execute("SELECT estado, error, terminada FROM ejecucion WHERE id = ?", (unstarted_capture,)).fetchone()
             self.assertEqual(row["estado"], "interrumpida")
             self.assertIn("se cerró", row["error"])
             self.assertTrue(row["terminada"])
+            states = [r[0] for r in con.execute("SELECT estado FROM captura WHERE ejecucion_id = ?", (finished_capture,))]
+            self.assertEqual(states, ["capturada"] * 3)
+
+    def make_legacy(self, job_id):
+        """Deja una ejecución como la guardaban las versiones anteriores: trabajo.json y nada en la base."""
+        meta = self.store.jobs[job_id]
+        path = self.store.directory(job_id) / "trabajo.json"
+        path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        with closing(self.store.database()) as con:
+            auditoria.delete_execution(con, job_id)
+        return path.read_bytes()
+
+    def test_old_captures_are_moved_to_the_database_once(self):
+        prepared, captured = self.create(), self.create()
+        self.run_engine(captured["id"])
+        before = self.store.detail(captured["id"])
+        originals = {job["id"]: self.make_legacy(job["id"]) for job in (prepared, captured)}
+        self.reopen()
+        for _ in range(2):  # al reabrir otra vez no se duplica nada
+            with closing(self.store.database()) as con:
+                self.assertEqual(con.execute("SELECT COUNT(*) FROM ejecucion WHERE tipo = 'importacion'").fetchone()[0], 2)
+                captures = con.execute("SELECT id, estado, origen_id FROM ejecucion WHERE tipo = 'captura'").fetchall()
+                self.assertEqual([(c["estado"], c["origen_id"]) for c in captures], [("completa", captured["id"])])
+                rows = con.execute("SELECT estado, evidencia_id IS NOT NULL FROM captura WHERE ejecucion_id = ?",
+                                   (captures[0]["id"],)).fetchall()
+                self.assertEqual([tuple(r) for r in rows], [("capturada", 1)] * 3)
+                self.assertEqual(auditoria.portal_options(con, prepared["id"])["archivos"], ["escaneo.xml"])
+            self.assertEqual(self.store.detail(prepared["id"])["estado"], "preparada")
+            after = self.store.detail(captured["id"])
+            self.assertEqual({k: after[k] for k in ("estado", "total", "capturas", "grupos")},
+                             {k: before[k] for k in ("estado", "total", "capturas", "grupos")})
+            self.reopen()
+        # Las carpetas antiguas no se modifican.
+        for job_id, original in originals.items():
+            self.assertEqual((self.store.directory(job_id) / "trabajo.json").read_bytes(), original)
+
+    def test_folder_that_cannot_be_migrated_is_kept_and_reported(self):
+        job = self.create()
+        self.make_legacy(job["id"])
+        for item in (self.store.directory(job["id"]) / "entradas").iterdir():
+            item.unlink()
+        with redirect_stderr(io.StringIO()) as errors:
+            self.reopen()
+        self.assertIn(job["id"], errors.getvalue())
+        self.assertEqual(self.store.list(), [])
+        self.assertTrue((self.store.directory(job["id"]) / "trabajo.json").is_file())
 
     def test_second_portal_cannot_claim_same_history(self):
         with self.assertRaisesRegex(ValueError, "Ya hay"):
@@ -416,9 +471,8 @@ class PortalTests(unittest.TestCase):
     def test_legacy_inventory_is_imported_from_original_inputs(self):
         job = self.create()
         directory = self.store.directory(job["id"])
-        with closing(self.store.database()) as con:
-            auditoria.delete_execution(con, job["id"])  # como una ejecución anterior a la base
-        original_meta = (directory / "trabajo.json").read_bytes()
+        original_meta = self.make_legacy(job["id"])  # como una ejecución anterior a la base
+        self.reopen()
         result = self.store.inventory(job["id"])
         self.assertEqual(result["servicios_total"], 7)
         self.assertEqual((directory / "trabajo.json").read_bytes(), original_meta)
@@ -480,7 +534,7 @@ class PortalTests(unittest.TestCase):
         self.assertEqual((job["total"], job["fuera_alcance"]), (1, {"fuera": 1, "excluida": 2}))
 
     def test_failure_after_import_removes_it_from_the_database(self):
-        with patch.object(self.store, "_save", side_effect=OSError("Archivo ocupado")):
+        with patch("dedalo.web.write_scope_files", side_effect=OSError("Archivo ocupado")):
             self.assertEqual(self.request("/api/jobs", self.payload())[0], 500)
         self.assertFalse(self.store.jobs)
         with closing(self.store.database()) as con:
