@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import socket
 import sqlite3
 import threading
 import tempfile
@@ -147,6 +148,36 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.request("/api/jobs", headers={"Host": "example.org"})[0], 403)
         self.assertEqual(self.request("/api/jobs", self.payload(), {"Content-Length": str(40*1024*1024)})[0], 413)
         self.assertEqual(self.request("/api/jobs", self.payload(), {"Content-Type": "text/plain"})[0], 415)
+        self.assertEqual(self.request("/api/jobs", self.payload(), {"Content-Length": "mucho"})[0], 400)
+
+    def test_rejection_reaches_a_client_that_keeps_sending(self):
+        # Un cliente que sigue subiendo tras el rechazo debe recibir la respuesta, no un
+        # corte de conexión; y un Content-Length mayor que lo enviado no bloquea el hilo.
+        port = self.server.server_address[1]
+        for extra, status in (({"Content-Length": str(40 * 1024 * 1024)}, b" 413 "),
+                              ({"Content-Length": "1000000", "X-Nmapshot-Token": "wrong"}, b" 403 ")):
+            headers = {"Host": f"127.0.0.1:{port}", "Content-Type": "application/json",
+                       "X-Nmapshot-Token": self.store.token} | extra
+            with self.subTest(status=status), socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+                client.sendall(b"POST /api/jobs HTTP/1.1\r\n" +
+                               b"".join(f"{k}: {v}\r\n".encode() for k, v in headers.items()) + b"\r\n")
+                sender = threading.Thread(target=lambda: self._send_quietly(client, b"x" * 512 * 1024))
+                started = time.monotonic()
+                sender.start()
+                response = b""
+                while chunk := client.recv(65536):
+                    response += chunk
+                sender.join(5)
+                self.assertIn(status, response.split(b"\r\n", 1)[0])
+                self.assertIn(b'"error"', response)
+                self.assertLess(time.monotonic() - started, 4)
+
+    @staticmethod
+    def _send_quietly(client, data):
+        try:
+            client.sendall(data)
+        except OSError:
+            pass
 
     def test_images_and_downloads_are_scoped_to_job(self):
         job = self.create()

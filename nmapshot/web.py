@@ -22,6 +22,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 from urllib.parse import urlsplit
 import uuid
 import webbrowser
@@ -597,15 +598,27 @@ class PortalHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def reject(self, error, status):
-        # Leer el cuerpo pendiente antes de rechazar: en Windows, cerrar con datos
-        # sin leer corta la conexión y el cliente puede no ver la respuesta.
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            length = 0
-        if 0 < length <= MAX_BODY:
-            self.rfile.read(length)
+        """Responde sin leer el cuerpo y cierra la conexión de forma ordenada.
+
+        En Windows, cerrar con datos sin leer envía un RST y el cliente puede
+        perder la respuesta. Tampoco se lee el cuerpo según Content-Length: un
+        valor falso dejaría el hilo esperando. Se termina la escritura y se
+        descarta lo que siga llegando hasta que el cliente cierre, con límite.
+        """
+        self.close_connection = True
         self.json({"error": error}, status)
+        try:
+            self.wfile.flush()
+            self.connection.shutdown(socket.SHUT_WR)
+            deadline, discarded = time.monotonic() + 2, 0
+            while discarded <= MAX_BODY and (remaining := deadline - time.monotonic()) > 0:
+                self.connection.settimeout(remaining)
+                chunk = self.connection.recv(65536)
+                if not chunk:
+                    break
+                discarded += len(chunk)
+        except OSError:
+            pass
 
     def json(self, value, status=200):
         self.send_bytes(status, json.dumps(value, ensure_ascii=False).encode("utf-8"))
@@ -631,9 +644,13 @@ class PortalHandler(BaseHTTPRequestHandler):
                 if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                     self.reject("Se esperaba JSON", 415)
                     return
-                length = int(self.headers.get("Content-Length", "0"))
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    self.reject("Content-Length inválido", 400)
+                    return
                 if not 0 < length <= MAX_BODY:
-                    self.json({"error": "La carga debe ser menor de 32 MB"}, 413)
+                    self.reject("La carga debe ser menor de 32 MB", 413)
                     return
                 data = self.rfile.read(length)
                 if len(data) != length:
