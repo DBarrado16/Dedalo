@@ -88,7 +88,7 @@ El portal recibe archivos y **lanza las capturas**, no ejecuta un nuevo escaneo 
 
 **Detener tras esta subred** conserva las capturas y evita iniciar nuevos grupos. No mata a la fuerza el navegador de la subred activa; el tiempo de espera depende de sus objetivos y timeout. Un trabajo todavía en cola se cancela inmediatamente.
 
-El historial y las cargas se conservan en `portal_datos/`. Al cerrar el servidor con Ctrl+C se solicita la parada y se espera a la subred activa. Si el servidor se cerró inesperadamente, al volver a abrirlo los trabajos activos se marcan interrumpidos; no se relanzan automáticamente.
+El historial y las cargas se conservan en `portal_datos/`. Al cerrar el servidor con Ctrl+C se solicita la parada y se espera a la subred activa. Si el servidor se cerró inesperadamente, al volver a abrirlo cada trabajo activo toma el estado final del motor si llegó a terminar y, si no, queda interrumpido; no se relanzan automáticamente.
 
 Para eliminar una ejecución, selecciónala en el historial y pulsa **Borrar ejecución**. El portal pide confirmación y elimina permanentemente esa ejecución, sus capturas, copias de los Nmap subidos, índices y registros. Los archivos originales de tu equipo no se modifican. Si está en cola o capturando, primero cancélala o detenla y espera a que termine; entonces podrás borrarla.
 
@@ -110,12 +110,13 @@ Es un portal local de un usuario: escucha exclusivamente en loopback y verifica 
 portal_datos/
   dedalo.sqlite3           # base de auditorías, activos, servicios y evidencias
   ID_DE_EJECUCION/
-    trabajo.json
     entradas/nmap-00.txt
     rangos.txt
     proceso.log
     resultado/             # mismos índices, bases y capturas que la consola
 ```
+
+El estado, las opciones y los resultados de cada ejecución están en `dedalo.sqlite3`. Las carpetas de versiones anteriores traen además un `trabajo.json`: al arrancar, el portal las pasa a la base una sola vez, con sus capturas, sin modificar la carpeta. Si alguna no se puede migrar (por ejemplo, porque faltan sus Nmap en `entradas/`), lo avisa en la terminal y la conserva.
 
 Los resultados anteriores de consola siguen accesibles con `ver`; no se importan automáticamente en el historial web.
 

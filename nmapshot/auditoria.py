@@ -107,17 +107,20 @@ def _id(con, select, insert, values):
 
 
 def import_nmap(con: sqlite3.Connection, audit_id: str, execution_id: str, name: str,
-                hosts: list[Host], files: list[Path], root: Path, created: str | None = None) -> None:
+                hosts: list[Host], files: list[Path], root: Path, created: str | None = None,
+                options: dict | None = None) -> None:
     """Registra una importación completa en una transacción: todo o nada.
 
     `hosts` ya viene unido con parser.merge; `files` son los Nmap originales
     guardados dentro de `root`, que quedan como evidencia con su huella.
+    `options` guarda lo que el portal necesita de la ejecución (ver portal_options).
     """
     stamp = now()
     with con:
-        con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, nombre, estado, creada, iniciada, terminada) "
-                    "VALUES (?, ?, 'importacion', ?, 'completa', ?, ?, ?)",
-                    (execution_id, audit_id, name, created or stamp, stamp, stamp))
+        con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, nombre, estado, opciones, creada, iniciada, terminada) "
+                    "VALUES (?, ?, 'importacion', ?, 'completa', ?, ?, ?, ?)",
+                    (execution_id, audit_id, name, json.dumps(options or {}, ensure_ascii=False),
+                     created or stamp, stamp, stamp))
         for path in files:
             data = Path(path).read_bytes()
             con.execute("INSERT INTO evidencia (ejecucion_id, tipo, ruta, sha256, bytes, creada) VALUES (?, 'nmap', ?, ?, ?, ?)",
@@ -183,7 +186,8 @@ def capture_of(con: sqlite3.Connection, import_id: str) -> str | None:
     return row["id"] if row else None
 
 
-def start_capture(con: sqlite3.Connection, import_id: str, options: dict, groups: list[dict]) -> str:
+def start_capture(con: sqlite3.Connection, import_id: str, options: dict, groups: list[dict],
+                  created: str | None = None) -> str:
     """Crea la ejecución de captura en cola, con cada URL planificada como pendiente.
 
     Cada URL queda ligada al servicio que la originó, así que desde cualquier
@@ -193,7 +197,7 @@ def start_capture(con: sqlite3.Connection, import_id: str, options: dict, groups
                          (import_id,)).fetchone()
     if source is None:
         raise FileNotFoundError("Importación no encontrada")
-    capture_id, stamp = uuid.uuid4().hex, now()
+    capture_id, stamp = uuid.uuid4().hex, created or now()
     with con:
         con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada) "
                     "VALUES (?, ?, 'captura', ?, ?, 'en_cola', ?, ?)",
@@ -252,3 +256,53 @@ def record_captures(con: sqlite3.Connection, execution_id: str, manifest: dict, 
         for path in logs:
             if Path(path).is_file():
                 _evidence(con, execution_id, "registro", Path(path), root, stamp)
+
+
+def portal_options(con: sqlite3.Connection, import_id: str) -> dict:
+    """Lo que el portal guarda de una ejecución: {"archivos": [...], "captura": {...}}.
+
+    Sin la clave "captura", la ejecución todavía no se ha migrado desde su
+    trabajo.json (docs/MODELO_DATOS.md, paso 6).
+    """
+    row = con.execute("SELECT opciones FROM ejecucion WHERE id = ?", (import_id,)).fetchone()
+    return json.loads(row["opciones"]) if row else {}
+
+
+def set_options(con: sqlite3.Connection, execution_id: str, options: dict) -> None:
+    with con:
+        con.execute("UPDATE ejecucion SET opciones = ? WHERE id = ?", (json.dumps(options, ensure_ascii=False), execution_id))
+
+
+def portal_jobs(con: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Cada importación con su captura, si ya se lanzó: el historial del portal."""
+    return con.execute(
+        "SELECT i.id, i.auditoria_id, i.nombre, i.creada, i.opciones, "
+        "c.id AS captura_id, c.estado, c.error, c.terminada FROM ejecucion i "
+        "LEFT JOIN ejecucion c ON c.origen_id = i.id AND c.tipo = 'captura' "
+        "WHERE i.tipo = 'importacion' ORDER BY i.creada").fetchall()
+
+
+def planned_urls(con: sqlite3.Connection, capture_id: str) -> set[str]:
+    """Las URL que se planificaron al lanzar una captura."""
+    return {row[0] for row in con.execute("SELECT url FROM captura WHERE ejecucion_id = ?", (capture_id,))}
+
+
+def import_capture_history(con: sqlite3.Connection, import_id: str, options: dict, groups: list[dict],
+                           state: str, error: str, created: str, finished: str | None,
+                           manifest: dict | None, result_dir: Path, root: Path, logs: list[Path] = ()) -> str:
+    """Registra una captura hecha antes de que la base las guardase (paso 5 del plan).
+
+    Todo o nada: si falla, no queda una captura a medias en la base.
+    """
+    capture_id = start_capture(con, import_id, options, groups, created)
+    try:
+        if manifest:
+            record_captures(con, capture_id, manifest, result_dir, root, logs)
+        with con:
+            con.execute("UPDATE ejecucion SET estado = ?, error = ?, iniciada = ?, terminada = ? WHERE id = ?",
+                        (state, error, (manifest or {}).get("inicio"), finished or (manifest or {}).get("fin"), capture_id))
+    except Exception:
+        with con:
+            con.execute("DELETE FROM ejecucion WHERE id = ?", (capture_id,))
+        raise
+    return capture_id

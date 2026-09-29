@@ -1,6 +1,6 @@
 # Modelo de datos (bloque 1)
 
-Propuesta para la base SQLite propia de Dedalo. Sustituye a los `trabajo.json` e `inventario.json` sueltos como fuente de verdad. Los archivos pesados (Nmap originales, capturas, bases de gowitness) siguen en disco y la base guarda su ruta y su huella.
+Base SQLite propia de Dedalo. Es la única fuente de verdad del portal: sustituye a los `trabajo.json` e `inventario.json` sueltos. Los archivos pesados (Nmap originales, capturas, bases de gowitness) siguen en disco y la base guarda su ruta y su huella.
 
 ## Piezas y relaciones
 
@@ -150,5 +150,5 @@ evidencia (imagen) ← captura → servicio 443/tcp → activo 10.10.5.3 → aud
 2. ✅ Importación (`auditoria.py`): de un Nmap a activos, servicios y observaciones, sustituyendo a `inventario.json`. Las ejecuciones antiguas se importan al consultar su inventario.
 3. ✅ Auditorías y alcance en el portal («fichas de cliente»): crear, elegir y editar reglas; revisar objetivos marcando su situación. La consola aplica el alcance con `--solo-rangos` y `--excluir` justo antes de capturar.
 4. ✅ Capturas: al iniciar, el portal crea la ejecución `captura` (con `origen_id` en la importación) y cada URL en alcance como `pendiente`, ligada a su servicio. Los cambios de estado se reflejan en la base; al terminar se vuelcan los resultados, las imágenes como evidencia `captura` y los registros como `registro`, con su SHA-256. Si el portal se cierra a mitad, al reabrirlo se completa desde el manifiesto del motor. La consola no escribe en la base; el alcance lo sigue aplicando el motor justo antes de conectar.
-5. Migración del historial.
-6. Retirar la lectura de `trabajo.json` e `inventario.json` cuando todo lo anterior esté probado.
+5. ✅ Migración del historial: al arrancar, cada carpeta que solo tenga `trabajo.json` se lleva a la base una sola vez. Se importan sus Nmap si hacía falta y, si se capturó, se registra su captura con el estado, los objetivos planificados, los resultados del manifiesto del motor y las evidencias. Si sus objetivos no casan con el inventario, se registra solo el estado. Las carpetas no se modifican; lo que no se puede migrar se avisa en la terminal y la carpeta se conserva.
+6. ✅ `trabajo.json` e `inventario.json` ya no se leen ni se escriben (salvo `trabajo.json` en la migración del paso 5). Cada ejecución del portal es una `importacion` cuyo campo `opciones` guarda `{"archivos": [...], "captura": {...}}`; su estado es el de su `captura`, o `preparada` si aún no se lanzó. Los objetivos se recalculan: con el alcance vigente si no se lanzó, y con las URL de `captura` y el `rangos.txt` de la carpeta si ya se lanzó. Una captura que quedó activa al cerrarse el portal se cierra al reabrirlo con el estado final del manifiesto, o como `interrumpida`.

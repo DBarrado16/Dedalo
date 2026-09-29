@@ -44,12 +44,6 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def atomic_json(path, value):
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(path)
-
-
 def write_scope_files(directory, scope):
     """Alcance que usará el motor de capturas: rangos incluidos y exclusiones."""
     (directory / "rangos.txt").write_text("".join(f"{net}\n" for net in scope.include), encoding="utf-8")
@@ -119,21 +113,15 @@ class PortalStore:
         except Exception:
             self.file_lock.close()
             raise
+        # El historial está en la base (docs/MODELO_DATOS.md); self.jobs es solo su
+        # copia en memoria para responder rápido a las consultas del navegador.
         self.jobs = {}
-        for path in self.root.glob("*/trabajo.json"):
-            if not re.fullmatch(r"[a-f0-9]{32}", path.parent.name):
-                continue
-            try:
-                meta = json.loads(path.read_text(encoding="utf-8"))
-                if meta["id"] != path.parent.name:
-                    continue
-                if meta["estado"] in ACTIVE:
-                    meta.update(estado="interrumpida", error="El portal se cerró antes de completar el trabajo.")
-                    atomic_json(path, meta)
-                self.jobs[meta["id"]] = meta
-            except (OSError, ValueError, KeyError, TypeError):
-                continue
-        self._recover()
+        try:
+            self._migrate_folders()
+            self._load()
+        except Exception:
+            self.file_lock.close()
+            raise
         self.worker = threading.Thread(target=self._worker, name="nmapshot-capturas", daemon=True)
         self.worker.start()
 
@@ -141,38 +129,121 @@ class PortalStore:
         # Una conexión por operación: los hilos del servidor no comparten conexiones.
         return db.connect(self.root)
 
-    def _recover(self):
-        """Tras un cierre inesperado, la base recoge el estado final y lo ya capturado."""
-        try:
-            with closing(self.database()) as con:
-                stale = con.execute("SELECT origen_id FROM ejecucion WHERE tipo = 'captura' "
-                                    "AND estado IN ('en_cola', 'en_curso', 'deteniendo')").fetchall()
-        except (OSError, sqlite3.Error) as exc:
-            print(f"Error del portal: no se pudo revisar la base: {exc}", file=sys.stderr)
-            return
-        for row in stale:
-            meta = self.jobs.get(row["origen_id"])
-            if meta and meta["estado"] in auditoria.FINAL:
-                self._capture_state(meta["id"], meta["estado"], meta.get("error", ""), record=True)
+    def _migrate_folders(self):
+        """Lleva a la base las ejecuciones que solo tenían trabajo.json (pasos 5 y 6 del plan).
 
-    def _capture_state(self, job_id, state, error="", record=False):
-        """Refleja en la base el estado de la captura de un trabajo y, si se pide, sus
-        resultados. Un fallo aquí no para la cola: se avisa y se recupera al reabrir."""
+        Cada carpeta se migra una sola vez y no se modifica. Si una no se puede
+        migrar, se avisa en la terminal y su carpeta queda como estaba.
+        """
+        for path in sorted(self.root.glob("*/trabajo.json")):
+            job_id = path.parent.name
+            if not re.fullmatch(r"[a-f0-9]{32}", job_id):
+                continue
+            try:
+                with closing(self.database()) as con:
+                    if auditoria.has_execution(con, job_id) and "captura" in auditoria.portal_options(con, job_id):
+                        continue
+                    meta = json.loads(path.read_text(encoding="utf-8"))
+                    if meta.get("id") != job_id:
+                        continue
+                    self._imported(con, job_id, meta)  # importa sus Nmap si era anterior a la base
+                    if meta["estado"] != "preparada" and auditoria.capture_of(con, job_id) is None:
+                        self._migrate_capture(con, job_id, meta)
+                    # Con "captura" en sus opciones, la ejecución queda migrada.
+                    auditoria.set_options(con, job_id, {"archivos": meta["archivos"], "captura": meta["opciones"]})
+            except Exception as exc:
+                print(f"Aviso: no se pudo pasar a la base la ejecución {job_id}: {exc}. Su carpeta se conserva.",
+                      file=sys.stderr)
+
+    def _migrate_capture(self, con, job_id, meta):
+        """Una captura hecha antes de que la base las guardase, con sus resultados."""
+        state, error = meta["estado"], meta.get("error", "")
+        if state in ACTIVE:
+            state, error = "interrumpida", "El portal se cerró antes de completar el trabajo."
+        manifest = self._manifest(meta)
+        result = self.directory(job_id) / "resultado"
+        logs = self._result_logs(job_id, manifest) if manifest else []
+        try:
+            auditoria.import_capture_history(con, job_id, meta["opciones"], meta.get("grupos", []), state, error,
+                                             meta["fecha"], meta.get("fin"), manifest, result, self.root, logs)
+        except ValueError as exc:
+            # Objetivos que no casan con el inventario: al menos se conserva el estado,
+            # y las capturas se siguen viendo desde su carpeta.
+            print(f"Aviso: la captura de {job_id} se registra sin sus resultados: {exc}", file=sys.stderr)
+            auditoria.import_capture_history(con, job_id, meta["opciones"], [], state, error,
+                                             meta["fecha"], meta.get("fin"), None, result, self.root)
+
+    def _load(self):
+        """Carga el historial desde la base y cierra lo que quedó a medias."""
+        with closing(self.database()) as con:
+            for row in auditoria.portal_jobs(con):
+                options = json.loads(row["opciones"])
+                if "captura" not in options or not (self.root / row["id"]).is_dir():
+                    continue  # importación sin carpeta del portal, o que no se pudo migrar
+                meta = {"id": row["id"], "nombre": row["nombre"], "fecha": row["creada"],
+                        "archivos": options.get("archivos", []), "opciones": options["captura"],
+                        "estado": row["estado"] or "preparada", "error": row["error"] or "", "fin": row["terminada"]}
+                if meta["estado"] in ACTIVE:
+                    self._close_interrupted(meta)
+                try:
+                    self._load_plan(con, meta, row)
+                except (OSError, ValueError) as exc:
+                    meta.update(grupos=[], total=0, subredes=0, fuera_alcance=None, error=str(exc))
+                self.jobs[meta["id"]] = meta
+
+    def _close_interrupted(self, meta):
+        """El portal se cerró con esta captura activa: se toma el estado del motor si terminó."""
+        manifest = self._manifest(meta)
+        if manifest and manifest.get("estado") in ("completa", "parcial", "interrumpida"):
+            state, error = manifest["estado"], ""
+        else:
+            state, error = "interrumpida", "El portal se cerró antes de completar el trabajo."
+        self._capture_state(meta["id"], state, error, record=True)
+        meta.update(estado=state, error=error)
+
+    def _load_plan(self, con, meta, row):
+        """Objetivos de una ejecución: lo planificado si ya se lanzó, o lo que permite el alcance vigente."""
+        hosts = auditoria.observed_hosts(con, meta["id"])
+        if row["captura_id"] is None:
+            self._plan(meta, hosts, auditoria.scope(con, row["auditoria_id"]))
+            return
+        # Lo lanzado no cambia: las URL quedaron en la base y la agrupación en su rangos.txt.
+        planned = auditoria.planned_urls(con, row["captura_id"])
+        ranges_file = self.directory(meta["id"]) / "rangos.txt"
+        ranges = targets.read_networks_file(ranges_file) if ranges_file.is_file() else []
+        options = meta["opciones"]
+        groups = cli.group_hosts(hosts, ranges, options.get("puertos", ""), options.get("por_servicio", False))
+        groups = [{**g, "objetivos": [t for t in g["objetivos"] if t["url"] in planned]} for g in groups]
+        groups = [g for g in groups if g["objetivos"]]
+        meta.update(grupos=groups, total=sum(len(g["objetivos"]) for g in groups), subredes=len(groups),
+                    fuera_alcance=None)
+
+    def _result_logs(self, job_id, manifest):
+        result = self.directory(job_id) / "resultado"
+        return [self.directory(job_id) / "proceso.log"] + [
+            report.inside(result, g["carpeta"]) / name for g in manifest["grupos"]
+            for name in (gowitness.LOG_NAME, gowitness.RETRY_LOG)]
+
+    def _capture_state(self, job_id, state, error="", record=False, strict=False):
+        """Guarda en la base el estado de la captura de un trabajo y, si se pide, sus resultados.
+
+        Con strict, un fallo se propaga (acciones del usuario). Si no, se avisa y no para
+        la cola: al reabrir el portal, la captura activa se cierra desde el manifiesto.
+        """
         try:
             with closing(self.database()) as con:
                 capture_id = auditoria.capture_of(con, job_id)
                 if capture_id is None:
                     return
                 if record:
-                    result = self.directory(job_id) / "resultado"
-                    if (result / report.MANIFEST).is_file():
-                        manifest = report.load_manifest(result)
-                        logs = [self.directory(job_id) / "proceso.log"] + [
-                            report.inside(result, g["carpeta"]) / name for g in manifest["grupos"]
-                            for name in (gowitness.LOG_NAME, gowitness.RETRY_LOG)]
-                        auditoria.record_captures(con, capture_id, manifest, result, self.root, logs)
+                    manifest = self._manifest({"id": job_id})
+                    if manifest:
+                        auditoria.record_captures(con, capture_id, manifest, self.directory(job_id) / "resultado",
+                                                  self.root, self._result_logs(job_id, manifest))
                 auditoria.set_state(con, capture_id, state, error)
         except Exception as exc:
+            if strict:
+                raise
             print(f"Error del portal: no se pudo registrar en la base la captura de {job_id}: {exc}", file=sys.stderr)
 
     def directory(self, job_id):
@@ -184,9 +255,6 @@ class PortalStore:
         if job_id not in self.jobs:
             raise FileNotFoundError("Trabajo no encontrado")
         return self.jobs[job_id]
-
-    def _save(self, meta):
-        atomic_json(self.directory(meta["id"]) / "trabajo.json", meta)
 
     def engine(self):
         try:
@@ -243,7 +311,8 @@ class PortalStore:
             # Una importación grande tarda: sin el bloqueo global, el portal sigue
             # respondiendo. Las importaciones van de una en una entre sí.
             with self.imports, closing(self.database()) as con:
-                auditoria.import_nmap(con, audit_id, job_id, name, merged, paths, self.root, meta["fecha"])
+                auditoria.import_nmap(con, audit_id, job_id, name, merged, paths, self.root, meta["fecha"],
+                                      {"archivos": meta["archivos"], "captura": options})
             imported = True
             with self.lock:
                 # La ficha pudo editarse mientras tanto: se planifica con el alcance vigente.
@@ -251,7 +320,6 @@ class PortalStore:
                     scope = auditoria.scope(con, audit_id)
                 self._plan(meta, merged, scope)
                 write_scope_files(directory, scope)
-                self._save(meta)
                 self.jobs[job_id] = meta
         except Exception:
             # Sin importación completa no queda una ejecución a medias.
@@ -298,13 +366,11 @@ class PortalStore:
     def _replan(self, job_id):
         """Recalcula una ejecución sin lanzar con el alcance vigente de su ficha."""
         meta = self._meta(job_id)
-        directory = self.directory(job_id)
         with closing(self.database()) as con:
             scope = auditoria.scope(con, self._imported(con, job_id, meta))
-        hosts = parser.merge([parser.parse_file(p) for p in sorted((directory / "entradas").glob("nmap-*.txt"))])
+            hosts = auditoria.observed_hosts(con, job_id)
         self._plan(meta, hosts, scope)
-        write_scope_files(directory, scope)
-        self._save(meta)
+        write_scope_files(self.directory(job_id), scope)
 
     def inventory(self, job_id):
         with self.lock:
@@ -429,15 +495,8 @@ class PortalStore:
                 raise Conflict("No hay objetivos web en el alcance de la ficha. Revisa sus rangos.")
             # La captura existe en la base antes de encolarse: sin registro no se conecta.
             with closing(self.database()) as con:
-                capture_id = auditoria.start_capture(con, job_id, meta["opciones"], meta["grupos"])
-                try:
-                    meta.update(estado="en_cola", error="")
-                    self._save(meta)
-                except Exception:
-                    meta["estado"] = "preparada"
-                    with con:
-                        con.execute("DELETE FROM ejecucion WHERE id = ?", (capture_id,))
-                    raise
+                auditoria.start_capture(con, job_id, meta["opciones"], meta["grupos"])
+            meta.update(estado="en_cola", error="")
             self.pending.put((job_id, binary, chrome))
         return self.detail(job_id)
 
@@ -445,14 +504,15 @@ class PortalStore:
         with self.lock:
             meta = self._meta(job_id)
             if meta["estado"] == "en_cola":
-                meta["estado"] = "cancelada"
+                state = "cancelada"
             elif meta["estado"] in ("en_curso", "deteniendo"):
                 (self.directory(job_id) / "parar").touch()
-                meta["estado"] = "deteniendo"
+                state = "deteniendo"
             else:
                 raise Conflict("Este trabajo no está en ejecución")
-            self._save(meta)
-            self._capture_state(job_id, meta["estado"])
+            # Primero la base: si no se puede guardar, el usuario lo ve y el estado no cambia.
+            self._capture_state(job_id, state, strict=True)
+            meta["estado"] = state
         return self.detail(job_id)
 
     def _worker(self):
@@ -465,10 +525,9 @@ class PortalStore:
                 meta = self.jobs.get(job_id)
                 if meta is None or meta["estado"] != "en_cola":
                     continue
-                meta["estado"] = "en_curso"
-                self._save(meta)
                 # Dentro del bloqueo: una parada pedida justo ahora no queda pisada.
                 self._capture_state(job_id, "en_curso")
+                meta["estado"] = "en_curso"
                 options = dict(meta["opciones"])
             directory = self.directory(job_id)
             command = [sys.executable, "-u", "-m", "nmapshot", "capturar"]
@@ -500,12 +559,11 @@ class PortalStore:
                     error = "El motor no pudo completar la captura. Consulta el registro."
             except Exception as exc:
                 status, error = "error", str(exc)
+            # Si la base no se puede escribir ahora, al reabrir el portal la captura
+            # sigue activa en ella y se cierra desde el manifiesto del motor.
+            self._capture_state(job_id, status, error, record=True)
             with self.lock:
                 meta.update(estado=status, error=error, fin=now())
-                self._save(meta)
-            # Primero el trabajo y después la base: si el portal cae entre medias, al
-            # reabrir se ve la captura activa en la base y se completa desde aquí.
-            self._capture_state(job_id, status, error, record=True)
 
     def delete(self, job_id):
         with self.lock:
@@ -601,7 +659,11 @@ class PortalStore:
             self.closing = True
             for job_id, meta in self.jobs.items():
                 if meta["estado"] in ACTIVE:
-                    self.cancel(job_id)
+                    try:
+                        self.cancel(job_id)
+                    except Exception as exc:
+                        # La cola tiene que pararse igual; al reabrir se cierra desde el manifiesto.
+                        print(f"Error del portal: no se pudo detener {job_id}: {exc}", file=sys.stderr)
             self.pending.put(None)
         self.worker.join()
         self.file_lock.close()
