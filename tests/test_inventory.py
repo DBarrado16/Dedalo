@@ -2,8 +2,8 @@ import csv
 import io
 import unittest
 
-from nmapshot import inventory, parser, targets
-from tests.test_nmapshot import ROOT
+from dedalo import inventory, parser, targets
+from tests.test_dedalo import ROOT
 
 
 class InventoryTests(unittest.TestCase):

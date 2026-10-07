@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from nmapshot import db
+from dedalo import db
 
 LATEST = max(db.MIGRATIONS)
 NEXT = LATEST + 1  # número para migraciones de prueba

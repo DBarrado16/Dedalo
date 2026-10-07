@@ -67,7 +67,7 @@ def find_gowitness(explicit: str | None) -> str:
     found = shutil.which("gowitness")
     if found:
         return str(Path(found).resolve())
-    raise ValueError("No encuentro gowitness v3. Ejecuta «python -m nmapshot instalar», déjalo en bin/ o en el PATH, o usa --gowitness.")
+    raise ValueError("No encuentro gowitness v3. Ejecuta «python -m dedalo instalar», déjalo en bin/ o en el PATH, o usa --gowitness.")
 
 
 def release_for_this_system() -> tuple[str, str]:

@@ -17,9 +17,9 @@ import urllib.error
 import urllib.request
 import zipfile
 
-from nmapshot import auditoria, cli, report, web
-from nmapshot.web import PortalStore, PortalServer
-from tests.test_nmapshot import ROOT, fake_database
+from dedalo import auditoria, cli, report, web
+from dedalo.web import PortalStore, PortalServer
+from tests.test_dedalo import ROOT, fake_database
 
 
 def payload():
@@ -50,7 +50,7 @@ class PortalTests(unittest.TestCase):
         self.temp.cleanup()
 
     def request(self, route, data=None, headers=None):
-        values = {"Content-Type": "application/json", "X-Nmapshot-Token": self.store.token}
+        values = {"Content-Type": "application/json", "X-Dedalo-Token": self.store.token}
         values.update(headers or {})
         request = urllib.request.Request(self.url + route, data=json.dumps(data).encode() if data is not None else None, headers=values)
         try:
@@ -67,7 +67,7 @@ class PortalTests(unittest.TestCase):
         return json.loads(content)
 
     def test_upload_preview_is_persistent_and_does_not_capture(self):
-        with patch("nmapshot.web.subprocess.run") as run:
+        with patch("dedalo.web.subprocess.run") as run:
             job = self.create()
             self.assertEqual(job["total"], 3)
             self.assertEqual(job["subredes"], 2)
@@ -120,7 +120,7 @@ class PortalTests(unittest.TestCase):
     def test_delete_rejects_active_jobs_and_requires_same_origin_token(self):
         job = self.create()
         route = "/api/jobs/" + job["id"] + "/delete"
-        for headers in ({"X-Nmapshot-Token": "wrong"}, {"Origin": "https://example.org"}):
+        for headers in ({"X-Dedalo-Token": "wrong"}, {"Origin": "https://example.org"}):
             self.assertEqual(self.request(route, {}, headers)[0], 403)
         self.assertEqual(self.request(route)[0], 404)
         for state in ("en_cola", "en_curso", "deteniendo"):
@@ -134,16 +134,16 @@ class PortalTests(unittest.TestCase):
         job, other = self.create(), self.create()
         route = "/api/jobs/" + job["id"] + "/delete"
         other_directory = self.store.directory(other["id"])
-        with patch.object(self.store, "directory", return_value=other_directory), patch("nmapshot.web.shutil.rmtree") as remove:
+        with patch.object(self.store, "directory", return_value=other_directory), patch("dedalo.web.shutil.rmtree") as remove:
             self.assertEqual(self.request(route, {})[0], 400)
             remove.assert_not_called()
-        with patch("nmapshot.web.shutil.rmtree", side_effect=PermissionError("Archivo ocupado")):
+        with patch("dedalo.web.shutil.rmtree", side_effect=PermissionError("Archivo ocupado")):
             self.assertEqual(self.request(route, {})[0], 500)
         self.assertIn(job["id"], self.store.jobs)
         self.assertTrue(self.store.directory(job["id"]).exists())
 
     def test_csrf_origin_host_and_body_size(self):
-        self.assertEqual(self.request("/api/jobs", self.payload(), {"X-Nmapshot-Token": "wrong"})[0], 403)
+        self.assertEqual(self.request("/api/jobs", self.payload(), {"X-Dedalo-Token": "wrong"})[0], 403)
         self.assertEqual(self.request("/api/jobs", self.payload(), {"Origin": "https://example.org"})[0], 403)
         self.assertEqual(self.request("/api/jobs", headers={"Host": "example.org"})[0], 403)
         self.assertEqual(self.request("/api/jobs", self.payload(), {"Content-Length": str(40*1024*1024)})[0], 413)
@@ -155,9 +155,9 @@ class PortalTests(unittest.TestCase):
         # corte de conexión; y un Content-Length mayor que lo enviado no bloquea el hilo.
         port = self.server.server_address[1]
         for extra, status in (({"Content-Length": str(40 * 1024 * 1024)}, b" 413 "),
-                              ({"Content-Length": "1000000", "X-Nmapshot-Token": "wrong"}, b" 403 ")):
+                              ({"Content-Length": "1000000", "X-Dedalo-Token": "wrong"}, b" 403 ")):
             headers = {"Host": f"127.0.0.1:{port}", "Content-Type": "application/json",
-                       "X-Nmapshot-Token": self.store.token} | extra
+                       "X-Dedalo-Token": self.store.token} | extra
             with self.subTest(status=status), socket.create_connection(("127.0.0.1", port), timeout=5) as client:
                 client.sendall(b"POST /api/jobs HTTP/1.1\r\n" +
                                b"".join(f"{k}: {v}\r\n".encode() for k, v in headers.items()) + b"\r\n")
@@ -232,7 +232,7 @@ class PortalTests(unittest.TestCase):
                 returncode = 130
             return Result()
         try:
-            with patch("nmapshot.web.gowitness.find_gowitness", return_value="fake"), patch("nmapshot.web.gowitness.find_chrome", return_value="fake"), patch("nmapshot.web.subprocess.run", side_effect=run):
+            with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), patch("dedalo.web.gowitness.find_chrome", return_value="fake"), patch("dedalo.web.subprocess.run", side_effect=run):
                 self.assertEqual(self.request("/api/jobs/" + first["id"] + "/start", {})[0], 202)
                 self.assertTrue(begun.wait(2))
                 self.assertEqual(self.request("/api/jobs/" + first["id"] + "/start", {})[0], 409)
@@ -266,14 +266,14 @@ class PortalTests(unittest.TestCase):
                 fake_database(directory, urls)
                 if stop_after_first:
                     Path(command[command.index("--stop-file") + 1]).touch()
-            with patch("nmapshot.cli.gowitness.scan_subnet", side_effect=scan), redirect_stdout(io.StringIO()):
-                code = cli.main(command[4:])  # sin «python -u -m nmapshot»
+            with patch("dedalo.cli.gowitness.scan_subnet", side_effect=scan), redirect_stdout(io.StringIO()):
+                code = cli.main(command[4:])  # sin «python -u -m dedalo»
             class Result:
                 returncode = code
             return Result()
-        with patch("nmapshot.web.gowitness.find_gowitness", return_value="fake"), \
-                patch("nmapshot.web.gowitness.find_chrome", return_value="fake"), \
-                patch("nmapshot.web.subprocess.run", side_effect=run):
+        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), \
+                patch("dedalo.web.gowitness.find_chrome", return_value="fake"), \
+                patch("dedalo.web.subprocess.run", side_effect=run):
             self.assertEqual(self.request("/api/jobs/" + job_id + "/start", {})[0], 202)
             deadline = time.monotonic() + 10
             while self.store.detail(job_id)["estado"] in ("en_cola", "en_curso") and time.monotonic() < deadline:
@@ -334,9 +334,9 @@ class PortalTests(unittest.TestCase):
                 returncode = 130
             return Result()
         try:
-            with patch("nmapshot.web.gowitness.find_gowitness", return_value="fake"), \
-                    patch("nmapshot.web.gowitness.find_chrome", return_value="fake"), \
-                    patch("nmapshot.web.subprocess.run", side_effect=run):
+            with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), \
+                    patch("dedalo.web.gowitness.find_chrome", return_value="fake"), \
+                    patch("dedalo.web.subprocess.run", side_effect=run):
                 self.request("/api/jobs/" + first["id"] + "/start", {})
                 self.assertTrue(begun.wait(2))
                 self.request("/api/jobs/" + second["id"] + "/start", {})
@@ -391,7 +391,7 @@ class PortalTests(unittest.TestCase):
     def test_inventory_is_available_before_capture_and_survives_restart(self):
         data = self.payload()
         data["archivos"] = [{"nombre": "inventario.xml", "contenido": (ROOT / "ejemplos/inventario.xml").read_text(encoding="utf-8")}]
-        with patch("nmapshot.web.subprocess.run") as run:
+        with patch("dedalo.web.subprocess.run") as run:
             status, content = self.request("/api/jobs", data)
             self.assertEqual(status, 201)
             job = json.loads(content)
@@ -448,7 +448,7 @@ class PortalTests(unittest.TestCase):
             self.assertEqual(con.execute("SELECT COUNT(*) FROM activo").fetchone()[0], 0)
 
     def test_failed_import_leaves_no_job_behind(self):
-        with patch("nmapshot.web.auditoria.import_nmap", side_effect=sqlite3.OperationalError("disco lleno")):
+        with patch("dedalo.web.auditoria.import_nmap", side_effect=sqlite3.OperationalError("disco lleno")):
             self.assertEqual(self.request("/api/jobs", self.payload())[0], 500)
         self.assertFalse(self.store.jobs)
         self.assertEqual([p.name for p in Path(self.temp.name).iterdir() if p.is_dir()], [])
@@ -463,7 +463,7 @@ class PortalTests(unittest.TestCase):
             return original(*args, **kwargs)
 
         result = {}
-        with patch("nmapshot.web.auditoria.import_nmap", side_effect=slow_import):
+        with patch("dedalo.web.auditoria.import_nmap", side_effect=slow_import):
             upload = threading.Thread(target=lambda: result.update(response=self.request("/api/jobs", self.payload())))
             upload.start()
             self.assertTrue(started.wait(5))
@@ -521,7 +521,7 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(inventory, {"10.10.5.10": "excluida", "10.10.6.20": "en_alcance", "192.168.1.8": "fuera"})
         # Sin rangos incluidos no se puede lanzar nada.
         self.assertEqual(self.request(route, {"nombre": "Cliente", "incluir": ""})[0], 200)
-        with patch("nmapshot.web.gowitness.find_gowitness", return_value="fake"), patch("nmapshot.web.gowitness.find_chrome", return_value="fake"):
+        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), patch("dedalo.web.gowitness.find_chrome", return_value="fake"):
             status, content = self.request("/api/jobs/" + job["id"] + "/start", {})
         self.assertEqual(status, 409)
         self.assertIn("alcance", json.loads(content)["error"])
@@ -536,8 +536,8 @@ class PortalTests(unittest.TestCase):
             class Result:
                 returncode = 0
             return Result()
-        with patch("nmapshot.web.gowitness.find_gowitness", return_value="fake"), patch("nmapshot.web.gowitness.find_chrome", return_value=None), \
-             patch("nmapshot.web.subprocess.run", side_effect=run):
+        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), patch("dedalo.web.gowitness.find_chrome", return_value=None), \
+             patch("dedalo.web.subprocess.run", side_effect=run):
             self.assertEqual(self.request("/api/jobs/" + job["id"] + "/start", {})[0], 202)
             self.assertTrue(started.wait(3))
         directory = self.store.directory(job["id"])
@@ -561,8 +561,8 @@ class PortalTests(unittest.TestCase):
             class Result:
                 returncode = 0
             return Result()
-        with patch("nmapshot.web.gowitness.find_gowitness", return_value="fake"), patch("nmapshot.web.gowitness.find_chrome", return_value=None), \
-             patch("nmapshot.web.subprocess.run", side_effect=run):
+        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), patch("dedalo.web.gowitness.find_chrome", return_value=None), \
+             patch("dedalo.web.subprocess.run", side_effect=run):
             self.assertEqual(self.request("/api/jobs/" + job["id"] + "/start", {})[0], 202)
             self.assertTrue(started.wait(3))
         self.assertEqual(self.command[self.command.index("--driver") + 1], "chromedp")
@@ -601,7 +601,7 @@ class StopTests(unittest.TestCase):
                 marker.touch()
             from contextlib import redirect_stdout
             import io
-            with patch("nmapshot.cli.gowitness.find_gowitness", return_value="fake"), patch("nmapshot.cli.gowitness.find_chrome", return_value="fake"), patch("nmapshot.cli.gowitness.scan_subnet", side_effect=scan), redirect_stdout(io.StringIO()):
+            with patch("dedalo.cli.gowitness.find_gowitness", return_value="fake"), patch("dedalo.cli.gowitness.find_chrome", return_value="fake"), patch("dedalo.cli.gowitness.scan_subnet", side_effect=scan), redirect_stdout(io.StringIO()):
                 result = cli.main(["capturar", str(ROOT / "ejemplos/escaneo.xml"), "-o", str(output), "--stop-file", str(marker)])
             self.assertEqual(result, 130)
             manifest = report.load_manifest(output)

@@ -5,7 +5,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from nmapshot import descubrimiento, targets
+from dedalo import descubrimiento, targets
 
 
 class FakeDNS:
@@ -116,7 +116,7 @@ class SweepTests(unittest.TestCase):
     def test_reverse_mode_keeps_order_and_reports_progress(self):
         names = {"192.0.2.1": ("uno.test", ""), "192.0.2.2": ("", ""), "192.0.2.3": ("tres.test", "")}
         seen = []
-        with patch("nmapshot.descubrimiento.reverse_name", side_effect=lambda ip: names[ip]):
+        with patch("dedalo.descubrimiento.reverse_name", side_effect=lambda ip: names[ip]):
             rows = descubrimiento.sweep(list(names), "nombres", progress=lambda done, total: seen.append((done, total)))
         self.assertEqual([(row["ip"], row["nombre"], row["encontrado"]) for row in rows],
                          [("192.0.2.1", "uno.test", True), ("192.0.2.2", "", False), ("192.0.2.3", "tres.test", True)])
@@ -124,32 +124,32 @@ class SweepTests(unittest.TestCase):
 
     def test_delay_spaces_out_queries_even_with_several_workers(self):
         starts = []
-        with patch("nmapshot.descubrimiento.reverse_name", side_effect=lambda ip: (starts.append(time.monotonic()), ("", ""))[1]):
+        with patch("dedalo.descubrimiento.reverse_name", side_effect=lambda ip: (starts.append(time.monotonic()), ("", ""))[1]):
             descubrimiento.sweep([f"192.0.2.{n}" for n in range(1, 5)], "nombres", delay=0.05, workers=4)
         self.assertEqual(len(starts), 4)
         self.assertGreaterEqual(max(starts) - min(starts), 0.12)
 
     def test_cancelling_stops_the_sweep_and_keeps_what_was_done(self):
         calls = []
-        with patch("nmapshot.descubrimiento.reverse_name", side_effect=lambda ip: (calls.append(ip), ("", ""))[1]):
+        with patch("dedalo.descubrimiento.reverse_name", side_effect=lambda ip: (calls.append(ip), ("", ""))[1]):
             rows = descubrimiento.sweep([f"192.0.2.{n}" for n in range(1, 40)], "nombres",
                                         workers=1, stop=lambda: len(calls) >= 3)
         self.assertEqual(len(rows), 3)
         self.assertLessEqual(len(calls), 4)
 
     def test_rejects_unknown_mode_and_invalid_domain_before_connecting(self):
-        with patch("nmapshot.descubrimiento.dns_server", side_effect=AssertionError("no consultar")):
+        with patch("dedalo.descubrimiento.dns_server", side_effect=AssertionError("no consultar")):
             with self.assertRaisesRegex(ValueError, "Modo"):
                 descubrimiento.sweep(["192.0.2.1"], "otro")
             with self.assertRaisesRegex(ValueError, "Dominio inválido"):
                 descubrimiento.sweep(["192.0.2.1"], "servidores", "", scope=targets.Scope(["192.0.2.0/24"]))
 
     def test_server_mode_requires_scope_and_never_queries_outside_it(self):
-        with patch("nmapshot.descubrimiento.dns_server", side_effect=AssertionError("no consultar")),                 self.assertRaisesRegex(ValueError, "necesita el alcance"):
+        with patch("dedalo.descubrimiento.dns_server", side_effect=AssertionError("no consultar")),                 self.assertRaisesRegex(ValueError, "necesita el alcance"):
             descubrimiento.sweep(["192.0.2.1"], "servidores", "ejemplo.test")
         scope = targets.Scope(["192.0.2.0/30"], ["192.0.2.2"])
         queried = []
-        with patch("nmapshot.descubrimiento.dns_server",
+        with patch("dedalo.descubrimiento.dns_server",
                    side_effect=lambda ip, *args: (queried.append(ip), (True, "correcta; 1 respuesta(s)", ""))[1]):
             rows = descubrimiento.sweep(["192.0.2.1", "192.0.2.2", "198.51.100.7"], "servidores", "ejemplo.test", scope=scope)
         self.assertEqual(queried, ["192.0.2.1"])
@@ -174,7 +174,7 @@ class SweepTests(unittest.TestCase):
             live.rules = targets.Scope(["192.0.2.0/24"], ["192.0.2.0/24"])
             return False, "", ""
 
-        with patch("nmapshot.descubrimiento.dns_server", side_effect=query):
+        with patch("dedalo.descubrimiento.dns_server", side_effect=query):
             rows = descubrimiento.sweep([f"192.0.2.{n}" for n in range(1, 5)], "servidores", "ejemplo.test",
                                         scope=live, workers=1)
         self.assertEqual(queried, ["192.0.2.1"])

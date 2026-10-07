@@ -123,7 +123,7 @@ CREATE TABLE captura (
 );
 ```
 
-La migración 1 añade índices para las búsquedas habituales: ejecuciones por auditoría, observaciones por servicio y por activo, y capturas por servicio. La migración 2 reconstruye `ejecucion` para admitir el tipo `descubrimiento` y para que borrar una importación borre también las capturas que salieron de ella; añade el índice por `origen_id`. El esquema exacto está en `nmapshot/db.py`.
+La migración 1 añade índices para las búsquedas habituales: ejecuciones por auditoría, observaciones por servicio y por activo, y capturas por servicio. La migración 2 reconstruye `ejecucion` para admitir el tipo `descubrimiento` y para que borrar una importación borre también las capturas que salieron de ella; añade el índice por `origen_id`. El esquema exacto está en `dedalo/db.py`.
 
 La situación de alcance de un activo (en alcance, excluido o fuera) **no se guarda**: se calcula con las reglas vigentes. Así, cambiar el alcance nunca deja datos desactualizados.
 
@@ -140,7 +140,7 @@ evidencia (imagen) ← captura → servicio 443/tcp → activo 10.10.5.3 → aud
 
 - La base se guarda en `portal_datos/dedalo.sqlite3`, ya excluida de git por `*.sqlite3`.
 - Se abre con `PRAGMA foreign_keys = ON` y `journal_mode = WAL`, que permite leer mientras se escribe.
-- Las migraciones son funciones numeradas en `nmapshot/db.py` (`1: esquema inicial`, `2: …`). La base guarda su versión en `PRAGMA user_version` y al abrirla se aplican en una transacción las que falten. Nunca se edita una migración ya publicada; se añade otra.
+- Las migraciones son funciones numeradas en `dedalo/db.py` (`1: esquema inicial`, `2: …`). La base guarda su versión en `PRAGMA user_version` y al abrirla se aplican en una transacción las que falten. Nunca se edita una migración ya publicada; se añade otra.
 - Cambiar un `CHECK` (por ejemplo, añadir el tipo `descubrimiento`) obliga a reconstruir la tabla: `CREATE TABLE nueva_X`, copiar, `DROP TABLE X`, `ALTER TABLE nueva_X RENAME TO X`. `migrate()` desactiva las claves foráneas durante las migraciones para que ese `DROP` no borre en cascada lo que depende de la tabla, y rechaza la migración si `PRAGMA foreign_key_check` encuentra referencias rotas.
 - **Migración del historial:** la primera vez se crea la auditoría «Importadas». Cada carpeta antigua de `portal_datos/` genera una ejecución `importacion` (con sus Nmap como evidencia) y, si se capturó, una `captura` con sus resultados e imágenes. Las carpetas originales no se modifican.
 

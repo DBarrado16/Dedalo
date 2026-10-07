@@ -1,4 +1,8 @@
 [req]
 distinguished_name = dn
+x509_extensions = v3
+prompt = no
 [dn]
-CN = nmapshot-local-test
+CN = dedalo-local-test
+[v3]
+subjectAltName = IP:127.0.0.1, IP:127.0.1.1

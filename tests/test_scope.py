@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from nmapshot import cli, targets
-from tests.test_nmapshot import ROOT
+from dedalo import cli, targets
+from tests.test_dedalo import ROOT
 
 
 class ScopeTests(unittest.TestCase):

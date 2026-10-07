@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from nmapshot import cli, gowitness, parser, report, targets, views
+from dedalo import cli, gowitness, parser, report, targets, views
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -114,7 +114,7 @@ class WorkflowTests(unittest.TestCase):
     def test_dry_run_has_no_files_or_gowitness(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "salida"
-            with patch("nmapshot.gowitness.find_gowitness", side_effect=AssertionError("No ejecutar")):
+            with patch("dedalo.gowitness.find_gowitness", side_effect=AssertionError("No ejecutar")):
                 code, output = self.call(self.arguments(destination) + ["--simular"])
             self.assertEqual(code, 0)
             self.assertIn("4 URLs en 3 subredes", output)
@@ -125,7 +125,7 @@ class WorkflowTests(unittest.TestCase):
             destination = Path(temporary)
             marker = destination / "keep.txt"
             marker.write_text("original")
-            with patch("nmapshot.gowitness.find_gowitness", return_value="fake"), patch("nmapshot.gowitness.find_chrome", return_value="fake"):
+            with patch("dedalo.gowitness.find_gowitness", return_value="fake"), patch("dedalo.gowitness.find_chrome", return_value="fake"):
                 code, output = self.call(self.arguments(destination))
             self.assertEqual(code, 1)
             self.assertIn("no está vacía", output)
@@ -138,7 +138,7 @@ class WorkflowTests(unittest.TestCase):
             def scan(binary, directory, urls, opts):
                 (Path(directory) / "urls.txt").write_text("\n".join(urls))
                 fake_database(directory, urls[:1])
-            with patch("nmapshot.gowitness.find_gowitness", return_value="fake"), patch("nmapshot.gowitness.find_chrome", return_value="fake"), patch("nmapshot.gowitness.scan_subnet", side_effect=scan):
+            with patch("dedalo.gowitness.find_gowitness", return_value="fake"), patch("dedalo.gowitness.find_chrome", return_value="fake"), patch("dedalo.gowitness.scan_subnet", side_effect=scan):
                 code, output = self.call(self.arguments(destination))
             self.assertEqual(code, 3, output)
             data = report.load_manifest(destination)
@@ -182,9 +182,9 @@ class WorkflowTests(unittest.TestCase):
         return scan
 
     def run_with(self, destination, scan, extra=()):
-        with patch("nmapshot.gowitness.find_gowitness", return_value="fake"), \
-                patch("nmapshot.gowitness.find_chrome", return_value="fake"), \
-                patch("nmapshot.gowitness.scan_subnet", side_effect=scan):
+        with patch("dedalo.gowitness.find_gowitness", return_value="fake"), \
+                patch("dedalo.gowitness.find_chrome", return_value="fake"), \
+                patch("dedalo.gowitness.scan_subnet", side_effect=scan):
             return self.call(self.arguments(destination) + list(extra))
 
     def test_pages_without_image_are_retried_with_the_other_engine(self):
@@ -230,7 +230,7 @@ class WorkflowTests(unittest.TestCase):
     def test_failed_binary_continues_other_groups(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "salida"
-            with patch("nmapshot.gowitness.find_gowitness", return_value="fake"), patch("nmapshot.gowitness.find_chrome", return_value="fake"), patch("nmapshot.gowitness.scan_subnet", side_effect=subprocess.CalledProcessError(1, ["fake"])) as scanner:
+            with patch("dedalo.gowitness.find_gowitness", return_value="fake"), patch("dedalo.gowitness.find_chrome", return_value="fake"), patch("dedalo.gowitness.scan_subnet", side_effect=subprocess.CalledProcessError(1, ["fake"])) as scanner:
                 code, _ = self.call(self.arguments(destination))
             self.assertEqual(code, 1)
             self.assertEqual(scanner.call_count, 3)
@@ -240,7 +240,7 @@ class WorkflowTests(unittest.TestCase):
     def test_interruption_keeps_pending_rows(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "salida"
-            with patch("nmapshot.gowitness.find_gowitness", return_value="fake"), patch("nmapshot.gowitness.find_chrome", return_value="fake"), patch("nmapshot.gowitness.scan_subnet", side_effect=KeyboardInterrupt):
+            with patch("dedalo.gowitness.find_gowitness", return_value="fake"), patch("dedalo.gowitness.find_chrome", return_value="fake"), patch("dedalo.gowitness.scan_subnet", side_effect=KeyboardInterrupt):
                 code, _ = self.call(self.arguments(destination))
             self.assertEqual(code, 130)
             data = report.load_manifest(destination)
@@ -321,7 +321,7 @@ class WorkflowTests(unittest.TestCase):
     def test_edge_does_not_inherit_compatibility_layer(self):
         with tempfile.TemporaryDirectory() as temporary:
             with patch.dict(os.environ, {"__COMPAT_LAYER": "DetectorsAppHealth"}):
-                with patch("nmapshot.gowitness.subprocess.run") as run:
+                with patch("dedalo.gowitness.subprocess.run") as run:
                     gowitness.scan_subnet("fake", temporary, ["http://127.0.0.1/"], {
                         "threads": 1, "timeout": 5, "delay": 0, "format": "png", "chrome": "msedge.exe",
                     })
@@ -367,8 +367,8 @@ class ManifestWriteTests(unittest.TestCase):
 
     def test_replace_gives_up_if_the_file_stays_locked(self):
         with tempfile.TemporaryDirectory() as temporary, \
-                patch("nmapshot.report.os.replace", side_effect=PermissionError("ocupado")) as replace, \
-                patch("nmapshot.report.time.sleep"):
+                patch("dedalo.report.os.replace", side_effect=PermissionError("ocupado")) as replace, \
+                patch("dedalo.report.time.sleep"):
             with self.assertRaises(PermissionError):
                 report.replace(Path(temporary) / "a", Path(temporary) / "b", attempts=3)
         self.assertEqual(replace.call_count, 3 if os.name == "nt" else 1)

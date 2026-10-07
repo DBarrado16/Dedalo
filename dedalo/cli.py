@@ -1,4 +1,4 @@
-"""Interfaz de comandos de nmapshot."""
+"""Interfaz de comandos de dedalo."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def port_number(value: str) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    command = argparse.ArgumentParser(prog="nmapshot", description="Capturas web desde resultados nmap, agrupadas por rango y subred.")
+    command = argparse.ArgumentParser(prog="dedalo", description="Capturas web desde resultados nmap, agrupadas por rango y subred.")
     command.add_argument("--version", action="version", version=__version__)
     subcommands = command.add_subparsers(dest="command", required=True)
     capture = subcommands.add_parser("capturar", help="Leer nmap y capturar sus servicios web")
@@ -145,7 +145,7 @@ def capture(args) -> int:
     # Creación exclusiva: dos procesos no pueden reclamar la misma salida vacía.
     with (root / report.MANIFEST).open("x", encoding="utf-8") as file:
         file.write("{}")
-    manifest = {"version": 1, "nmapshot": __version__,
+    manifest = {"version": 1, "dedalo": __version__,
                 "inicio": datetime.now(timezone.utc).isoformat(), "estado": "en_curso",
                 "entradas": [str(Path(p).resolve()) for p in args.ficheros],
                 "rangos": args.rangos, "opciones": opts, "grupos": groups}
@@ -209,7 +209,7 @@ def capture(args) -> int:
     manifest["fin"] = datetime.now(timezone.utc).isoformat()
     report.write_index(root, manifest)
     print(f"Resultado: {shots}/{count} capturas. Índice: {root / 'indice.csv'}")
-    print(f'Visor: python -m nmapshot ver "{root}"')
+    print(f'Visor: python -m dedalo ver "{root}"')
     return 130 if interrupted else (1 if has_error else (3 if shots < count else 0))
 
 

@@ -14,7 +14,7 @@ import time
 import urllib.request
 
 from .integration_local import ROOT, server
-from nmapshot import gowitness
+from dedalo import gowitness
 
 
 def main():
@@ -56,7 +56,7 @@ def main():
         token = ""
         def request(route, data=None):
             req = urllib.request.Request(args.portal + route, data=json.dumps(data).encode() if data is not None else None,
-                headers={"Content-Type":"application/json", "X-Nmapshot-Token":token})
+                headers={"Content-Type":"application/json", "X-Dedalo-Token":token})
             with opener.open(req, timeout=10) as response:
                 raw = response.read()
                 return json.loads(raw) if response.headers.get("Content-Type","").startswith("application/json") else raw

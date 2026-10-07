@@ -20,7 +20,7 @@ import threading
 import time
 import urllib.request
 
-from nmapshot import gowitness, report, views
+from dedalo import gowitness, report, views
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -37,7 +37,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 <style>body{{font:20px system-ui;background:#101827;color:#dce8ff;margin:70px}}
 main{{max-width:850px;padding:44px;border:1px solid #30425f;border-radius:20px}}
 small{{color:#66d9ba}}h1{{font-size:46px}}code{{color:#9bbfff}}</style>
-<main><small>NMAPSHOT / PRUEBA LOCAL</small><h1>Captura {self.server.name} correcta</h1>
+<main><small>DEDALO / PRUEBA LOCAL</small><h1>Captura {self.server.name} correcta</h1>
 <p>Esta página permite comprobar la captura y su asociación con la IP.</p>
 <p><code>{self.server.server_address[0]}</code></p>
 <p>{'Certificado autofirmado de pruebas.' if self.server.name == 'HTTPS' else 'Redirección HTTP resuelta hasta /portal.'}</p></main></html>""".encode()
@@ -62,7 +62,7 @@ def server(host, preferred, name):
 
 
 def run(arguments, log, expected=0):
-    result = subprocess.run([sys.executable, "-m", "nmapshot", *arguments],
+    result = subprocess.run([sys.executable, "-m", "dedalo", *arguments],
                             cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
                             errors="replace", timeout=180, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
     log.write_text(result.stdout + result.stderr, encoding="utf-8")

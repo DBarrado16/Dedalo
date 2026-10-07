@@ -4,7 +4,7 @@ Portal local para subir resultados de nmap, lanzar capturas con gowitness y cons
 
 La pestaña **Activos** conserva el inventario de hosts y puertos TCP/UDP abiertos de los archivos importados, incluidos servicios sin web como SSH, SMB, LDAP y DNS. Se puede consultar y exportar antes de lanzar capturas.
 
-El selector de la esquina superior derecha alterna entre modo claro y oscuro. Recuerda la elección en este navegador; si no hay una preferencia guardada, sigue el tema del sistema. El paquete y los comandos de consola siguen siendo `nmapshot`.
+El selector de la esquina superior derecha alterna entre modo claro y oscuro. Recuerda la elección en este navegador; si no hay una preferencia guardada, sigue el tema del sistema. El paquete y los comandos de consola son ahora `dedalo`.
 
 La interfaz utiliza la paleta de SilentForce: negro, gris y rojo, con adaptación al modo claro. El diseño prioriza las capturas, con IP y puerto encima de cada imagen y agrupación por subred. Las decisiones visuales y la aplicación de `avoid-ai-design` están documentadas en `DESIGN.md` y `design/AUDIT.md`.
 
@@ -16,12 +16,12 @@ Acepta XML (`-oX`), grepable (`-oG`) y salida normal (`-oN`), detectados por el 
 - [gowitness v3](https://github.com/sensepost/gowitness), probado con **3.2.0**. Colocar el ejecutable en `bin/gowitness.exe` (Windows), `bin/gowitness` (Linux), en el PATH o indicar `--gowitness`.
 - Chrome, Chromium o Edge. Se detectan automáticamente o se indican con `--chrome`. Si no se encuentra ninguno, gowitness puede descargar su navegador.
 
-El ejecutable de gowitness no se incluye en el repositorio. `python -m nmapshot instalar` descarga el binario oficial para Windows, Linux o macOS (Intel o ARM), comprueba su SHA-256 contra la huella fijada en `nmapshot/gowitness.py` y lo coloca en `bin/`. El portal lo hace automáticamente al arrancar si no encuentra gowitness y no se indicó `--gowitness`; si la descarga falla, arranca igualmente y muestra el aviso. Los comandos `capturar` y `ver` no descargan nada por su cuenta.
+El ejecutable de gowitness no se incluye en el repositorio. `python -m dedalo instalar` descarga el binario oficial para Windows, Linux o macOS (Intel o ARM), comprueba su SHA-256 contra la huella fijada en `dedalo/gowitness.py` y lo coloca en `bin/`. El portal lo hace automáticamente al arrancar si no encuentra gowitness y no se indicó `--gowitness`; si la descarga falla, arranca igualmente y muestra el aviso. Los comandos `capturar` y `ver` no descargan nada por su cuenta.
 
 Ejecutar los comandos desde la carpeta del proyecto. En Kali usar `python3` en lugar de `python`. Si Windows no reconoce `python`, usar `py -3.12` o la ruta del intérprete, por ejemplo:
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe" -m nmapshot --help
+& "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe" -m dedalo --help
 ```
 
 ## Instalación desde cero
@@ -36,10 +36,10 @@ No hace falta entorno virtual ni `pip install`: Dedalo solo usa la librería est
 4. **gowitness se instala solo.** La primera vez que se abre el portal, si no lo encuentra, descarga el binario oficial 3.2.0 para tu sistema desde GitHub (unos 50 MB), comprueba su huella SHA-256 y lo guarda en `bin\`. También se puede hacer antes, desde la carpeta del proyecto:
 
    ```powershell
-   python -m nmapshot instalar
+   python -m dedalo instalar
    ```
 
-   Si no hay acceso a internet, descarga a mano `gowitness-3.2.0-windows-amd64.exe` desde las [versiones oficiales](https://github.com/sensepost/gowitness/releases/tag/3.2.0), renómbralo a `gowitness.exe` y déjalo en `bin\`. Con el binario ya colocado, `python -m nmapshot instalar` comprueba si coincide con el oficial.
+   Si no hay acceso a internet, descarga a mano `gowitness-3.2.0-windows-amd64.exe` desde las [versiones oficiales](https://github.com/sensepost/gowitness/releases/tag/3.2.0), renómbralo a `gowitness.exe` y déjalo en `bin\`. Con el binario ya colocado, `python -m dedalo instalar` comprueba si coincide con el oficial.
 
 5. Desde la carpeta del proyecto, ejecuta las pruebas. Deben terminar en `OK`. No usan gowitness ni la red:
 
@@ -56,7 +56,7 @@ No hace falta entorno virtual ni `pip install`: Dedalo solo usa la librería est
 
 ### Kali / Linux
 
-Los mismos pasos con estas diferencias: usa `python3` (`python3 -m nmapshot instalar` descarga el binario de Linux y le da permiso de ejecución), instala Chromium con `sudo apt install chromium` y arranca el portal con `python3 -m nmapshot web --abrir`. En Linux todavía no se ha hecho una prueba real completa.
+Los mismos pasos con estas diferencias: usa `python3` (`python3 -m dedalo instalar` descarga el binario de Linux y le da permiso de ejecución), instala Chromium con `sudo apt install chromium` y arranca el portal con `python3 -m dedalo web --abrir`. En Linux todavía no se ha hecho una prueba real completa.
 
 ## Operar desde la web
 
@@ -65,7 +65,7 @@ En Windows puedes hacer doble clic en **`iniciar_portal.cmd`**. Abre el navegado
 También puedes iniciarlo con:
 
 ```powershell
-python -m nmapshot web --abrir
+python -m dedalo web --abrir
 ```
 
 El portal está en [http://127.0.0.1:8787](http://127.0.0.1:8787). Desde ahí:
@@ -94,10 +94,10 @@ Para eliminar una ejecución, selecciónala en el historial y pulsa **Borrar eje
 
 ```powershell
 # Cambiar puerto y carpeta de almacenamiento
-python -m nmapshot web --puerto 8788 --datos portal_datos_cliente
+python -m dedalo web --puerto 8788 --datos portal_datos_cliente
 
 # Indicar los ejecutables del equipo que hace las capturas
-python -m nmapshot web --chrome "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --gowitness bin/gowitness.exe
+python -m dedalo web --chrome "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --gowitness bin/gowitness.exe
 ```
 
 El portal admite hasta 20 archivos por carga (10 MB por archivo y 24 MB en total en la interfaz), con un máximo de 100.000 objetivos por ejecución. Muestra los resultados por páginas de 60 objetivos. Los ajustes de ejecutables se realizan al arrancar el servidor, no desde los archivos subidos.
@@ -150,14 +150,14 @@ Crear `rangos.txt` con un CIDR por línea:
 Comprobar primero el reparto, sin conexiones ni archivos de salida:
 
 ```powershell
-python -m nmapshot capturar escaneo.xml -r rangos.txt --simular
+python -m dedalo capturar escaneo.xml -r rangos.txt --simular
 ```
 
 Capturar y abrir el visor:
 
 ```powershell
-python -m nmapshot capturar escaneo.xml -r rangos.txt -o salida/cliente-01
-python -m nmapshot ver salida/cliente-01
+python -m dedalo capturar escaneo.xml -r rangos.txt -o salida/cliente-01
+python -m dedalo ver salida/cliente-01
 ```
 
 Abrir [http://127.0.0.1:7171](http://127.0.0.1:7171) y consultar la galería de gowitness. Cada resultado muestra su URL con la IP. El servidor permanece en la terminal hasta pulsar Ctrl+C.
@@ -169,7 +169,7 @@ En el modo de consola, la selección se hace al lanzar `ver` y se usa la galerí
 Se pueden mezclar formatos y combinar varios escaneos sin duplicar objetivos:
 
 ```powershell
-python -m nmapshot capturar parte1.xml parte2.gnmap parte3.nmap -r rangos.txt -o salida/cliente-02
+python -m dedalo capturar parte1.xml parte2.gnmap parte3.nmap -r rangos.txt -o salida/cliente-02
 ```
 
 Si la misma IP aparece en varios archivos, se unen sus puertos abiertos; no se interpreta como un histórico de aperturas y cierres. Se captura por IP, aunque nmap incluya nombres DNS.
@@ -196,13 +196,13 @@ Si la misma IP aparece en varios archivos, se unen sus puertos abiertos; no se i
 Ejemplo en Windows:
 
 ```powershell
-python -m nmapshot capturar escaneo.xml -r rangos.txt -o salida/cliente-03 --puertos "8080=http,8443=https" --formato png --hilos 4 --timeout 30 --chrome "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+python -m dedalo capturar escaneo.xml -r rangos.txt -o salida/cliente-03 --puertos "8080=http,8443=https" --formato png --hilos 4 --timeout 30 --chrome "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 ```
 
 Ejemplo en Kali:
 
 ```bash
-python3 -m nmapshot capturar escaneo.gnmap -r rangos.txt -o salida/cliente-04 --chrome /usr/bin/chromium
+python3 -m dedalo capturar escaneo.gnmap -r rangos.txt -o salida/cliente-04 --chrome /usr/bin/chromium
 ```
 
 En consola, sin `--solo-rangos`, los rangos solo agrupan: una IP que no pertenezca a ninguno se conserva en `fuera_de_rango` y se captura. El portal, en cambio, aplica siempre el alcance de la ficha del cliente. Un /17 se organiza en sus /24, creando únicamente las subredes con objetivos. Si se solapan rangos, gana el más específico. Un /25 o /26 se conserva sin ampliarlo a /24. Para IPv6 se agrupa por /64; sus nombres de carpeta sustituyen `:` por `_`.
@@ -245,25 +245,25 @@ Una respuesta HTTP 401, 403, 404 o 500 puede tener captura y se conserva con su 
 
 ```powershell
 # Ver qué grupos hay, sin arrancar el servidor
-python -m nmapshot ver salida/cliente-01 --listar
+python -m dedalo ver salida/cliente-01 --listar
 
 # Una subred concreta
-python -m nmapshot ver salida/cliente-01 10.10.5.0/24
+python -m dedalo ver salida/cliente-01 10.10.5.0/24
 
 # Un rango del cliente
-python -m nmapshot ver salida/cliente-01 10.10.0.0/17
+python -m dedalo ver salida/cliente-01 10.10.0.0/17
 
 # IP fuera de los rangos indicados
-python -m nmapshot ver salida/cliente-01 fuera_de_rango
+python -m dedalo ver salida/cliente-01 fuera_de_rango
 
 # Todo junto
-python -m nmapshot ver salida/cliente-01
+python -m dedalo ver salida/cliente-01
 
 # Solo preparar la vista y obtener su carpeta
-python -m nmapshot ver salida/cliente-01 --preparar
+python -m dedalo ver salida/cliente-01 --preparar
 
 # Otro puerto local
-python -m nmapshot ver salida/cliente-01 --puerto 7172
+python -m dedalo ver salida/cliente-01 --puerto 7172
 ```
 
 Los selectores deben corresponder a un rango o subred listado en la ejecución. Si solo hay una base con capturas, se utiliza directamente. Si hay varias, se combinan con `gowitness report merge`, conservando los originales; las imágenes se enlazan físicamente o se copian cuando el sistema de archivos no permite enlaces.
@@ -297,7 +297,7 @@ python -m unittest discover -s tests -v
 Ejemplo incluido que se puede simular:
 
 ```powershell
-python -m nmapshot capturar ejemplos/escaneo.xml ejemplos/escaneo.gnmap ejemplos/escaneo.nmap -r ejemplos/rangos.txt --simular
+python -m dedalo capturar ejemplos/escaneo.xml ejemplos/escaneo.gnmap ejemplos/escaneo.nmap -r ejemplos/rangos.txt --simular
 ```
 
 Prueba real de principio a fin:
@@ -331,4 +331,4 @@ Sube nmap y rangos de prueba, inicia el trabajo y verifica capturas HTTP/HTTPS, 
 - El navegador usa el perfil temporal de gowitness, sin reutilizar las sesiones personales.
 - Las capturas HTTPS con certificado autofirmado funcionan con la versión probada. No se resuelven pantallas de login ni se añaden nombres de virtual host/SNI: se accede a la IP solicitada.
 - El portal permite cargar nmap y cambiar de subred desde el navegador. Sigue necesitando que su servidor local esté iniciado (con doble clic en el lanzador o con `web`).
-- Si cambias de versión de gowitness, actualiza `VERSION` y las huellas de `RELEASES` en `nmapshot/gowitness.py` y repite la prueba de integración: los parámetros, el esquema de base y el comportamiento del navegador son dependencias externas.
+- Si cambias de versión de gowitness, actualiza `VERSION` y las huellas de `RELEASES` en `dedalo/gowitness.py` y repite la prueba de integración: los parámetros, el esquema de base y el comportamiento del navegador son dependencias externas.

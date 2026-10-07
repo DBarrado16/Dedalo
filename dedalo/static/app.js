@@ -46,7 +46,7 @@ function notice(message) {
   $("notice").hidden = !message;
 }
 async function request(path, body) {
-  const response = await fetch(path, body === undefined ? {} : {method:"POST", headers:{"Content-Type":"application/json","X-Nmapshot-Token":token},body:JSON.stringify(body)});
+  const response = await fetch(path, body === undefined ? {} : {method:"POST", headers:{"Content-Type":"application/json","X-Dedalo-Token":token},body:JSON.stringify(body)});
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "No se pudo completar la operación");
   return data;

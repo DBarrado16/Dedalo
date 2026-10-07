@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 
 root = Path(__file__).resolve().parent.parent
-css = (root / "nmapshot/static/style.css").read_text(encoding="utf-8-sig")
+css = (root / "dedalo/static/style.css").read_text(encoding="utf-8-sig")
 
 def luminance(color):
     values = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]

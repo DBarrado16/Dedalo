@@ -134,7 +134,7 @@ class PortalStore:
             except (OSError, ValueError, KeyError, TypeError):
                 continue
         self._recover()
-        self.worker = threading.Thread(target=self._worker, name="nmapshot-capturas", daemon=True)
+        self.worker = threading.Thread(target=self._worker, name="dedalo-capturas", daemon=True)
         self.worker.start()
 
     def database(self):
@@ -471,7 +471,7 @@ class PortalStore:
                 self._capture_state(job_id, "en_curso")
                 options = dict(meta["opciones"])
             directory = self.directory(job_id)
-            command = [sys.executable, "-u", "-m", "nmapshot", "capturar"]
+            command = [sys.executable, "-u", "-m", "dedalo", "capturar"]
             command += [str(p) for p in sorted((directory / "entradas").glob("nmap-*.txt"))]
             command += ["-r", str(directory / "rangos.txt"), "--solo-rangos", "--excluir", str(directory / "excluir.txt"),
                         "-o", str(directory / "resultado"),
@@ -625,7 +625,7 @@ class PortalServer(ThreadingHTTPServer):
 
 
 class PortalHandler(BaseHTTPRequestHandler):
-    server_version = "nmapshot"
+    server_version = "dedalo"
     def setup(self):
         super().setup()
         self.connection.settimeout(30)
@@ -697,7 +697,7 @@ class PortalHandler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             parts = path.strip("/").split("/")
             if mutate:
-                if self.headers.get("X-Nmapshot-Token") != store.token:
+                if self.headers.get("X-Dedalo-Token") != store.token:
                     self.reject("Sesión caducada; recarga la página", 403)
                     return
                 if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
@@ -823,7 +823,7 @@ def serve_portal(args):
                              "Ciérralo o usa --puerto con otro número.") from exc
         raise
     url = f"http://127.0.0.1:{server.server_address[1]}"
-    print(f"Portal nmapshot: {url}\nDatos: {store.root}\nCtrl+C para cerrar.", flush=True)
+    print(f"Portal dedalo: {url}\nDatos: {store.root}\nCtrl+C para cerrar.", flush=True)
     if args.abrir:
         webbrowser.open(url)
     try:

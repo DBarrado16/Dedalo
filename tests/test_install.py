@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 import urllib.error
 
-from nmapshot import cli, gowitness, web
+from dedalo import cli, gowitness, web
 
 CONTENT = b"binario-de-prueba"
 RELEASE = ("gowitness-prueba", hashlib.sha256(CONTENT).hexdigest())
@@ -22,9 +22,9 @@ class InstallTests(unittest.TestCase):
         self.temp.cleanup()
 
     def install(self, content=CONTENT, error=None):
-        response = patch("nmapshot.gowitness.urllib.request.urlopen",
+        response = patch("dedalo.gowitness.urllib.request.urlopen",
                          side_effect=error, return_value=io.BytesIO(content))
-        with patch("nmapshot.gowitness.release_for_this_system", return_value=RELEASE), response as opener:
+        with patch("dedalo.gowitness.release_for_this_system", return_value=RELEASE), response as opener:
             try:
                 return gowitness.install_gowitness(self.target, log=lambda text: None)
             finally:
@@ -57,14 +57,14 @@ class InstallTests(unittest.TestCase):
                 gowitness.release_for_this_system()
 
     def test_portal_downloads_only_when_missing_and_starts_on_failure(self):
-        with patch("nmapshot.web.gowitness.install_gowitness") as install:
+        with patch("dedalo.web.gowitness.install_gowitness") as install:
             web.ensure_gowitness("C:/ruta/indicada/gowitness.exe")
-            with patch("nmapshot.web.gowitness.find_gowitness", return_value="existente"):
+            with patch("dedalo.web.gowitness.find_gowitness", return_value="existente"):
                 web.ensure_gowitness(None)
             install.assert_not_called()
         output = io.StringIO()
-        with patch("nmapshot.web.gowitness.find_gowitness", side_effect=ValueError("falta")), \
-             patch("nmapshot.web.gowitness.install_gowitness", side_effect=ValueError("sin red")), \
+        with patch("dedalo.web.gowitness.find_gowitness", side_effect=ValueError("falta")), \
+             patch("dedalo.web.gowitness.install_gowitness", side_effect=ValueError("sin red")), \
              contextlib.redirect_stdout(output):
             web.ensure_gowitness(None)
         self.assertIn("Aviso: sin red", output.getvalue())
@@ -73,9 +73,9 @@ class InstallTests(unittest.TestCase):
         self.target.parent.mkdir()
         self.target.write_bytes(CONTENT)
         output = io.StringIO()
-        with patch("nmapshot.cli.gowitness.local_binary", return_value=self.target), \
-             patch("nmapshot.cli.gowitness.release_for_this_system", return_value=RELEASE), \
-             patch("nmapshot.cli.gowitness.install_gowitness") as install, contextlib.redirect_stdout(output):
+        with patch("dedalo.cli.gowitness.local_binary", return_value=self.target), \
+             patch("dedalo.cli.gowitness.release_for_this_system", return_value=RELEASE), \
+             patch("dedalo.cli.gowitness.install_gowitness") as install, contextlib.redirect_stdout(output):
             self.assertEqual(cli.main(["instalar"]), 0)
         install.assert_not_called()
         self.assertIn("coincide con", output.getvalue())

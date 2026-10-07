@@ -6,8 +6,8 @@ import sqlite3
 import tempfile
 import unittest
 
-from nmapshot import auditoria, db, inventory, parser
-from tests.test_nmapshot import ROOT
+from dedalo import auditoria, db, inventory, parser
+from tests.test_dedalo import ROOT
 
 
 class ImportTests(unittest.TestCase):

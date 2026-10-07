@@ -42,4 +42,4 @@ El rojo claro de la marca sirve como enlace en oscuro para mantener el contraste
 
 ## Validación y mantenimiento
 
-La implementación está en `nmapshot/static/`. API, rutas, archivos históricos y ejecución del motor mantienen su contrato. El registro de aplicación de la skill está en `design/AUDIT.md`. Mantener estos tokens también en las vistas Objetivos, Registro y los dos diálogos.
+La implementación está en `dedalo/static/`. API, rutas, archivos históricos y ejecución del motor mantienen su contrato. El registro de aplicación de la skill está en `design/AUDIT.md`. Mantener estos tokens también en las vistas Objetivos, Registro y los dos diálogos.
