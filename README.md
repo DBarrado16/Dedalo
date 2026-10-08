@@ -319,6 +319,14 @@ python -m tests.integration_web
 
 Sube nmap y rangos de prueba, inicia el trabajo y verifica capturas HTTP/HTTPS, progreso, fallo de conexión, imágenes, CSV, JSON y registro. Conserva la ejecución en el historial del portal. `--portal http://127.0.0.1:8788` permite usar otro puerto. `--manual` deja los dos servidores locales y archivos preparados para probar los botones de la interfaz; Ctrl+C cierra esos servidores de prueba.
 
+Antes de abrir con esta versión un `portal_datos/` de versiones anteriores, se puede ensayar su migración sobre una copia temporal, con el portal cerrado:
+
+```powershell
+python -m tests.ensayo_migracion RUTA\portal_datos
+```
+
+Solo imprime recuentos y comprobaciones por ejecución (estado, nombre, archivos, capturas, evidencias y carpeta intacta), sin nombres, IP ni URL, y borra la copia al terminar.
+
 ## Detalles y límites
 
 - Para acceder por VPN, inicia `iniciar_portal.cmd` desde Windows con la VPN conectada. Un portal arrancado desde un entorno con red restringida hereda esa restricción aunque puedas entrar en él por localhost. `ERR_NETWORK_ACCESS_DENIED` indica una denegación de red al navegador de captura.
