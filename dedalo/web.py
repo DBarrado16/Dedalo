@@ -963,7 +963,9 @@ class PortalHandler(BaseHTTPRequestHandler):
             self.json({"error": str(exc)}, 409)
         except (ValueError, TypeError, ParseError) as exc:
             self.json({"error": str(exc)}, 400)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # El cliente cortó (en Windows, al recargar llega como WinError 10053):
+            # no queda a quién responder y un 500 fallaría por el mismo socket.
             pass
         except Exception as exc:
             print(f"Error del portal: {exc}", file=sys.stderr)

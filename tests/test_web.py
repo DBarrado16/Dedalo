@@ -189,6 +189,20 @@ class PortalTests(unittest.TestCase):
         except OSError:
             pass
 
+    def test_client_that_hangs_up_mid_response_gets_no_second_reply_or_traceback(self):
+        # Si el navegador corta mientras el portal escribe (al recargar, por ejemplo), no se
+        # intenta un 500 por el mismo socket ni se llena la terminal de trazas.
+        port = self.server.server_address[1]
+        for error in (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            with self.subTest(error=error.__name__), \
+                    patch.object(web.PortalHandler, "send_bytes", side_effect=error) as send, \
+                    redirect_stderr(io.StringIO()) as stderr, \
+                    socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+                client.sendall(f"GET /api/audits HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode())
+                self.assertEqual(client.recv(65536), b"")  # el portal cierra después de cualquier traza
+                self.assertEqual([call.args[0] for call in send.call_args_list], [200])
+                self.assertEqual(stderr.getvalue(), "")
+
     def test_images_and_downloads_are_scoped_to_job(self):
         job = self.create()
         meta = self.store.jobs[job["id"]]
