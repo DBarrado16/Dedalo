@@ -18,6 +18,7 @@ __pycache__/
 /design/silentforce-reference.*
 
 # Configuración local y archivos generados
+/CLAUDE.local.md
 .env
 .env.*
 !.env.example
