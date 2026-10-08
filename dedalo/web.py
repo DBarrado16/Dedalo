@@ -44,6 +44,14 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _has_capture_options(raw):
+    """Una importación ya migrada guarda las opciones de captura del portal (ver auditoria.portal_options)."""
+    try:
+        return "captura" in json.loads(raw)
+    except (TypeError, ValueError):
+        return False
+
+
 def write_scope_files(directory, scope):
     """Alcance que usará el motor de capturas: rangos incluidos y exclusiones."""
     (directory / "rangos.txt").write_text("".join(f"{net}\n" for net in scope.include), encoding="utf-8")
@@ -140,15 +148,20 @@ class PortalStore:
         avisa en la terminal y en el portal (migration_failures), su carpeta queda
         como estaba y el siguiente arranque lo vuelve a intentar.
         """
-        for path in sorted(self.root.glob("*/trabajo.json")):
+        # Las carpetas conservan su trabajo.json después de migrarse: una sola consulta dice cuáles faltan.
+        with closing(self.database()) as con:
+            migrated = {row["id"] for row in con.execute("SELECT id, opciones FROM ejecucion WHERE tipo = 'importacion'")
+                        if _has_capture_options(row["opciones"])}
+        pending = [path for path in sorted(self.root.glob("*/trabajo.json"))
+                   if re.fullmatch(r"[a-f0-9]{32}", path.parent.name) and path.parent.name not in migrated]
+        if pending:
+            count = "1 ejecución anterior" if len(pending) == 1 else f"{len(pending)} ejecuciones anteriores"
+            print(f"Pasando {count} a la base de datos; la primera vez puede tardar unos minutos.", flush=True)
+        for path in pending:
             job_id = path.parent.name
-            if not re.fullmatch(r"[a-f0-9]{32}", job_id):
-                continue
             meta = None
             try:
                 with closing(self.database()) as con:
-                    if auditoria.has_execution(con, job_id) and "captura" in auditoria.portal_options(con, job_id):
-                        continue
                     meta = json.loads(path.read_text(encoding="utf-8"))
                     found = meta.get("id") if isinstance(meta, dict) else None
                     if found != job_id:

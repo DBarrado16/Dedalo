@@ -478,6 +478,21 @@ class PortalTests(unittest.TestCase):
         self.store = PortalStore(self.temp.name)
         self.server.store = self.store
 
+    def test_startup_says_how_many_old_runs_it_moves_to_the_database(self):
+        # La migración puede tardar minutos: se avisa en la terminal, y solo si hay algo que migrar.
+        from contextlib import redirect_stdout
+        job = self.create()
+        self.make_legacy(job["id"])
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.reopen()
+        self.assertIn("Pasando 1 ejecución anterior a la base de datos", output.getvalue())
+        self.assertEqual(self.store.detail(job["id"])["estado"], "preparada")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.reopen()
+        self.assertNotIn("Pasando", output.getvalue())
+
     def test_reopening_after_a_crash_closes_the_capture_in_the_database(self):
         # Una captura que no llegó a empezar y otra que el motor terminó sin que el portal lo anotase.
         unstarted, finished = self.create(), self.create()
