@@ -1,4 +1,4 @@
-<p align="center"><img src="dedalo/static/logo.webp" alt="Logo de Dedalo: un laberinto en rombo entre dos alas rojas" width="200"></p>
+<p align="center"><img src="design/logo.webp" alt="Logo de Dedalo: un laberinto en rombo entre dos alas rojas" width="200"></p>
 
 # Dedalo
 

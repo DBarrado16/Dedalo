@@ -972,15 +972,17 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.request("/style.css")[0], 200)
 
     def test_logo_is_served_and_used_as_brand_and_tab_icon(self):
-        with self.opener.open(self.url + "/logo.webp", timeout=5) as response:
+        with self.opener.open(self.url + "/logo.png", timeout=5) as response:
             self.assertEqual(response.status, 200)
-            self.assertEqual(response.headers["Content-Type"], "image/webp")
+            self.assertEqual(response.headers["Content-Type"], "image/png")
             content = response.read()
-        self.assertEqual((content[:4], content[8:12]), (b"RIFF", b"WEBP"))
+        self.assertEqual(content[:8], b"\x89PNG\r\n\x1a\n")
+        # Se descarga en cada carga de la página (no-store): la copia del portal es la ligera.
+        self.assertLess(len(content), 64 * 1024)
         page = self.request("/")[1].decode("utf-8")
         brand = re.search(r'<a class="brand"[^>]*>(.*?)</a>', page).group(1)
-        self.assertRegex(brand, r'<img [^>]*src="/logo\.webp"')
-        self.assertRegex(page, r'<link rel="icon" href="/logo\.webp"')
+        self.assertRegex(brand, r'<img [^>]*src="/logo\.png"')
+        self.assertRegex(page, r'<link rel="icon" href="/logo\.png"')
 
 
     def test_audit_scope_decides_what_is_captured_and_replans_prepared_jobs(self):

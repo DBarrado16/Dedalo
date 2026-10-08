@@ -36,7 +36,7 @@ STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
-    "/logo.webp": ("logo.webp", "image/webp"),
+    "/logo.png": ("logo.png", "image/png"),
 }
 MAX_BODY = 32 * 1024 * 1024
 ACTIVE = {"en_cola", "en_curso", "deteniendo"}
