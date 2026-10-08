@@ -22,6 +22,11 @@ from dedalo.web import PortalStore, PortalServer
 from tests.test_dedalo import ROOT, fake_database
 
 
+def first_image(results):
+    """Primera captura guardada de un resultado: resultado/rango/subred/capturas/*.png."""
+    return sorted(Path(results).glob("*/*/capturas/*.png"))[0]
+
+
 def payload():
     return {"nombre": "Prueba de portal", "archivos": [{"nombre": "escaneo.xml", "contenido": (ROOT / "ejemplos/escaneo.xml").read_text()}],
             "opciones": {"timeout": 5, "delay": 0}}
@@ -613,6 +618,214 @@ class PortalTests(unittest.TestCase):
     def test_page_shows_the_migration_notice(self):
         self.assertIn(b'id="migration-notice"', self.request("/")[1])
         self.assertIn(b"migration_failures", self.request("/app.js")[1])
+
+    def store_options(self, job_id, value):
+        """Deja en la base las opciones de una ejecución tal cual: texto, o un valor que se guarda como JSON."""
+        with closing(self.store.database()) as con, con:
+            con.execute("UPDATE ejecucion SET opciones = ? WHERE id = ?",
+                        (value if isinstance(value, str) else json.dumps(value), job_id))
+
+    def capture_rows(self, capture):
+        with closing(self.store.database()) as con:
+            state = con.execute("SELECT estado, terminada FROM ejecucion WHERE id = ?", (capture,)).fetchone()
+            rows = con.execute("SELECT estado, codigo_http, titulo, error, evidencia_id IS NOT NULL AS evidencia "
+                               "FROM captura WHERE ejecucion_id = ? ORDER BY url", (capture,)).fetchall()
+        return state, rows
+
+    def test_old_options_missing_fields_get_the_defaults_of_a_new_run(self):
+        healthy, old = self.create(), self.create()
+        before = self.store.detail(healthy["id"])
+        # Una ejecución ya migrada cuyas opciones no traen puertos, por_servicio ni los demás campos.
+        self.store_options(old["id"], {"archivos": ["escaneo.xml"], "captura": {"timeout": 5, "delay": 0}})
+        self.reopen()
+        self.assertEqual({item["id"] for item in self.store.list()}, {healthy["id"], old["id"]})
+        self.assertEqual(self.store.detail(healthy["id"]), before)
+        detail = self.store.detail(old["id"])
+        self.assertEqual((detail["estado"], detail["total"], detail["error"]), ("preparada", 3, ""))
+        self.assertEqual(detail["opciones"], web.options_from({"timeout": 5, "delay": 0}))
+
+    def test_old_run_file_with_missing_options_is_stored_with_the_defaults_of_a_new_run(self):
+        healthy, old = self.create(), self.create()
+        expected = self.store.jobs[old["id"]]["opciones"]
+        self.make_legacy(old["id"])
+        path = self.store.directory(old["id"]) / "trabajo.json"
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        meta["opciones"] = {"hilos": 6, "timeout": 5, "delay": 0, "formato": "jpeg"}  # antes de existir las demás
+        path.write_text(json.dumps(meta), encoding="utf-8")
+        self.reopen()
+        self.assertEqual(self.bootstrap_failures(), [])
+        with closing(self.store.database()) as con:
+            self.assertEqual(auditoria.portal_options(con, old["id"])["captura"], expected)
+        self.assertEqual({item["id"] for item in self.store.list()}, {healthy["id"], old["id"]})
+        detail = self.store.detail(old["id"])
+        self.assertEqual((detail["estado"], detail["error"], detail["opciones"]), ("preparada", "", expected))
+
+    def test_one_run_that_cannot_be_loaded_does_not_stop_the_portal(self):
+        healthy, broken = self.create(), self.create()
+        before = self.store.detail(healthy["id"])
+        for stored in ({"archivos": [], "captura": {"puertos": "8080"}}, {"archivos": [], "captura": "texto"},
+                       {"archivos": [], "captura": None}, "esto no es json"):
+            with self.subTest(stored=stored):
+                self.store_options(broken["id"], stored)
+                with redirect_stderr(io.StringIO()) as errors:
+                    self.reopen()
+                self.assertIn(broken["id"], errors.getvalue())
+                self.assertEqual({item["id"] for item in self.store.list()}, {healthy["id"], broken["id"]})
+                self.assertEqual(self.store.detail(healthy["id"]), before)
+                detail = self.store.detail(broken["id"])
+                self.assertEqual((detail["estado"], detail["total"], detail["grupos"]), ("error", 0, []))
+                self.assertTrue(detail["error"].startswith("No se pudo cargar esta ejecución"), detail["error"])
+                for technical in ("KeyError", "TypeError", "JSONDecodeError", "Traceback"):
+                    self.assertNotIn(technical, detail["error"])
+        self.assertEqual(self.request("/api/jobs/" + broken["id"] + "/delete", {})[0], 200)  # se puede quitar
+
+    def test_an_active_capture_is_closed_even_if_its_run_cannot_be_loaded(self):
+        job = self.create()
+        with closing(self.store.database()) as con:
+            capture = auditoria.start_capture(con, job["id"], {}, self.store.jobs[job["id"]]["grupos"])
+            with con:
+                con.execute("UPDATE ejecucion SET estado = 'en_curso', terminada = NULL WHERE id = ?", (capture,))
+        self.store_options(job["id"], "esto no es json")
+        with redirect_stderr(io.StringIO()):
+            self.reopen()
+        self.assertEqual(self.capture_rows(capture)[0]["estado"], "interrumpida")
+        self.assertTrue((self.store.directory(job["id"]) / "parar").is_file())
+
+    def test_capture_with_a_missing_image_still_gets_its_final_state(self):
+        job = self.create()
+        real_main = cli.main
+
+        def main_then_lose_an_image(args):
+            code = real_main(args)
+            # El manifiesto ya cita las tres imágenes; una desaparece antes de registrarlas.
+            first_image(Path(args[args.index("-o") + 1])).unlink()
+            return code
+
+        with patch.object(cli, "main", main_then_lose_an_image), redirect_stderr(io.StringIO()) as errors:
+            capture = self.run_engine(job["id"])
+        state, rows = self.capture_rows(capture)
+        self.assertEqual(state["estado"], "completa")
+        self.assertTrue(state["terminada"])
+        self.assertEqual(sorted((r["estado"], r["evidencia"]) for r in rows),
+                         [("capturada", 1), ("capturada", 1), ("sin_captura", 0)])
+        lost = next(r for r in rows if r["estado"] == "sin_captura")
+        self.assertEqual((lost["codigo_http"], lost["titulo"]), (200, "=test"))  # conserva lo que vio el motor
+        self.assertIn("no está en disco", lost["error"])
+        self.assertIn(job["id"], errors.getvalue())
+        self.assertIn("no están en disco", errors.getvalue())
+        self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
+        # Con la captura cerrada en la base, al reabrir no se vuelve a cerrar.
+        self.reopen()
+        self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
+        self.assertFalse((self.store.directory(job["id"]) / "parar").exists())
+
+    def test_final_state_is_saved_even_if_the_results_cannot_be_recorded(self):
+        job = self.create()
+        with patch("dedalo.web.auditoria.record_captures", side_effect=OSError("disco lleno")), \
+                redirect_stderr(io.StringIO()) as errors:
+            capture = self.run_engine(job["id"])
+        state, _ = self.capture_rows(capture)
+        self.assertEqual((state["estado"], bool(state["terminada"])), ("completa", True))
+        self.assertIn("disco lleno", errors.getvalue())
+        self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
+
+    def test_old_run_with_a_missing_image_is_migrated_without_that_image(self):
+        job = self.create()
+        self.run_engine(job["id"])
+        first_image(self.store.directory(job["id"]) / "resultado").unlink()
+        self.make_legacy(job["id"])
+        with redirect_stderr(io.StringIO()) as errors:
+            self.reopen()
+        self.assertEqual(self.bootstrap_failures(), [])
+        with closing(self.store.database()) as con:
+            capture = auditoria.capture_of(con, job["id"])
+        state, rows = self.capture_rows(capture)
+        self.assertEqual(state["estado"], "completa")
+        self.assertEqual(sorted((r["estado"], r["evidencia"]) for r in rows),
+                         [("capturada", 1), ("capturada", 1), ("sin_captura", 0)])
+        self.assertIn("no están en disco", errors.getvalue())
+        self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
+
+    def test_old_run_whose_results_cannot_be_recorded_keeps_at_least_its_state(self):
+        def lose_the_ip(job_id):
+            path = self.store.directory(job_id) / "resultado" / "ejecucion.json"
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            del manifest["grupos"][0]["resultados"][0]["ip"]  # KeyError al registrar
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        def image_is_a_folder(job_id):
+            image = first_image(self.store.directory(job_id) / "resultado")
+            image.unlink()
+            image.mkdir()  # no se puede leer como archivo: OSError, no «no existe»
+
+        for damage in (lose_the_ip, image_is_a_folder):
+            with self.subTest(damage=damage.__name__):
+                job = self.create()
+                self.run_engine(job["id"])
+                damage(job["id"])
+                self.make_legacy(job["id"])
+                with redirect_stderr(io.StringIO()) as errors:
+                    self.reopen()
+                self.assertEqual(self.bootstrap_failures(), [])
+                self.assertIn("sin sus resultados", errors.getvalue())
+                with closing(self.store.database()) as con:
+                    capture = auditoria.capture_of(con, job["id"])
+                state, rows = self.capture_rows(capture)
+                self.assertEqual((state["estado"], len(rows)), ("completa", 0))
+                self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
+
+    def test_folder_whose_trabajo_json_names_another_run_is_reported(self):
+        job = self.create()
+        self.make_legacy(job["id"])
+        path = self.store.directory(job["id"]) / "trabajo.json"
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        meta["id"] = "a" * 32  # una copia de otra ejecución, o editada a mano
+        path.write_text(json.dumps(meta), encoding="utf-8")
+        original = path.read_bytes()
+        with redirect_stderr(io.StringIO()) as errors:
+            self.reopen()
+        failures = self.bootstrap_failures()
+        self.assertEqual([item["id"] for item in failures], [job["id"]])
+        self.assertEqual(failures[0]["nombre"], "Prueba de portal")
+        self.assertIn("no coincide", failures[0]["error"])
+        self.assertIn(job["id"], errors.getvalue())
+        self.assertEqual(self.store.list(), [])
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_old_active_run_is_migrated_as_interrupted_and_its_engine_told_to_stop(self):
+        active = {state: self.create() for state in ("en_cola", "en_curso", "deteniendo")}
+        quiet = {state: self.create() for state in ("preparada", "completa")}
+        for state, job in {**active, **quiet}.items():
+            self.make_legacy(job["id"])
+            path = self.store.directory(job["id"]) / "trabajo.json"
+            meta = json.loads(path.read_text(encoding="utf-8"))
+            meta["estado"] = state
+            path.write_text(json.dumps(meta), encoding="utf-8")
+        stop_file = lambda job: self.store.directory(job["id"]) / "parar"
+        self.assertFalse(any(stop_file(job).exists() for job in [*active.values(), *quiet.values()]))
+        self.reopen()
+        for state, job in active.items():
+            with self.subTest(state=state):
+                self.assertEqual(self.store.detail(job["id"])["estado"], "interrumpida")
+                self.assertTrue(stop_file(job).is_file())
+                self.assertIn("se cerró", self.store.detail(job["id"])["error"])
+        for state, job in quiet.items():
+            with self.subTest(state=state):
+                self.assertFalse(stop_file(job).exists())
+        self.assertEqual(self.bootstrap_failures(), [])
+
+    def test_old_active_run_is_still_migrated_if_the_stop_file_cannot_be_written(self):
+        job = self.create()
+        self.make_legacy(job["id"])
+        path = self.store.directory(job["id"]) / "trabajo.json"
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        meta["estado"] = "en_curso"
+        path.write_text(json.dumps(meta), encoding="utf-8")
+        with patch("dedalo.web.Path.touch", side_effect=PermissionError("denegado")), redirect_stderr(io.StringIO()) as errors:
+            self.reopen()
+        self.assertEqual(self.bootstrap_failures(), [])
+        self.assertEqual(self.store.detail(job["id"])["estado"], "interrumpida")
+        self.assertIn("denegado", errors.getvalue())
 
     def test_second_portal_cannot_claim_same_history(self):
         with self.assertRaisesRegex(ValueError, "Ya hay"):

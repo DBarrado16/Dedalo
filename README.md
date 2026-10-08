@@ -116,7 +116,7 @@ portal_datos/
     resultado/             # mismos índices, bases y capturas que la consola
 ```
 
-El estado, las opciones y los resultados de cada ejecución están en `dedalo.sqlite3`. Las carpetas de versiones anteriores traen además un `trabajo.json`: al arrancar, el portal las pasa a la base una sola vez, con sus capturas, sin modificar la carpeta. Si alguna no se puede migrar (por ejemplo, porque faltan sus Nmap en `entradas/`), lo avisa en la terminal y la conserva.
+El estado, las opciones y los resultados de cada ejecución están en `dedalo.sqlite3`. Las carpetas de versiones anteriores traen además un `trabajo.json`: al arrancar, el portal las pasa a la base una sola vez, con sus capturas, sin modificar la carpeta (salvo que la ejecución estuviera activa al cerrarse: entonces añade el fichero `parar`, para que su motor, si siguiera vivo, no conecte con más subredes). Si alguna no se puede migrar (por ejemplo, porque faltan sus Nmap en `entradas/` o el `id` de su `trabajo.json` no coincide con el de la carpeta), lo avisa en la terminal y en el portal, con su nombre, el código de su carpeta y el motivo, porque no aparece en el historial; la conserva y lo reintenta en cada arranque. Una imagen de una captura antigua que ya no esté en disco no impide migrarla: esa URL queda sin captura y el resto se conserva. Si una ejecución ya guardada no se puede leer al arrancar, aparece igualmente en el historial, sin objetivos y, si no se había lanzado, con estado «Error» y el motivo; el resto del portal arranca con normalidad.
 
 Los resultados anteriores de consola siguen accesibles con `ver`; no se importan automáticamente en el historial web.
 

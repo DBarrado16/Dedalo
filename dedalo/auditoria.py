@@ -229,20 +229,32 @@ def _evidence(con, execution_id: str, kind: str, path: Path, root: Path, stamp: 
 
 
 def record_captures(con: sqlite3.Connection, execution_id: str, manifest: dict, result_dir: Path, root: Path,
-                    logs: list[Path] = ()) -> None:
+                    logs: list[Path] = ()) -> list[str]:
     """Vuelca en la base los resultados del manifiesto del motor; se puede repetir.
 
     Las subredes a las que no llegó la captura dejan sus URL como pendientes.
     Cada imagen y cada registro quedan como evidencia con su huella.
+
+    Una imagen que el manifiesto cita y ya no está en disco no impide registrar el
+    resto. Su URL queda `sin_captura`: `capturada` significa que hay una imagen
+    guardada como evidencia, y `pendiente` que no se llegó a intentar. Conserva lo
+    que vio el motor (código, título, URL final), sin evidencia y con el motivo en
+    `error`. Devuelve las rutas de las imágenes que faltaban.
     """
     audit_id = con.execute("SELECT auditoria_id FROM ejecucion WHERE id = ?", (execution_id,)).fetchone()[0]
     stamp = now()
+    missing = []
     with con:
         for group in manifest["grupos"]:
             for row in group.get("resultados") or []:
-                shot = None
+                shot, error = None, row.get("error") or ""
                 if row.get("estado") == "capturada" and row.get("captura"):
-                    shot = _evidence(con, execution_id, "captura", report.inside(result_dir, row["captura"]), root, stamp)
+                    try:
+                        shot = _evidence(con, execution_id, "captura", report.inside(result_dir, row["captura"]), root, stamp)
+                        error = ""
+                    except FileNotFoundError:
+                        missing.append(row["captura"])
+                        error = error or "La imagen no está en disco."
                 code = row.get("codigo_http")
                 con.execute(
                     "INSERT INTO captura (ejecucion_id, servicio_id, url, estado, url_final, codigo_http, titulo, error, evidencia_id, fecha) "
@@ -252,10 +264,11 @@ def record_captures(con: sqlite3.Connection, execution_id: str, manifest: dict, 
                     (execution_id, _service_id(con, audit_id, row["ip"], int(row["puerto"])), row["url"],
                      "capturada" if shot else "sin_captura", row.get("url_final") or "",
                      int(code) if str(code or "").isdigit() else None, row.get("titulo") or "",
-                     "" if shot else row.get("error") or "", shot, stamp))
+                     error, shot, stamp))
         for path in logs:
             if Path(path).is_file():
                 _evidence(con, execution_id, "registro", Path(path), root, stamp)
+    return missing
 
 
 def portal_options(con: sqlite3.Connection, import_id: str) -> dict:
@@ -289,15 +302,18 @@ def planned_urls(con: sqlite3.Connection, capture_id: str) -> set[str]:
 
 def import_capture_history(con: sqlite3.Connection, import_id: str, options: dict, groups: list[dict],
                            state: str, error: str, created: str, finished: str | None,
-                           manifest: dict | None, result_dir: Path, root: Path, logs: list[Path] = ()) -> str:
+                           manifest: dict | None, result_dir: Path, root: Path,
+                           logs: list[Path] = ()) -> tuple[str, list[str]]:
     """Registra una captura hecha antes de que la base las guardase (paso 5 del plan).
 
-    Todo o nada: si falla, no queda una captura a medias en la base.
+    Todo o nada: si falla, no queda una captura a medias en la base. Devuelve su id y
+    las imágenes del manifiesto que ya no estaban en disco (ver record_captures).
     """
     capture_id = start_capture(con, import_id, options, groups, created)
+    missing = []
     try:
         if manifest:
-            record_captures(con, capture_id, manifest, result_dir, root, logs)
+            missing = record_captures(con, capture_id, manifest, result_dir, root, logs)
         with con:
             con.execute("UPDATE ejecucion SET estado = ?, error = ?, iniciada = ?, terminada = ? WHERE id = ?",
                         (state, error, (manifest or {}).get("inicio"), finished or (manifest or {}).get("fin"), capture_id))
@@ -305,4 +321,4 @@ def import_capture_history(con: sqlite3.Connection, import_id: str, options: dic
         with con:
             con.execute("DELETE FROM ejecucion WHERE id = ?", (capture_id,))
         raise
-    return capture_id
+    return capture_id, missing
