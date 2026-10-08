@@ -45,6 +45,17 @@ function notice(message) {
   $("notice").textContent = message;
   $("notice").hidden = !message;
 }
+// Ejecuciones antiguas que no se pudieron recuperar al arrancar: no están en el historial, así que se listan aquí.
+function showMigrationFailures(failures) {
+  const box = $("migration-notice");
+  box.hidden = !failures.length;
+  if (!failures.length) return;
+  const title = failures.length === 1 ? "Una ejecución anterior no se ha podido recuperar y no aparece en el historial."
+    : failures.length + " ejecuciones anteriores no se han podido recuperar y no aparecen en el historial.";
+  box.innerHTML = `<strong>${title}</strong>`
+    + "<p>Sus archivos siguen intactos en la carpeta de datos del portal, dentro de la carpeta que lleva ese código. Dedalo lo vuelve a intentar cada vez que se abre el portal; si se corrige el motivo, la ejecución aparecerá sola.</p>"
+    + "<ul>" + failures.map(item => `<li>${escapeHtml(item.nombre || "Sin nombre")} (<code>${escapeHtml(item.id)}</code>): ${escapeHtml(item.error)}</li>`).join("") + "</ul>";
+}
 async function request(path, body) {
   const response = await fetch(path, body === undefined ? {} : {method:"POST", headers:{"Content-Type":"application/json","X-Dedalo-Token":token},body:JSON.stringify(body)});
   const data = await response.json();
@@ -571,6 +582,7 @@ async function boot() {
     $("engine-status").textContent = engine.ready ? "Motor preparado" : "Motor no disponible";
     $("engine-dot").classList.toggle("error", !engine.ready);
     if (!engine.ready) notice(engine.error);
+    showMigrationFailures(bootstrap.migration_failures || []);
     await poll();
   } catch (error) { notice("No se pudo conectar: " + error.message); }
   setInterval(poll, 2000);

@@ -459,6 +459,52 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.store.list(), [])
         self.assertTrue((self.store.directory(job["id"]) / "trabajo.json").is_file())
 
+    def bootstrap_failures(self):
+        status, content = self.request("/api/bootstrap")
+        self.assertEqual(status, 200)
+        return json.loads(content)["migration_failures"]
+
+    def break_legacy_inputs(self, job_id):
+        """Quita los Nmap guardados de una ejecución antigua, como si se hubieran borrado a mano."""
+        entries = self.store.directory(job_id) / "entradas"
+        saved = {item.name: item.read_bytes() for item in entries.iterdir()}
+        for item in entries.iterdir():
+            item.unlink()
+        return entries, saved
+
+    def test_portal_tells_which_old_run_could_not_be_migrated_and_why(self):
+        job = self.create()
+        self.make_legacy(job["id"])
+        self.break_legacy_inputs(job["id"])
+        with redirect_stderr(io.StringIO()):
+            self.reopen()
+        # La ejecución no está en el historial: sin este aviso, el usuario no sabría que existe.
+        self.assertEqual(json.loads(self.request("/api/jobs")[1]), [])
+        failures = self.bootstrap_failures()
+        self.assertEqual([item["id"] for item in failures], [job["id"]])
+        self.assertEqual(failures[0]["nombre"], "Prueba de portal")
+        self.assertIn("No se conservan los Nmap", failures[0]["error"])
+
+    def test_unmigrated_run_is_retried_at_the_next_startup(self):
+        job = self.create()
+        original = self.make_legacy(job["id"])
+        self.assertEqual(self.bootstrap_failures(), [])  # un arranque sin problemas no avisa de nada
+        entries, saved = self.break_legacy_inputs(job["id"])
+        with redirect_stderr(io.StringIO()):
+            self.reopen()
+        self.assertEqual(len(self.bootstrap_failures()), 1)
+        # Arreglada la causa, el siguiente arranque migra la ejecución y el aviso desaparece.
+        for name, data in saved.items():
+            (entries / name).write_bytes(data)
+        self.reopen()
+        self.assertEqual(self.bootstrap_failures(), [])
+        self.assertEqual([item["id"] for item in self.store.list()], [job["id"]])
+        self.assertEqual((self.store.directory(job["id"]) / "trabajo.json").read_bytes(), original)
+
+    def test_page_shows_the_migration_notice(self):
+        self.assertIn(b'id="migration-notice"', self.request("/")[1])
+        self.assertIn(b"migration_failures", self.request("/app.js")[1])
+
     def test_second_portal_cannot_claim_same_history(self):
         with self.assertRaisesRegex(ValueError, "Ya hay"):
             PortalStore(self.temp.name)

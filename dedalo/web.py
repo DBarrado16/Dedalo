@@ -116,6 +116,9 @@ class PortalStore:
         # El historial está en la base (docs/MODELO_DATOS.md); self.jobs es solo su
         # copia en memoria para responder rápido a las consultas del navegador.
         self.jobs = {}
+        # Carpetas antiguas que no se pudieron pasar a la base en este arranque; el
+        # portal las muestra (/api/bootstrap) porque no aparecen en el historial.
+        self.migration_failures = []
         try:
             self._migrate_folders()
             self._load()
@@ -133,12 +136,14 @@ class PortalStore:
         """Lleva a la base las ejecuciones que solo tenían trabajo.json (pasos 5 y 6 del plan).
 
         Cada carpeta se migra una sola vez y no se modifica. Si una no se puede
-        migrar, se avisa en la terminal y su carpeta queda como estaba.
+        migrar, se avisa en la terminal y en el portal (migration_failures), su
+        carpeta queda como estaba y el siguiente arranque lo vuelve a intentar.
         """
         for path in sorted(self.root.glob("*/trabajo.json")):
             job_id = path.parent.name
             if not re.fullmatch(r"[a-f0-9]{32}", job_id):
                 continue
+            meta = None
             try:
                 with closing(self.database()) as con:
                     if auditoria.has_execution(con, job_id) and "captura" in auditoria.portal_options(con, job_id):
@@ -154,6 +159,9 @@ class PortalStore:
             except Exception as exc:
                 print(f"Aviso: no se pudo pasar a la base la ejecución {job_id}: {exc}. Su carpeta se conserva.",
                       file=sys.stderr)
+                name = meta.get("nombre") if isinstance(meta, dict) else ""
+                self.migration_failures.append({"id": job_id, "nombre": name if isinstance(name, str) else "",
+                                                "error": str(exc) or type(exc).__name__})
 
     def _migrate_capture(self, con, job_id, meta):
         """Una captura hecha antes de que la base las guardase, con sus resultados."""
@@ -810,7 +818,7 @@ class PortalHandler(BaseHTTPRequestHandler):
                                  "style.css": "text/css; charset=utf-8"}[filename])
                 return
             if path == "/api/bootstrap":
-                self.json({"token": store.token, "engine": store.engine()})
+                self.json({"token": store.token, "engine": store.engine(), "migration_failures": store.migration_failures})
                 return
             if path == "/api/jobs":
                 self.json(store.list())
