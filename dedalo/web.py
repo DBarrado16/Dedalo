@@ -520,15 +520,25 @@ class PortalStore:
             if meta.get("terminando"):
                 # El motor ya acabó y se están guardando sus resultados: no hay nada que parar.
                 raise Conflict("Este trabajo ya terminó y se están guardando sus resultados.")
+            stopping = meta["estado"] in ("en_curso", "deteniendo")
             if meta["estado"] == "en_cola":
                 state = "cancelada"
-            elif meta["estado"] in ("en_curso", "deteniendo"):
+            elif stopping:
+                # El fichero de parada va antes que la base, a propósito: si la base falla,
+                # el motor para igualmente.
                 (self.directory(job_id) / "parar").touch()
                 state = "deteniendo"
             else:
                 raise Conflict("Este trabajo no está en ejecución")
-            # Primero la base: si no se puede guardar, el usuario lo ve y el estado no cambia.
-            self._capture_state(job_id, state, strict=True)
+            # Primero la base: si no se puede guardar, el usuario lo ve y el estado mostrado no cambia.
+            try:
+                self._capture_state(job_id, state, strict=True)
+            except Exception as exc:
+                if not stopping:
+                    raise  # cancelar un trabajo en cola no ha hecho nada todavía
+                print(f"Error del portal: no se pudo guardar en la base la parada de {job_id}: {exc}", file=sys.stderr)
+                raise Conflict("La parada está pedida y el motor se detendrá, pero no se pudo guardar el estado en la base. "
+                               "Vuelve a pulsar «Detener» o consulta la terminal del portal.") from exc
             meta["estado"] = state
         return self.detail(job_id)
 

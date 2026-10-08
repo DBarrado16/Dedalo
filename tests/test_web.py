@@ -426,6 +426,48 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.stored_capture(job["id"])["estado"], "completa")
         self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
 
+    def test_stop_whose_state_cannot_be_saved_still_stops_the_engine_and_says_so(self):
+        job = self.create()
+        begun, release = threading.Event(), threading.Event()
+        def run(*args, **kwargs):
+            begun.set()
+            release.wait(5)
+            class Result:
+                returncode = 130
+            return Result()
+        real_set_state = auditoria.set_state
+        def set_state(con, execution_id, state, error=""):
+            if state == "deteniendo":
+                raise sqlite3.OperationalError("database is locked")
+            real_set_state(con, execution_id, state, error)
+        errors = io.StringIO()
+        try:
+            with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), \
+                    patch("dedalo.web.gowitness.find_chrome", return_value="fake"), \
+                    patch("dedalo.web.subprocess.run", side_effect=run), \
+                    patch("dedalo.auditoria.set_state", side_effect=set_state), redirect_stderr(errors):
+                self.assertEqual(self.request("/api/jobs/" + job["id"] + "/start", {})[0], 202)
+                self.assertTrue(begun.wait(5))
+                status, content = self.request("/api/jobs/" + job["id"] + "/cancel", {})
+                self.assertEqual(status, 409, content)
+                message = json.loads(content)["error"]
+                self.assertIn("parada está pedida", message)
+                self.assertIn("no se pudo guardar", message)
+                # El fichero de parada va antes que la base: el motor para aunque la base falle.
+                self.assertTrue((self.store.directory(job["id"]) / "parar").is_file())
+                # Lo que se ve y lo que está guardado siguen coincidiendo.
+                self.assertEqual(self.store.detail(job["id"])["estado"], "en_curso")
+                self.assertEqual(self.stored_capture(job["id"])["estado"], "en_curso")
+                self.assertIn("database is locked", errors.getvalue())
+                release.set()
+                deadline = time.monotonic() + 5
+                while self.store.detail(job["id"])["estado"] == "en_curso" and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertEqual(self.store.detail(job["id"])["estado"], "interrumpida")
+        finally:
+            release.set()
+        self.assertEqual(self.stored_capture(job["id"])["estado"], "interrumpida")
+
     def reopen(self):
         self.store.close()
         self.store = PortalStore(self.temp.name)
