@@ -32,6 +32,12 @@ import zipfile
 from . import auditoria, cli, db, gowitness, inventory, parser, report, targets
 
 STATIC = Path(__file__).parent / "static"
+STATIC_FILES = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/logo.webp": ("logo.webp", "image/webp"),
+}
 MAX_BODY = 32 * 1024 * 1024
 ACTIVE = {"en_cola", "en_curso", "deteniendo"}
 
@@ -904,11 +910,9 @@ class PortalHandler(BaseHTTPRequestHandler):
                         self.json(store.delete(parts[2]))
                         return
                 raise FileNotFoundError("Ruta no encontrada")
-            if path in ("/", "/app.js", "/style.css"):
-                filename = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css"}[path]
-                self.send_bytes(200, (STATIC / filename).read_bytes(),
-                                {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
-                                 "style.css": "text/css; charset=utf-8"}[filename])
+            if path in STATIC_FILES:
+                filename, content_type = STATIC_FILES[path]
+                self.send_bytes(200, (STATIC / filename).read_bytes(), content_type)
                 return
             if path == "/api/bootstrap":
                 self.json({"token": store.token, "engine": store.engine(), "migration_failures": store.migration_failures})

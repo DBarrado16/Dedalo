@@ -1,3 +1,5 @@
+<p align="center"><img src="dedalo/static/logo.webp" alt="Logo de Dedalo: un laberinto en rombo entre dos alas rojas" width="200"></p>
+
 # Dedalo
 
 Portal local para subir resultados de nmap, lanzar capturas con gowitness y consultar las imágenes por rango del cliente y subred. Por defecto: **80/TCP abierto → HTTP**, **443/TCP abierto → HTTPS**. También conserva sus comandos de consola.

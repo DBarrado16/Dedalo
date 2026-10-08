@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import sqlite3
 import threading
@@ -969,6 +970,17 @@ class PortalTests(unittest.TestCase):
         self.assertIn(b"Nueva captura", content)
         self.assertEqual(self.request("/app.js")[0], 200)
         self.assertEqual(self.request("/style.css")[0], 200)
+
+    def test_logo_is_served_and_used_as_brand_and_tab_icon(self):
+        with self.opener.open(self.url + "/logo.webp", timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["Content-Type"], "image/webp")
+            content = response.read()
+        self.assertEqual((content[:4], content[8:12]), (b"RIFF", b"WEBP"))
+        page = self.request("/")[1].decode("utf-8")
+        brand = re.search(r'<a class="brand"[^>]*>(.*?)</a>', page).group(1)
+        self.assertRegex(brand, r'<img [^>]*src="/logo\.webp"')
+        self.assertRegex(page, r'<link rel="icon" href="/logo\.webp"')
 
 
     def test_audit_scope_decides_what_is_captured_and_replans_prepared_jobs(self):

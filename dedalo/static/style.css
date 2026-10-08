@@ -64,7 +64,7 @@ h1 { font-size: 30px; margin-bottom: 8px; overflow-wrap: anywhere; }
 h2 { font-size: 26px; margin-bottom: 12px; }
 .sidebar { position: fixed; inset: 0 auto 0 0; width: 260px; padding: 27px 18px 20px; background: var(--surface); border-right: 1px solid var(--line); display: flex; flex-direction: column; z-index: 5; }
 .brand { display: flex; align-items: center; gap: 10px; margin: 0 8px 28px; font-family: var(--font-heading); font-size: 23px; font-weight: 600; line-height: 1.15; }
-.brand-mark { width: 36px; height: 36px; color: var(--action); flex-shrink: 0; }
+.brand-mark { width: 48px; height: 48px; flex-shrink: 0; }
 .brand small { display: block; font: 12px/1.5 var(--font-ui); color: var(--muted); margin-top: 3px; }
 .primary, .secondary, .theme-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 38px; padding: 8px 14px; font-size: 13px; font-weight: 600; border: 1px solid transparent; border-radius: 4px; white-space: nowrap; }
 .primary { color: var(--action-ink); background: var(--action); }

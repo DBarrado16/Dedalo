@@ -2,7 +2,7 @@
 
 ## Función y jerarquía
 
-Herramienta local para revisar capturas web obtenidas a partir de Nmap. La unidad de trabajo es una ejecución; dentro de ella, una subred y sus IP/puertos. La imagen de la web es el contenido principal. La marca Dedalo se acompaña de un laberinto cuadrado en SVG, con el rojo de acción y sin imágenes externas.
+Herramienta local para revisar capturas web obtenidas a partir de Nmap. La unidad de trabajo es una ejecución; dentro de ella, una subred y sus IP/puertos. La imagen de la web es el contenido principal. La marca Dedalo se acompaña del logo elegido por el usuario, `dedalo/static/logo.webp`: un laberinto en rombo entre dos alas rojas, con fondo transparente. Lo sirve el propio portal (sin recursos externos), mide 48 px en la columna lateral y es también el icono de la pestaña. Sus degradados y relieve se apartan del diseño plano del resto de la interfaz: es una elección expresa del usuario, como la paleta.
 
 El historial permanece en una columna lateral en escritorio y una fila desplazable en móvil. El encabezado identifica la ejecución. Los recuentos son una franja compacta, seguidos por las acciones, las vistas y los filtros. Cada subred abre un grupo de capturas. IP y protocolo aparecen encima de la imagen; título, URL y estado HTTP debajo. Una imagen sin título no se presenta como pendiente.
 
