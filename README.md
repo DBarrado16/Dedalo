@@ -88,7 +88,7 @@ El portal recibe archivos y **lanza las capturas**, no ejecuta un nuevo escaneo 
 
 **Detener tras esta subred** conserva las capturas y evita iniciar nuevos grupos. No mata a la fuerza el navegador de la subred activa; el tiempo de espera depende de sus objetivos y timeout. Un trabajo todavía en cola se cancela inmediatamente.
 
-El historial y las cargas se conservan en `portal_datos/`. Al cerrar el servidor con Ctrl+C se solicita la parada y se espera a la subred activa. Si el servidor se cerró inesperadamente, al volver a abrirlo cada trabajo activo toma el estado final del motor si llegó a terminar y, si no, queda interrumpido; no se relanzan automáticamente.
+El historial y las cargas se conservan en `portal_datos/`. Al cerrar el servidor con Ctrl+C se solicita la parada y se espera a la subred activa. Si el servidor se cerró inesperadamente, al volver a abrirlo cada trabajo activo toma el estado final del motor si llegó a terminar y, si no, queda interrumpido; no se relanzan automáticamente. Si el motor siguiera en marcha, se le pide parar y termina la subred en curso.
 
 Para eliminar una ejecución, selecciónala en el historial y pulsa **Borrar ejecución**. El portal pide confirmación y elimina permanentemente esa ejecución, sus capturas, copias de los Nmap subidos, índices y registros. Los archivos originales de tu equipo no se modifican. Si está en cola o capturando, primero cancélala o detenla y espera a que termine; entonces podrás borrarla.
 

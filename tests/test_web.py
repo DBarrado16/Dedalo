@@ -385,6 +385,36 @@ class PortalTests(unittest.TestCase):
             states = [r[0] for r in con.execute("SELECT estado FROM captura WHERE ejecucion_id = ?", (finished_capture,))]
             self.assertEqual(states, ["capturada"] * 3)
 
+    def test_reopening_after_a_crash_tells_a_leftover_engine_to_stop(self):
+        # Si el portal murió sin cerrarse, su motor puede seguir conectando: se le pide parar.
+        active = {state: self.create() for state in ("en_cola", "en_curso", "deteniendo")}
+        untouched = self.create()
+        with closing(self.store.database()) as con:
+            for state, job in active.items():
+                capture = auditoria.start_capture(con, job["id"], {}, self.store.jobs[job["id"]]["grupos"])
+                with con:
+                    con.execute("UPDATE ejecucion SET estado = ?, terminada = NULL WHERE id = ?", (state, capture))
+        stop_file = lambda job: self.store.directory(job["id"]) / "parar"
+        self.assertFalse(any(stop_file(job).exists() for job in [*active.values(), untouched]))
+        self.reopen()
+        for state, job in active.items():
+            with self.subTest(state=state):
+                self.assertEqual(self.store.detail(job["id"])["estado"], "interrumpida")
+                self.assertTrue(stop_file(job).is_file())
+        self.assertFalse(stop_file(untouched).exists())
+
+    def test_reopening_still_closes_the_capture_if_the_stop_file_cannot_be_written(self):
+        job = self.create()
+        with closing(self.store.database()) as con:
+            capture = auditoria.start_capture(con, job["id"], {}, self.store.jobs[job["id"]]["grupos"])
+            with con:
+                con.execute("UPDATE ejecucion SET estado = 'en_curso', terminada = NULL WHERE id = ?", (capture,))
+        errors = io.StringIO()
+        with patch("dedalo.web.Path.touch", side_effect=PermissionError("denegado")), redirect_stderr(errors):
+            self.reopen()
+        self.assertEqual(self.store.detail(job["id"])["estado"], "interrumpida")
+        self.assertIn("denegado", errors.getvalue())
+
     def make_legacy(self, job_id):
         """Deja una ejecución como la guardaban las versiones anteriores: trabajo.json y nada en la base."""
         meta = self.store.jobs[job_id]

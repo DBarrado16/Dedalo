@@ -193,6 +193,12 @@ class PortalStore:
 
     def _close_interrupted(self, meta):
         """El portal se cerró con esta captura activa: se toma el estado del motor si terminó."""
+        # Si el portal murió sin cerrarse, su motor puede seguir conectando (en Windows el
+        # proceso hijo sobrevive). Con el fichero de parada acaba la subred actual y no sigue.
+        try:
+            (self.directory(meta["id"]) / "parar").touch()
+        except OSError as exc:
+            print(f"Error del portal: no se pudo pedir al motor de {meta['id']} que pare: {exc}", file=sys.stderr)
         manifest = self._manifest(meta)
         if manifest and manifest.get("estado") in ("completa", "parcial", "interrumpida"):
             state, error = manifest["estado"], ""
