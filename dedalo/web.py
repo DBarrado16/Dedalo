@@ -530,7 +530,7 @@ class PortalStore:
                 state = "deteniendo"
             else:
                 raise Conflict("Este trabajo no está en ejecución")
-            # Primero la base: si no se puede guardar, el usuario lo ve y el estado mostrado no cambia.
+            # Luego la base: si no se puede guardar, el usuario lo ve y el estado mostrado no cambia.
             try:
                 self._capture_state(job_id, state, strict=True)
             except Exception as exc:
