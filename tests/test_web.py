@@ -359,6 +359,73 @@ class PortalTests(unittest.TestCase):
         finally:
             release.set()
 
+    def capture_finishing(self, job_id):
+        """Lanza una captura cuyo motor acaba al instante y la retiene tras guardar su estado final.
+
+        Es el hueco en que la base ya dice «completa» pero el portal aún no ha cerrado
+        el trabajo en memoria. Devuelve el evento que la libera."""
+        saved, release = threading.Event(), threading.Event()
+        real_set_state = auditoria.set_state
+        def set_state(con, execution_id, state, error=""):
+            real_set_state(con, execution_id, state, error)
+            if state in auditoria.FINAL:
+                saved.set()
+                release.wait(5)
+        class Result:
+            returncode = 0
+        self.enterContext(patch("dedalo.web.gowitness.find_gowitness", return_value="fake"))
+        self.enterContext(patch("dedalo.web.gowitness.find_chrome", return_value="fake"))
+        self.enterContext(patch("dedalo.web.subprocess.run", return_value=Result()))
+        self.enterContext(patch("dedalo.auditoria.set_state", side_effect=set_state))
+        self.assertEqual(self.request("/api/jobs/" + job_id + "/start", {})[0], 202)
+        self.assertTrue(saved.wait(5))
+        return release
+
+    def stored_capture(self, job_id):
+        with closing(self.store.database()) as con:
+            return con.execute("SELECT estado, terminada FROM ejecucion WHERE id = ?", (auditoria.capture_of(con, job_id),)).fetchone()
+
+    def test_stop_after_the_final_state_was_saved_cannot_overwrite_it(self):
+        job = self.create()
+        release = self.capture_finishing(job["id"])
+        try:
+            self.assertEqual(self.stored_capture(job["id"])["estado"], "completa")
+            status, content = self.request("/api/jobs/" + job["id"] + "/cancel", {})
+        finally:
+            release.set()
+        deadline = time.monotonic() + 5
+        while self.store.detail(job["id"])["estado"] in ("en_curso", "deteniendo") and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
+        row = self.stored_capture(job["id"])
+        self.assertEqual(row["estado"], "completa")
+        self.assertTrue(row["terminada"])
+        # El «Detener» tardío se rechaza como cualquier otro de un trabajo que no corre.
+        self.assertEqual(status, 409, content)
+        self.assertIn("terminó", json.loads(content)["error"])
+        self.assertFalse((self.store.directory(job["id"]) / "parar").exists())
+
+    def test_closing_the_portal_while_a_capture_is_being_saved_waits_for_it_without_error(self):
+        job = self.create()
+        release = self.capture_finishing(job["id"])
+        looped, errors = threading.Event(), io.StringIO()
+        real_put = self.store.pending.put
+        def put(item):
+            real_put(item)
+            looped.set()
+        closer = threading.Thread(target=self.store.close)
+        try:
+            with patch.object(self.store.pending, "put", side_effect=put), redirect_stderr(errors):
+                closer.start()
+                self.assertTrue(looped.wait(5))  # close() ya recorrió los trabajos activos
+        finally:
+            release.set()
+        closer.join(5)
+        self.assertFalse(closer.is_alive())
+        self.assertNotIn("Error del portal", errors.getvalue())
+        self.assertEqual(self.stored_capture(job["id"])["estado"], "completa")
+        self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
+
     def reopen(self):
         self.store.close()
         self.store = PortalStore(self.temp.name)

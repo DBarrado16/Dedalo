@@ -517,6 +517,9 @@ class PortalStore:
     def cancel(self, job_id):
         with self.lock:
             meta = self._meta(job_id)
+            if meta.get("terminando"):
+                # El motor ya acabó y se están guardando sus resultados: no hay nada que parar.
+                raise Conflict("Este trabajo ya terminó y se están guardando sus resultados.")
             if meta["estado"] == "en_cola":
                 state = "cancelada"
             elif meta["estado"] in ("en_curso", "deteniendo"):
@@ -573,10 +576,17 @@ class PortalStore:
                     error = "El motor no pudo completar la captura. Consulta el registro."
             except Exception as exc:
                 status, error = "error", str(exc)
+            # El motor ya acabó: desde aquí «Detener» no tiene nada que parar. Guardar los
+            # resultados es lento (se calcula la huella de cada imagen) y va sin el bloqueo,
+            # así que se marca antes bajo él: una parada pedida justo ahora no puede
+            # escribir «deteniendo» después del estado final.
+            with self.lock:
+                meta["terminando"] = True
             # Si la base no se puede escribir ahora, al reabrir el portal la captura
             # sigue activa en ella y se cierra desde el manifiesto del motor.
             self._capture_state(job_id, status, error, record=True)
             with self.lock:
+                meta.pop("terminando", None)
                 meta.update(estado=status, error=error, fin=now())
 
     def delete(self, job_id):
@@ -672,7 +682,8 @@ class PortalStore:
         with self.lock:
             self.closing = True
             for job_id, meta in self.jobs.items():
-                if meta["estado"] in ACTIVE:
+                # Si ya está guardando sus resultados no hay nada que parar: el join de abajo lo espera.
+                if meta["estado"] in ACTIVE and not meta.get("terminando"):
                     try:
                         self.cancel(job_id)
                     except Exception as exc:
