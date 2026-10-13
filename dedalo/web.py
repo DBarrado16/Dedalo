@@ -540,9 +540,8 @@ class PortalStore:
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
-    def summary(self, meta):
-        manifest = self._manifest(meta)
-        groups = manifest["grupos"] if manifest else meta["grupos"]
+    @staticmethod
+    def summary(meta, groups):
         done = sum(len(g["objetivos"]) for g in groups if g["estado"] in ("completo", "parcial", "error", "interrumpido"))
         return {k: meta[k] for k in ("id", "nombre", "fecha", "estado", "total", "subredes", "error")} | {
             "capturas": sum(g.get("capturas", 0) for g in groups),
@@ -574,7 +573,7 @@ class PortalStore:
         manifest = self._manifest(meta)
         groups = manifest["grupos"] if manifest else meta["grupos"]
         root = self.directory(job_id) / "resultado"
-        response = self.summary(meta)
+        response = self.summary(meta, groups)
         response.update(archivos=meta["archivos"], opciones=meta["opciones"], grupos=[],
                         csv=(root / "indice.csv").is_file(), auditoria=self._owners([job_id])[job_id],
                         fuera_alcance=meta.get("fuera_alcance"))

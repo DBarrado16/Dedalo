@@ -289,8 +289,7 @@ def set_options(con: sqlite3.Connection, execution_id: str, options: dict) -> No
 def portal_jobs(con: sqlite3.Connection) -> list[sqlite3.Row]:
     """Cada importación con su captura, si ya se lanzó: el historial del portal."""
     return con.execute(
-        "SELECT i.id, i.auditoria_id, i.nombre, i.creada, i.opciones, "
-        "c.id AS captura_id, c.estado, c.error, c.terminada FROM ejecucion i "
+        "SELECT i.id, i.nombre, i.creada, i.opciones, c.estado, c.error, c.terminada FROM ejecucion i "
         "LEFT JOIN ejecucion c ON c.origen_id = i.id AND c.tipo = 'captura' "
         "WHERE i.tipo = 'importacion' ORDER BY i.creada").fetchall()
 
