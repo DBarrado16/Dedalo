@@ -185,8 +185,30 @@ class PortalTests(unittest.TestCase):
         self.assertNotIn(job["id"], self.store.jobs)
         self.assertFalse(self.stored(job["id"]))
         self.assertFalse(directory.exists())
+        [left] = [path for path in Path(self.temp.name).iterdir() if job["id"] in path.name]
+        # Un solo carácter más que la original: en Windows las rutas largas rozan los 260.
+        self.assertEqual(len(left.name), len(job["id"]) + 1)
+        # Al reabrir el portal se termina el borrado.
         self.reopen()
         self.assertEqual(self.store.list(), [])
+        self.assertFalse(left.exists())
+
+    def test_reopening_restores_a_run_whose_folder_could_not_go_back(self):
+        job = self.create()
+        rename, calls = Path.rename, []
+
+        def fails_going_back(path, target):
+            calls.append(target)
+            if len(calls) > 1:
+                raise PermissionError("Archivo ocupado")
+            return rename(path, target)
+
+        with patch.object(Path, "rename", fails_going_back), \
+                patch("dedalo.web.auditoria.delete_execution", side_effect=sqlite3.OperationalError("database is locked")):
+            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/delete", {})[0], 500)
+        self.assertFalse(self.store.directory(job["id"]).exists())
+        self.reopen()
+        self.assert_whole(job["id"])
 
     def test_csrf_origin_host_and_body_size(self):
         self.assertEqual(self.request("/api/jobs", self.payload(), {"X-Dedalo-Token": "wrong"})[0], 403)

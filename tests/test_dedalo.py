@@ -112,7 +112,7 @@ class WorkflowTests(unittest.TestCase):
                 "-r", str(ROOT / "ejemplos/rangos.txt"), "-o", str(destination)]
 
     def test_viewer_warns_when_it_listens_beyond_this_machine(self):
-        for host, local in (("127.0.0.1", True), ("::1", True), ("localhost", True),
+        for host, local in (("127.0.0.1", True), ("::1", True), ("localhost", True), ("LocalHost", True),
                             ("0.0.0.0", False), ("192.168.1.5", False), ("mi-equipo", False)):
             self.assertEqual(cli.only_this_machine(host), local, host)
         with patch("dedalo.report.load_manifest", return_value={}), \

@@ -134,6 +134,7 @@ class PortalStore:
         # portal las muestra (/api/bootstrap) porque no aparecen en el historial.
         self.migration_failures = []
         try:
+            self._finish_deletes()
             self._migrate_folders()
             self._load()
         except Exception:
@@ -145,6 +146,22 @@ class PortalStore:
     def database(self):
         # Una conexión por operación: los hilos del servidor no comparten conexiones.
         return db.connect(self.root)
+
+    def _finish_deletes(self):
+        """Carpetas que delete() apartó y no terminó: vuelven si su ejecución sigue en la base; si no, se borran."""
+        with closing(self.database()) as con:
+            for path in self.root.glob(".*"):
+                job_id = path.name[1:]
+                if not re.fullmatch(r"[a-f0-9]{32}", job_id) or path.is_symlink() or path.is_junction():
+                    continue
+                try:
+                    if auditoria.has_execution(con, job_id):
+                        path.rename(self.root / job_id)
+                    else:
+                        shutil.rmtree(path)
+                except OSError as exc:
+                    print(f"Aviso: no se pudo terminar de borrar ni devolver a su sitio la carpeta {path}: {exc}",
+                          file=sys.stderr)
 
     def _migrate_folders(self):
         """Lleva a la base las ejecuciones que solo tenían trabajo.json (pasos 5 y 6 del plan).
@@ -690,8 +707,9 @@ class PortalStore:
             if source.is_symlink() or source.is_junction():
                 raise ValueError("No se puede borrar una ejecución enlazada a otra carpeta")
             # La carpeta se aparta antes de tocar la base, con un nombre que ni se carga ni se
-            # migra al arrancar. Si la base falla, vuelve a su sitio y la ejecución sigue entera.
-            trash = directory.with_name(".borrando-" + job_id)
+            # migra al arrancar. Si la base falla, vuelve a su sitio y la ejecución sigue entera;
+            # si algo queda a medias, el próximo arranque lo termina (_finish_deletes).
+            trash = directory.with_name("." + job_id)  # un solo carácter más: rutas de Windows
             directory.rename(trash)
             try:
                 with closing(self.database()) as con:

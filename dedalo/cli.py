@@ -218,7 +218,7 @@ def only_this_machine(host: str) -> bool:
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
-        return host == "localhost"
+        return host.lower() == "localhost"
 
 
 def show(args) -> int:
