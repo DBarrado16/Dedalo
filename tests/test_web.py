@@ -812,6 +812,12 @@ class PortalTests(unittest.TestCase):
         self.assertEqual((self.store.directory(job["id"]) / "rangos.txt").read_text(encoding="utf-8"), "10.10.5.0/24\n")
         self.assertEqual(self.store.detail(job["id"])["total"], 2)  # solo 10.10.5.10, con el 80 y el 443
 
+    def test_a_run_loaded_without_a_plan_can_be_launched_without_opening_it(self):
+        job = self.create()
+        self.reopen()
+        state, rows = self.capture_rows(self.run_engine(job["id"]))
+        self.assertEqual((state["estado"], len(rows)), ("completa", 3))
+
     def test_opening_a_run_plans_it_without_blocking_the_portal(self):
         job = self.create()
         self.reopen()
