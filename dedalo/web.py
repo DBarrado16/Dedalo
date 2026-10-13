@@ -242,10 +242,13 @@ class PortalStore:
                     self.jobs[meta["id"]] = meta
 
     def _load_run(self, con, row):
-        """Una ejecución del historial. Si no se puede cargar, sale igualmente: con su error y sin objetivos."""
+        """Una ejecución del historial, sin su plan: se calcula al abrirla (_ensure_plan).
+
+        Si no se puede cargar, sale igualmente: con su error y sin objetivos.
+        """
         meta = {"id": row["id"], "nombre": row["nombre"], "fecha": row["creada"], "archivos": [], "opciones": {},
                 "estado": row["estado"] or "preparada", "error": row["error"] or "", "fin": row["terminada"],
-                "grupos": [], "total": 0, "subredes": 0, "fuera_alcance": None}
+                "grupos": None, "total": 0, "subredes": 0, "fuera_alcance": None}
         failure = None
         try:
             options = json.loads(row["opciones"])
@@ -258,21 +261,32 @@ class PortalStore:
         try:
             if meta["estado"] in ACTIVE:
                 self._close_interrupted(meta)  # también si sus opciones no se leen: no puede seguir activa
-            if failure is None:
-                self._load_plan(con, meta, row)
         except Exception as exc:
             failure = failure or exc
         if failure is not None:
-            print(f"Error del portal: no se pudo cargar la ejecución {meta['id']}: {type(failure).__name__}: {failure}",
-                  file=sys.stderr)
-            # Los errores propios (ValueError con su explicación) se muestran tal cual; el resto, en genérico.
-            known = type(failure) is ValueError and str(failure)
-            meta.update(grupos=[], total=0, subredes=0, fuera_alcance=None,
-                        error="No se pudo cargar esta ejecución: " +
-                              (str(failure) if known else "sus datos guardados están incompletos o dañados."))
-            if meta["estado"] == "preparada":
-                meta["estado"] = "error"  # sin lanzar no hay resultados que mostrar: así se ve el motivo
+            self._unloadable(meta, failure)
         return meta
+
+    @staticmethod
+    def _unloadable(meta, failure):
+        print(f"Error del portal: no se pudo cargar la ejecución {meta['id']}: {type(failure).__name__}: {failure}",
+              file=sys.stderr)
+        # Los errores propios (ValueError con su explicación) se muestran tal cual; el resto, en genérico.
+        known = type(failure) is ValueError and str(failure)
+        meta.update(grupos=[], total=0, subredes=0, fuera_alcance=None,
+                    error="No se pudo cargar esta ejecución: " +
+                          (str(failure) if known else "sus datos guardados están incompletos o dañados."))
+        if meta["estado"] == "preparada":
+            meta["estado"] = "error"  # sin lanzar no hay resultados que mostrar: así se ve el motivo
+
+    def _ensure_plan(self, meta):
+        """Calcula el plan la primera vez que se abre la ejecución y lo guarda; con el bloqueo cogido."""
+        if meta["grupos"] is None:
+            try:
+                with closing(self.database()) as con:
+                    self._load_plan(con, meta)
+            except Exception as exc:
+                self._unloadable(meta, exc)
 
     def _request_stop(self, job_id):
         """Pide al motor de una captura que quizá siga viva que pare al acabar la subred actual."""
@@ -294,14 +308,15 @@ class PortalStore:
         self._capture_state(meta["id"], state, error, record=True)
         meta.update(estado=state, error=error)
 
-    def _load_plan(self, con, meta, row):
+    def _load_plan(self, con, meta):
         """Objetivos de una ejecución: lo planificado si ya se lanzó, o lo que permite el alcance vigente."""
         hosts = auditoria.observed_hosts(con, meta["id"])
-        if row["captura_id"] is None:
-            self._plan(meta, hosts, auditoria.scope(con, row["auditoria_id"]))
+        capture_id = auditoria.capture_of(con, meta["id"])
+        if capture_id is None:
+            self._plan(meta, hosts, auditoria.scope(con, auditoria.audit_of(con, meta["id"])))
             return
         # Lo lanzado no cambia: las URL quedaron en la base y la agrupación en su rangos.txt.
-        planned = auditoria.planned_urls(con, row["captura_id"])
+        planned = auditoria.planned_urls(con, capture_id)
         ranges_file = self.directory(meta["id"]) / "rangos.txt"
         ranges = targets.read_networks_file(ranges_file) if ranges_file.is_file() else []
         options = meta["opciones"]
@@ -545,15 +560,17 @@ class PortalStore:
         return owners
 
     def list(self):
+        """Lo que pinta el historial; los planes y los manifiestos solo hacen falta al abrir una ejecución."""
         with self.lock:
-            snapshots = copy.deepcopy(list(self.jobs.values()))
-        owners = self._owners([meta["id"] for meta in snapshots])
-        return [self.summary(meta) | {"auditoria": owners[meta["id"]]}
-                for meta in sorted(snapshots, key=lambda m: m["fecha"], reverse=True)]
+            rows = [{key: meta[key] for key in ("id", "nombre", "fecha", "estado")} for meta in self.jobs.values()]
+        owners = self._owners([row["id"] for row in rows])
+        return [row | {"auditoria": owners[row["id"]]} for row in sorted(rows, key=lambda r: r["fecha"], reverse=True)]
 
     def detail(self, job_id):
         with self.lock:
-            meta = copy.deepcopy(self._meta(job_id))
+            meta = self._meta(job_id)
+            self._ensure_plan(meta)
+            meta = copy.deepcopy(meta)
         manifest = self._manifest(meta)
         groups = manifest["grupos"] if manifest else meta["grupos"]
         root = self.directory(job_id) / "resultado"

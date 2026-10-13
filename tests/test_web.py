@@ -761,6 +761,45 @@ class PortalTests(unittest.TestCase):
         detail = self.store.detail(old["id"])
         self.assertEqual((detail["estado"], detail["error"], detail["opciones"]), ("preparada", "", expected))
 
+    def finish_without_engine(self, job_id):
+        """Deja la ejecución lanzada y terminada en la base, con sus URL planificadas, sin pasar por el motor."""
+        meta = self.store.jobs[job_id]
+        with closing(self.store.database()) as con:
+            capture = auditoria.start_capture(con, job_id, meta["opciones"], meta["grupos"])
+            auditoria.set_state(con, capture, "completa")
+
+    def test_runs_are_planned_when_opened_not_at_startup(self):
+        prepared, launched = self.create(), self.create()
+        self.finish_without_engine(launched["id"])
+        self.reopen()
+        expected = {job_id: self.store.detail(job_id) for job_id in (prepared["id"], launched["id"])}
+        with patch("dedalo.web.cli.group_hosts", wraps=cli.group_hosts) as grouping:
+            self.reopen()
+            self.store.list()
+            self.assertEqual(grouping.call_count, 0)  # ni arrancar ni el sondeo calculan planes
+            for job_id, detail in expected.items():
+                self.assertEqual(self.store.detail(job_id), detail)
+                self.store.detail(job_id)
+            self.assertEqual(grouping.call_count, 2)  # uno por ejecución abierta, y queda guardado
+
+    def test_a_run_whose_plan_cannot_be_built_says_why_when_opened(self):
+        job = self.create()
+        self.finish_without_engine(job["id"])
+        (self.store.directory(job["id"]) / "rangos.txt").write_text("no es una red\n", encoding="utf-8")
+        self.reopen()
+        with redirect_stderr(io.StringIO()) as errors:
+            detail = self.store.detail(job["id"])
+        self.assertIn(job["id"], errors.getvalue())
+        self.assertEqual((detail["estado"], detail["total"], detail["grupos"]), ("completa", 0, []))
+        self.assertTrue(detail["error"].startswith("No se pudo cargar esta ejecución"), detail["error"])
+
+    def test_history_poll_returns_only_what_the_list_shows(self):
+        job = self.create()
+        with patch.object(PortalStore, "_manifest", side_effect=AssertionError("el sondeo no lee manifiestos")):
+            items = self.store.list()
+        self.assertEqual(items, [{"id": job["id"], "nombre": job["nombre"], "fecha": job["fecha"],
+                                  "estado": "preparada", "auditoria": self.audit["id"]}])
+
     def test_one_run_that_cannot_be_loaded_does_not_stop_the_portal(self):
         healthy, broken = self.create(), self.create()
         before = self.store.detail(healthy["id"])
