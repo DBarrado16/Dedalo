@@ -118,7 +118,7 @@ portal_datos/
     resultado/             # mismos índices, bases y capturas que la consola
 ```
 
-El estado, las opciones y los resultados de cada ejecución están en `dedalo.sqlite3`. Las carpetas de versiones anteriores traen además un `trabajo.json`: al arrancar, el portal las pasa a la base una sola vez, con sus capturas, sin modificar la carpeta (salvo que la ejecución estuviera activa al cerrarse: entonces añade el fichero `parar`, para que su motor, si siguiera vivo, no conecte con más subredes). Si alguna no se puede migrar (por ejemplo, porque faltan sus Nmap en `entradas/` o el `id` de su `trabajo.json` no coincide con el de la carpeta), lo avisa en la terminal y en el portal, con su nombre, el código de su carpeta y el motivo, porque no aparece en el historial; la conserva y lo reintenta en cada arranque. Una imagen de una captura antigua que ya no esté en disco no impide migrarla: esa URL queda sin captura y el resto se conserva. Si una ejecución ya guardada no se puede leer al arrancar, aparece igualmente en el historial, sin objetivos y, si no se había lanzado, con estado «Error» y el motivo; el resto del portal arranca con normalidad.
+El estado, las opciones y los resultados de cada ejecución están en `dedalo.sqlite3`. Las carpetas de versiones anteriores traen además un `trabajo.json`: al arrancar, el portal las pasa a la base una sola vez, con sus capturas, sin modificar la carpeta (salvo que la ejecución estuviera activa al cerrarse: entonces añade el fichero `parar`, para que su motor, si siguiera vivo, no conecte con más subredes). Si alguna no se puede migrar (por ejemplo, porque faltan sus Nmap en `entradas/` o el `id` de su `trabajo.json` no coincide con el de la carpeta), lo avisa en la terminal y en el portal, con su nombre, el código de su carpeta y el motivo, porque no aparece en el historial; la conserva y lo reintenta en cada arranque. Una imagen de una captura antigua que ya no esté en disco no impide migrarla: esa URL queda sin captura y el resto se conserva. Los objetivos de cada ejecución se calculan la primera vez que se abre, no al arrancar, para que el portal abra enseguida aunque el historial sea grande. Si una ejecución ya guardada no se puede leer (al arrancar, o al abrirla si lo que falla es el cálculo de sus objetivos), aparece igualmente en el historial, sin objetivos y, si no se había lanzado, con estado «Error» y el motivo; el resto del portal funciona con normalidad.
 
 Los resultados anteriores de consola siguen accesibles con `ver`; no se importan automáticamente en el historial web.
 
@@ -328,6 +328,12 @@ python -m tests.ensayo_migracion RUTA\portal_datos
 ```
 
 Solo imprime recuentos y comprobaciones por ejecución (estado, nombre, archivos, capturas, evidencias y carpeta intacta), sin nombres, IP ni URL, y borra la copia al terminar.
+
+Para medir cuánto tarda el portal en arrancar, en refrescar el historial y en abrir una ejecución, con un historial sintético en una carpeta temporal (por defecto, 200 ejecuciones de un /24 y 4 de un /20; sin red ni navegador):
+
+```powershell
+python -m tests.medir_portal
+```
 
 ## Detalles y límites
 
