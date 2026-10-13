@@ -130,6 +130,9 @@ class PortalStore:
         # El historial está en la base (docs/MODELO_DATOS.md); self.jobs es solo su
         # copia en memoria para responder rápido a las consultas del navegador.
         self.jobs = {}
+        # Sube con cada cambio de alcance: un plan calculado sin el bloqueo (detail) no se
+        # guarda si el alcance cambió mientras tanto.
+        self.scope_changes = 0
         # Carpetas antiguas que no se pudieron pasar a la base en este arranque; el
         # portal las muestra (/api/bootstrap) porque no aparecen en el historial.
         self.migration_failures = []
@@ -280,7 +283,7 @@ class PortalStore:
             meta["estado"] = "error"  # sin lanzar no hay resultados que mostrar: así se ve el motivo
 
     def _ensure_plan(self, meta):
-        """Calcula el plan la primera vez que se abre la ejecución y lo guarda; con el bloqueo cogido."""
+        """Calcula el plan si la ejecución aún no lo tiene; meta puede ser una copia (detail lo hace sin el bloqueo)."""
         if meta["grupos"] is None:
             try:
                 with closing(self.database()) as con:
@@ -312,12 +315,12 @@ class PortalStore:
 
     def _load_plan(self, con, meta):
         """Objetivos de una ejecución: lo planificado si ya se lanzó, o lo que permite el alcance vigente."""
-        hosts = auditoria.observed_hosts(con, meta["id"])
         capture_id = auditoria.capture_of(con, meta["id"])
         if capture_id is None:
-            self._plan(meta, hosts, auditoria.scope(con, auditoria.audit_of(con, meta["id"])))
+            self._plan_unlaunched(con, meta)
             return
         # Lo lanzado no cambia: las URL quedaron en la base y la agrupación en su rangos.txt.
+        hosts = auditoria.observed_hosts(con, meta["id"])
         planned = auditoria.planned_urls(con, capture_id)
         ranges_file = self.directory(meta["id"]) / "rangos.txt"
         ranges = targets.read_networks_file(ranges_file) if ranges_file.is_file() else []
@@ -489,13 +492,18 @@ class PortalStore:
                                   self.root, meta["fecha"])
         return auditoria.audit_of(con, job_id)
 
+    def _plan_unlaunched(self, con, meta):
+        """Objetivos de una ejecución sin lanzar con el alcance vigente de su ficha; devuelve ese alcance."""
+        scope = auditoria.scope(con, auditoria.audit_of(con, meta["id"]))
+        self._plan(meta, auditoria.observed_hosts(con, meta["id"]), scope)
+        return scope
+
     def _replan(self, job_id):
         """Recalcula una ejecución sin lanzar con el alcance vigente de su ficha."""
         meta = self._meta(job_id)
         with closing(self.database()) as con:
-            scope = auditoria.scope(con, self._imported(con, job_id, meta))
-            hosts = auditoria.observed_hosts(con, job_id)
-        self._plan(meta, hosts, scope)
+            self._imported(con, job_id, meta)
+            scope = self._plan_unlaunched(con, meta)
         write_scope_files(self.directory(job_id), scope)
 
     def inventory(self, job_id):
@@ -528,10 +536,16 @@ class PortalStore:
             with closing(self.database()) as con:
                 auditoria.update_audit(con, audit_id, payload.get("nombre"), payload.get("incluir", ""), payload.get("excluir", ""))
                 owners = auditoria.audits_by_execution(con)
-            # Lo ya lanzado no cambia; lo preparado se recalcula con el alcance nuevo.
+                scope = auditoria.scope(con, audit_id)
+            self.scope_changes += 1
+            # Lo ya lanzado no cambia. Lo preparado toma el alcance nuevo: se recalcula si ya se
+            # abrió; si no, se calculará al abrirlo y basta con su alcance en disco (inventory).
             for job_id, meta in self.jobs.items():
                 if meta["estado"] == "preparada" and owners.get(job_id) == audit_id:
-                    self._replan(job_id)
+                    if meta["grupos"] is None:
+                        write_scope_files(self.directory(job_id), scope)
+                    else:
+                        self._replan(job_id)
             with closing(self.database()) as con:
                 return next(a for a in auditoria.audits(con) if a["id"] == audit_id)
 
@@ -541,15 +555,6 @@ class PortalStore:
             return report.load_manifest(path.parent)
         except (OSError, ValueError, KeyError, TypeError):
             return None
-
-    @staticmethod
-    def summary(meta, groups):
-        done = sum(len(g["objetivos"]) for g in groups if g["estado"] in ("completo", "parcial", "error", "interrumpido"))
-        return {k: meta[k] for k in ("id", "nombre", "fecha", "estado", "total", "subredes", "error")} | {
-            "capturas": sum(g.get("capturas", 0) for g in groups),
-            "sin_captura": sum(g.get("sin_captura", 0) for g in groups),
-            "procesadas": done,
-        }
 
     def _owners(self, job_ids):
         with closing(self.database()) as con:
@@ -570,12 +575,28 @@ class PortalStore:
     def detail(self, job_id):
         with self.lock:
             meta = self._meta(job_id)
-            self._ensure_plan(meta)
-            meta = copy.deepcopy(meta)
+            draft = None
+            if meta["grupos"] is None:
+                draft = {key: meta[key] for key in ("id", "opciones", "estado", "error", "grupos")}
+                changes = self.scope_changes
+        if draft is not None:
+            self._ensure_plan(draft)  # sin el bloqueo: en una ejecución grande tarda, y el portal sigue atendiendo
+        with self.lock:
+            meta = self._meta(job_id)
+            if draft is not None and meta["grupos"] is None and changes == self.scope_changes:
+                meta.update(draft)
+            self._ensure_plan(meta)  # si el alcance cambió mientras tanto, se calcula aquí con el nuevo
+            # Los planes se sustituyen y nunca se modifican en sitio: basta con copiar el primer nivel.
+            meta = dict(meta)
         manifest = self._manifest(meta)
         groups = manifest["grupos"] if manifest else meta["grupos"]
         root = self.directory(job_id) / "resultado"
-        response = self.summary(meta, groups)
+        done = sum(len(g["objetivos"]) for g in groups if g["estado"] in ("completo", "parcial", "error", "interrumpido"))
+        response = {k: meta[k] for k in ("id", "nombre", "fecha", "estado", "total", "subredes", "error")} | {
+            "capturas": sum(g.get("capturas", 0) for g in groups),
+            "sin_captura": sum(g.get("sin_captura", 0) for g in groups),
+            "procesadas": done,
+        }
         response.update(archivos=meta["archivos"], opciones=meta["opciones"], grupos=[],
                         csv=(root / "indice.csv").is_file(), auditoria=self._owners([job_id])[job_id],
                         fuera_alcance=meta.get("fuera_alcance"))

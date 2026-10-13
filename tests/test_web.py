@@ -806,8 +806,41 @@ class PortalTests(unittest.TestCase):
     def test_editing_the_scope_plans_runs_loaded_without_a_plan(self):
         job = self.create()
         self.reopen()
-        self.store.update_audit(self.audit["id"], {"nombre": "Cliente de prueba", "incluir": "10.10.5.0/24"})
+        with patch("dedalo.web.cli.group_hosts", wraps=cli.group_hosts) as grouping:
+            self.store.update_audit(self.audit["id"], {"nombre": "Cliente de prueba", "incluir": "10.10.5.0/24"})
+            self.assertEqual(grouping.call_count, 0)  # sin abrir no se planifica: solo cambia su alcance en disco
+        self.assertEqual((self.store.directory(job["id"]) / "rangos.txt").read_text(encoding="utf-8"), "10.10.5.0/24\n")
         self.assertEqual(self.store.detail(job["id"])["total"], 2)  # solo 10.10.5.10, con el 80 y el 443
+
+    def test_opening_a_run_plans_it_without_blocking_the_portal(self):
+        job = self.create()
+        self.reopen()
+        original, blocked = cli.group_hosts, []
+
+        def grouping(*args, **kwargs):
+            poll = threading.Thread(target=self.store.list)
+            poll.start()
+            poll.join(timeout=2)
+            blocked.append(poll.is_alive())
+            return original(*args, **kwargs)
+
+        with patch("dedalo.web.cli.group_hosts", side_effect=grouping):
+            self.assertEqual(self.store.detail(job["id"])["total"], 3)
+        self.assertEqual(blocked, [False])  # el sondeo respondió mientras se calculaba el plan
+
+    def test_a_scope_edited_while_a_run_is_being_planned_wins(self):
+        job = self.create()
+        self.reopen()
+        original, edits = cli.group_hosts, []
+
+        def grouping(*args, **kwargs):
+            if not edits:
+                edits.append(self.store.update_audit(self.audit["id"], {"nombre": "Cliente de prueba",
+                                                                         "incluir": "10.10.5.0/24"}))
+            return original(*args, **kwargs)
+
+        with patch("dedalo.web.cli.group_hosts", side_effect=grouping):
+            self.assertEqual(self.store.detail(job["id"])["total"], 2)
 
     def test_history_poll_returns_only_what_the_list_shows(self):
         job = self.create()
