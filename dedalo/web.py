@@ -700,11 +700,12 @@ class PortalStore:
                 trash.rename(directory)
                 raise
             del self.jobs[job_id]
-            try:
-                shutil.rmtree(trash)
-            except OSError as exc:
-                print(f"Aviso: la ejecución {job_id} se borró del historial, pero no su carpeta {trash}: {exc}. "
-                      "Bórrala a mano.", file=sys.stderr)
+        # Fuera del bloqueo: ya nadie llega a esa carpeta y borrar muchas capturas tarda.
+        try:
+            shutil.rmtree(trash)
+        except OSError as exc:
+            print(f"Aviso: la ejecución {job_id} se borró del historial, pero no su carpeta {trash}: {exc}. "
+                  "Bórrala a mano.", file=sys.stderr)
         return {"eliminada": job_id}
 
     def _group(self, job_id, group_index):
