@@ -147,10 +147,47 @@ class PortalTests(unittest.TestCase):
         with patch.object(self.store, "directory", return_value=other_directory), patch("dedalo.web.shutil.rmtree") as remove:
             self.assertEqual(self.request(route, {})[0], 400)
             remove.assert_not_called()
-        with patch("dedalo.web.shutil.rmtree", side_effect=PermissionError("Archivo ocupado")):
+        with patch.object(Path, "rename", side_effect=PermissionError("Archivo ocupado")):
             self.assertEqual(self.request(route, {})[0], 500)
         self.assertIn(job["id"], self.store.jobs)
-        self.assertTrue(self.store.directory(job["id"]).exists())
+        self.assertTrue((self.store.directory(job["id"]) / "entradas" / "nmap-00.txt").is_file())
+        self.assertTrue(self.stored(job["id"]))
+
+    def stored(self, job_id):
+        with closing(self.store.database()) as con:
+            return con.execute("SELECT 1 FROM ejecucion WHERE id = ?", (job_id,)).fetchone() is not None
+
+    def test_delete_keeps_folder_and_job_when_database_fails(self):
+        job = self.create()
+        directory = self.store.directory(job["id"])
+        route = "/api/jobs/" + job["id"] + "/delete"
+        with patch("dedalo.web.auditoria.delete_execution", side_effect=sqlite3.OperationalError("database is locked")):
+            self.assertEqual(self.request(route, {})[0], 500)
+        # Sin borrar de la base no se borra nada: la ejecución sigue entera y se puede reintentar.
+        self.assertTrue((directory / "entradas" / "nmap-00.txt").is_file())
+        self.assertIn(job["id"], self.store.jobs)
+        self.assertTrue(self.stored(job["id"]))
+        self.assertEqual(self.request(route, {})[0], 200)
+        self.assertFalse(directory.exists())
+        self.assertFalse(self.stored(job["id"]))
+
+    def test_delete_completes_when_only_removing_the_folder_fails(self):
+        job = self.create()
+        directory = self.store.directory(job["id"])
+        # Las ejecuciones migradas conservan su trabajo.json: lo que quede en disco no debe volver al reabrir.
+        (directory / "trabajo.json").write_text(json.dumps({"id": job["id"]}), encoding="utf-8")
+        errors = io.StringIO()
+        with patch("dedalo.web.shutil.rmtree", side_effect=PermissionError("Archivo ocupado")), redirect_stderr(errors):
+            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/delete", {})[0], 200)
+        self.assertIn(job["id"], errors.getvalue())
+        self.assertNotIn(job["id"], self.store.jobs)
+        self.assertFalse(self.stored(job["id"]))
+        self.assertFalse(directory.exists())
+        self.store.close()
+        self.store = PortalStore(self.temp.name)
+        self.server.store = self.store
+        self.assertEqual(self.store.list(), [])
+        self.assertFalse(self.stored(job["id"]))
 
     def test_csrf_origin_host_and_body_size(self):
         self.assertEqual(self.request("/api/jobs", self.payload(), {"X-Dedalo-Token": "wrong"})[0], 403)

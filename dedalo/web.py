@@ -689,10 +689,22 @@ class PortalStore:
             source = self.root / job_id
             if source.is_symlink() or source.is_junction():
                 raise ValueError("No se puede borrar una ejecución enlazada a otra carpeta")
-            shutil.rmtree(directory)
-            with closing(self.database()) as con:
-                auditoria.delete_execution(con, job_id)
+            # La carpeta se aparta antes de tocar la base, con un nombre que ni se carga ni se
+            # migra al arrancar. Si la base falla, vuelve a su sitio y la ejecución sigue entera.
+            trash = directory.with_name(".borrando-" + job_id)
+            directory.rename(trash)
+            try:
+                with closing(self.database()) as con:
+                    auditoria.delete_execution(con, job_id)
+            except Exception:
+                trash.rename(directory)
+                raise
             del self.jobs[job_id]
+            try:
+                shutil.rmtree(trash)
+            except OSError as exc:
+                print(f"Aviso: la ejecución {job_id} se borró del historial, pero no su carpeta {trash}: {exc}. "
+                      "Bórrala a mano.", file=sys.stderr)
         return {"eliminada": job_id}
 
     def _group(self, job_id, group_index):
