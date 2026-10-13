@@ -273,7 +273,7 @@ Los selectores deben corresponder a un rango o subred listado en la ejecución. 
 
 Cada vista combinada crea una carpeta nueva en `.vistas/` para no modificar una base abierta por otro visor. Estas carpetas se pueden borrar cuando sus visores estén cerrados: se regeneran con `ver`. Las bases pueden ocupar espacio aunque las imágenes compartan disco mediante enlaces.
 
-Por defecto el visor solo escucha en `127.0.0.1`. `--host` permite cambiarlo. No se añade una capa de autenticación al visor de gowitness.
+Por defecto el visor solo escucha en `127.0.0.1`. `--host` permite cambiarlo. No se añade una capa de autenticación al visor de gowitness, así que con una dirección que no sea de loopback `ver` avisa en la terminal de que cualquiera que llegue a ella ve las capturas.
 
 ## Ejecuciones repetidas e interrupciones
 

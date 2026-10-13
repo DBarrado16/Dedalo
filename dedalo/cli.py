@@ -213,6 +213,16 @@ def capture(args) -> int:
     return 130 if interrupted else (1 if has_error else (3 if shots < count else 0))
 
 
+def only_this_machine(host: str) -> bool:
+    """Si una dirección de escucha es de loopback; un nombre que no sea localhost cuenta como de fuera."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def show(args) -> int:
     root = Path(args.salida).resolve()
     manifest = report.load_manifest(root)
@@ -227,6 +237,9 @@ def show(args) -> int:
     print(f"Vista: {directory}", flush=True)
     if not args.preparar:
         host = f"[{args.host}]" if ":" in args.host else args.host
+        if not only_this_machine(args.host):
+            print(f"Aviso: el visor escucha en {args.host}, fuera de este equipo, y no pide contraseña: "
+                  "quien llegue a esa dirección ve las capturas.", file=sys.stderr, flush=True)
         print(f"Abre http://{host}:{args.puerto} (Ctrl+C para cerrar).", flush=True)
         try:
             gowitness.serve(binary, directory, args.host, args.puerto)

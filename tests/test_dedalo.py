@@ -111,6 +111,19 @@ class WorkflowTests(unittest.TestCase):
         return ["capturar", str(ROOT / "ejemplos/escaneo.xml"),
                 "-r", str(ROOT / "ejemplos/rangos.txt"), "-o", str(destination)]
 
+    def test_viewer_warns_when_it_listens_beyond_this_machine(self):
+        for host, warned in (("127.0.0.1", False), ("::1", False), ("localhost", False),
+                             ("0.0.0.0", True), ("192.168.1.5", True), ("mi-equipo", True)):
+            with self.subTest(host=host), patch("dedalo.report.load_manifest", return_value={}), \
+                    patch("dedalo.views.select_groups", return_value=[]), \
+                    patch("dedalo.views.prepare_view", return_value=Path("vista")), \
+                    patch("dedalo.gowitness.find_gowitness", return_value="fake"), \
+                    patch("dedalo.gowitness.serve") as serve:
+                code, output = self.call(["ver", "salida", "--host", host])
+                self.assertEqual(code, 0, output)
+                serve.assert_called_once()
+                self.assertEqual("Aviso" in output, warned, output)
+
     def test_dry_run_has_no_files_or_gowitness(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "salida"
