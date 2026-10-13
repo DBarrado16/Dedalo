@@ -210,6 +210,19 @@ class PortalTests(unittest.TestCase):
         self.reopen()
         self.assert_whole(job["id"])
 
+    def test_reopening_never_follows_a_link_named_like_a_set_aside_run(self):
+        outside = Path(self.temp.name) / "fuera"
+        outside.mkdir()
+        (outside / "dato.txt").write_text("x", encoding="utf-8")
+        link = Path(self.temp.name) / ("." + "a" * 32)
+        if os.name == "nt":
+            import _winapi
+            _winapi.CreateJunction(str(outside), str(link))
+        else:
+            link.symlink_to(outside, target_is_directory=True)
+        self.reopen()
+        self.assertTrue((outside / "dato.txt").is_file())
+
     def test_csrf_origin_host_and_body_size(self):
         self.assertEqual(self.request("/api/jobs", self.payload(), {"X-Dedalo-Token": "wrong"})[0], 403)
         self.assertEqual(self.request("/api/jobs", self.payload(), {"Origin": "https://example.org"})[0], 403)
