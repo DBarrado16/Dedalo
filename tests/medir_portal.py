@@ -71,6 +71,8 @@ def startup(root):
 def main():
     runs = int(sys.argv[1]) if len(sys.argv) > 1 else 200
     large = int(sys.argv[2]) if len(sys.argv) > 2 else 4
+    if runs + large < 2:
+        sys.exit("Hacen falta al menos 2 ejecuciones: la mitad se lanza y se mide la última lanzada.")
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
         root = Path(temporary) / "portal_datos"
         start = time.perf_counter()

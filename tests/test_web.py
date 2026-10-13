@@ -793,6 +793,22 @@ class PortalTests(unittest.TestCase):
         self.assertEqual((detail["estado"], detail["total"], detail["grupos"]), ("completa", 0, []))
         self.assertTrue(detail["error"].startswith("No se pudo cargar esta ejecución"), detail["error"])
 
+    def test_a_passing_failure_while_planning_does_not_mark_the_run_as_broken(self):
+        job = self.create()
+        self.reopen()
+        with patch("dedalo.web.auditoria.observed_hosts", side_effect=PermissionError("Archivo ocupado")):
+            with self.assertRaises(PermissionError):
+                self.store.detail(job["id"])
+        # Al volver a abrirla se calcula bien y se puede lanzar.
+        detail = self.store.detail(job["id"])
+        self.assertEqual((detail["estado"], detail["total"], detail["error"]), ("preparada", 3, ""))
+
+    def test_editing_the_scope_plans_runs_loaded_without_a_plan(self):
+        job = self.create()
+        self.reopen()
+        self.store.update_audit(self.audit["id"], {"nombre": "Cliente de prueba", "incluir": "10.10.5.0/24"})
+        self.assertEqual(self.store.detail(job["id"])["total"], 2)  # solo 10.10.5.10, con el 80 y el 443
+
     def test_history_poll_returns_only_what_the_list_shows(self):
         job = self.create()
         with patch.object(PortalStore, "_manifest", side_effect=AssertionError("el sondeo no lee manifiestos")):

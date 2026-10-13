@@ -285,6 +285,8 @@ class PortalStore:
             try:
                 with closing(self.database()) as con:
                     self._load_plan(con, meta)
+            except (OSError, sqlite3.OperationalError):
+                raise  # disco o base ocupados un momento: se reintenta al volver a pedirla
             except Exception as exc:
                 self._unloadable(meta, exc)
 
