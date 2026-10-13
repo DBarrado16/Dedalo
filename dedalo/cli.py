@@ -215,12 +215,10 @@ def capture(args) -> int:
 
 def only_this_machine(host: str) -> bool:
     """Si una dirección de escucha es de loopback; un nombre que no sea localhost cuenta como de fuera."""
-    if host == "localhost":
-        return True
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
-        return False
+        return host == "localhost"
 
 
 def show(args) -> int:
