@@ -1,0 +1,36 @@
+import io
+import json
+import unittest
+import urllib.error
+from unittest.mock import patch
+
+from dedalo import modelo
+
+
+class FakeResponse(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+class ModelTests(unittest.TestCase):
+    def test_asks_the_local_model_for_one_whole_answer(self):
+        body = json.dumps({"response": "hola"}).encode()
+        with patch("dedalo.modelo.urllib.request.urlopen", return_value=FakeResponse(body)) as urlopen:
+            self.assertEqual(modelo.generate("¿qué es?", "llama3.2:3b", "http://127.0.0.1:11434/"), "hola")
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "http://127.0.0.1:11434/api/generate")
+        self.assertEqual(json.loads(request.data), {"model": "llama3.2:3b", "prompt": "¿qué es?", "stream": False})
+
+    def test_explains_when_the_model_is_unreachable(self):
+        with patch("dedalo.modelo.urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
+            with self.assertRaisesRegex(ValueError, "Ollama"):
+                modelo.generate("p", "llama3.2:3b")
+
+    def test_an_answer_without_text_is_an_error(self):
+        for body in (b"no es json", json.dumps({"error": "model not found"}).encode()):
+            with self.subTest(body=body), patch("dedalo.modelo.urllib.request.urlopen", return_value=FakeResponse(body)):
+                with self.assertRaises(ValueError):
+                    modelo.generate("p", "llama3.2:3b")
