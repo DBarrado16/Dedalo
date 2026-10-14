@@ -36,6 +36,19 @@ class PromptTests(unittest.TestCase):
         block = re.search(r"```json\n(.*)\n```", text, re.DOTALL).group(1)
         self.assertEqual(json.loads(block), {"ip": "10.0.0.5", "nombres": [], "servicios": host["servicios"]})
 
+    def test_the_web_title_goes_with_its_service_and_other_scripts_do_not(self):
+        panel = dict(service(8443, "http"), scripts=[{"id": "http-title", "output": "Panel de administración " + "x" * 200},
+                                                     {"id": "ssl-cert", "output": "otro volcado"}])
+        text = prioridad.build_prompt({"ip": "10.0.0.7", "nombres": [], "servicios": [panel]})
+        sent = json.loads(re.search(r"```json\n(.*)\n```", text, re.DOTALL).group(1))["servicios"][0]
+        self.assertTrue(sent["titulo"].startswith("Panel de administración"))
+        self.assertLessEqual(len(sent["titulo"]), 120)
+        self.assertNotIn("otro volcado", text)
+
+    def test_the_schema_matches_what_parse_accepts(self):
+        self.assertEqual(prioridad.ESQUEMA["properties"]["nivel"]["enum"], list(prioridad.NIVELES))
+        self.assertEqual(set(prioridad.ESQUEMA["required"]), {"rol", "nivel", "motivo", "siguiente"})
+
     def test_the_question_defines_each_level_and_judges_one_host_alone(self):
         text = prioridad.build_prompt(DC)
         for level in prioridad.NIVELES:

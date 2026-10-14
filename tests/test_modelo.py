@@ -27,6 +27,13 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(json.loads(request.data), {"model": "llama3.2:3b", "prompt": "¿qué es?", "stream": False,
                                                     "format": "json", "think": False, "options": {"temperature": 0}})
 
+    def test_a_schema_constrains_the_answer(self):
+        schema = {"type": "object", "properties": {"nivel": {"type": "string", "enum": ["alta"]}}, "required": ["nivel"]}
+        body = json.dumps({"response": "{}"}).encode()
+        with patch("dedalo.modelo.urllib.request.urlopen", return_value=FakeResponse(body)) as urlopen:
+            modelo.generate("p", "m", schema=schema)
+        self.assertEqual(json.loads(urlopen.call_args.args[0].data)["format"], schema)
+
     def test_explains_when_the_model_is_unreachable(self):
         with patch("dedalo.modelo.urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
             with self.assertRaisesRegex(ValueError, "Ollama"):

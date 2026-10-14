@@ -682,7 +682,7 @@ class PortalStore:
         def generate(prompt):
             if self.closing:
                 raise _Closing()
-            return modelo.generate(prompt, self.model_option, self.model_host)
+            return modelo.generate(prompt, self.model_option, self.model_host, schema=prioridad.ESQUEMA)
 
         try:
             # Solo lo que está en alcance: el siguiente paso sugerido no debe proponerse fuera de él.

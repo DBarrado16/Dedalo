@@ -238,16 +238,17 @@ class PortalTests(unittest.TestCase):
         self.assertIsNone(self.store.detail(job["id"])["analisis"])
         calls = []
 
-        def model(prompt, name, host, timeout=120):
-            calls.append((prompt, name, host))
+        def model(prompt, name, host, timeout=120, schema=None):
+            calls.append((prompt, name, host, schema))
             level = "alta" if '"10.10.5.10"' in prompt else "media"
             return json.dumps({"rol": "Servidor web", "nivel": level, "motivo": "Por sus puertos.", "siguiente": "Revisar."})
 
         detail = self.analyse(job["id"], model)
         self.assertEqual((detail["analisis"]["estado"], detail["analisis"]["error"]), ("completa", ""))
         self.assertEqual([(p["ip"], p["nivel"]) for p in detail["prioridades"]], [("10.10.5.10", "alta"), ("10.10.6.20", "media")])
-        self.assertFalse(any("192.168.1.8" in prompt for prompt, _, _ in calls))  # fuera de alcance: no se analiza
-        self.assertEqual({(name, host) for _, name, host in calls}, {(web.modelo.DEFAULT_MODEL, web.modelo.OLLAMA)})
+        self.assertFalse(any("192.168.1.8" in call[0] for call in calls))  # fuera de alcance: no se analiza
+        self.assertEqual({(name, host) for _, name, host, _ in calls}, {(web.modelo.DEFAULT_MODEL, web.modelo.OLLAMA)})
+        self.assertTrue(all(schema == web.prioridad.ESQUEMA for *_, schema in calls))  # el modelo contesta con el esquema
 
     def test_analysis_without_the_model_ends_in_error_and_says_why(self):
         job = self.create()
@@ -289,7 +290,7 @@ class PortalTests(unittest.TestCase):
         job = self.create()
         calls = []
 
-        def model(prompt, name, host, timeout=120):
+        def model(prompt, name, host, timeout=120, schema=None):
             calls.append(prompt)
             self.store.closing = True  # el usuario cierra el portal mientras el modelo contesta al primer host
             return json.dumps({"rol": "R", "nivel": "alta", "motivo": "m", "siguiente": "s"})

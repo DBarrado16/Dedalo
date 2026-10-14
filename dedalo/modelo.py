@@ -11,14 +11,15 @@ OLLAMA = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "llama3.2:3b"
 
 
-def generate(prompt: str, model: str, host: str = OLLAMA, timeout: int = 120) -> str:
+def generate(prompt: str, model: str, host: str = OLLAMA, timeout: int = 120, schema: dict | None = None) -> str:
     """Pide al modelo una respuesta entera (sin streaming) y devuelve su texto.
 
-    La respuesta se pide en JSON y sin razonamiento en voz alta: un modelo de razonamiento
-    tardaba 142 s por pregunta pensando antes de contestar, y así tarda 35 s.
+    La respuesta se pide en JSON (con `schema`, Ollama la ajusta a ese esquema JSON) y sin
+    razonamiento en voz alta: un modelo de razonamiento tardaba 142 s por pregunta pensando
+    antes de contestar, y así tarda 35 s.
     """
     # Temperatura 0: la misma pregunta da siempre la misma respuesta (traza de auditoría reproducible).
-    data = json.dumps({"model": model, "prompt": prompt, "stream": False, "format": "json", "think": False,
+    data = json.dumps({"model": model, "prompt": prompt, "stream": False, "format": schema or "json", "think": False,
                        "options": {"temperature": 0}})
     request = urllib.request.Request(host.rstrip("/") + "/api/generate", data=data.encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
