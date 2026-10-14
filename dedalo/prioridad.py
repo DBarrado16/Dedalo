@@ -35,8 +35,11 @@ _INSTRUCCIONES = (
     "- baja: puesto de usuario, por ejemplo con solo escritorio remoto (RDP), o equipo con poca superficie "
     "expuesta.\n"
     "Responde solo con un objeto JSON con estas claves:\n"
-    '{"rol": "rol probable", "nivel": "alta|media|baja", "motivo": "una frase citando sus servicios", '
-    '"siguiente": "siguiente paso sugerido para el auditor"}\n'
+    "- rol: la función del equipo en pocas palabras (por ejemplo «controlador de dominio», «servidor de "
+    "ficheros», «puesto de usuario»); no repitas el nivel aquí.\n"
+    "- nivel: alta, media o baja, según los criterios de arriba.\n"
+    "- motivo: una frase tuya que cite los servicios de este host; no copies estas instrucciones.\n"
+    "- siguiente: el siguiente paso que sugieres al auditor para revisar este host.\n"
 )
 
 
@@ -65,7 +68,10 @@ def parse_result(text: str) -> dict:
     nivel = str(data.get("nivel", "")).strip().lower()
     if nivel not in NIVELES:
         raise ValueError("el nivel no es alta, media ni baja")
-    return {"rol": str(data.get("rol", "")).strip(), "nivel": nivel,
+    rol = str(data.get("rol", "")).strip()
+    if rol.lower() in NIVELES:
+        rol = ""  # el modelo puso el nivel donde iba el rol: mejor «sin determinar» que «alta»
+    return {"rol": rol, "nivel": nivel,
             "motivo": str(data.get("motivo", "")).strip(), "siguiente": str(data.get("siguiente", "")).strip()}
 
 

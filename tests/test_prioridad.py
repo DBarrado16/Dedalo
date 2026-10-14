@@ -54,6 +54,7 @@ class PromptTests(unittest.TestCase):
         for level in prioridad.NIVELES:
             self.assertIn(f"- {level}:", text)
         self.assertIn("solo ves este host", text.lower())
+        self.assertIn("no repitas el nivel", text.lower())  # el rol es la función del equipo, no su prioridad
 
     def test_only_metadata_reaches_the_model(self):
         host = dict(DC, scripts=[{"id": "x", "output": "volcado"}], alcance="en_alcance")
@@ -74,6 +75,10 @@ class ParseTests(unittest.TestCase):
     def test_the_level_is_read_whatever_its_case_or_spaces(self):
         self.assertEqual(prioridad.parse_result(answer(" Alta "))["nivel"], "alta")
         self.assertEqual(prioridad.parse_result(answer("MEDIA"))["nivel"], "media")
+
+    def test_a_role_that_only_repeats_the_level_is_not_a_role(self):
+        self.assertEqual(prioridad.parse_result(answer("alta", role="Alta"))["rol"], "")
+        self.assertEqual(prioridad.parse_result(answer("alta", role="Controlador de dominio"))["rol"], "Controlador de dominio")
 
     def test_rejects_what_does_not_fit_the_schema(self):
         for text in ("sin json", "{roto", "[1, 2]", answer("urgente"), '{"rol": "x"}'):
