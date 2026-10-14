@@ -239,6 +239,14 @@ def analysis_status(con: sqlite3.Connection, import_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+def fail_analysis(con: sqlite3.Connection, import_id: str, error: str) -> None:
+    """Cierra en error el análisis de una importación que seguía en cola o en curso."""
+    with con:
+        con.execute("UPDATE ejecucion SET estado = 'error', error = ?, terminada = ? "
+                    "WHERE origen_id = ? AND tipo = 'analisis' AND estado IN ('en_cola', 'en_curso')",
+                    (error, now(), import_id))
+
+
 def close_interrupted_analyses(con: sqlite3.Connection) -> None:
     """Al arrancar, un análisis que seguía en cola o en curso se quedó a medias al cerrarse el portal."""
     with con:

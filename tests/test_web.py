@@ -259,6 +259,70 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(detail["prioridades"], [])
         self.assertEqual(self.request("/api/jobs")[0], 200)  # el portal sigue
 
+    def test_hosts_without_open_ports_are_not_sent_to_the_model(self):
+        xml = ('<nmaprun><host><status state="up"/><address addr="10.10.5.10" addrtype="ipv4"/><ports>'
+               '<port protocol="tcp" portid="80"><state state="open"/><service name="http"/></port></ports></host>'
+               '<host><status state="up"/><address addr="10.10.5.11" addrtype="ipv4"/></host></nmaprun>')
+        status, content = self.request("/api/jobs", self.payload() | {
+            "archivos": [{"nombre": "vivos.xml", "contenido": xml}]})
+        self.assertEqual(status, 201, content)
+        job, prompts = json.loads(content), []
+
+        def model(prompt, name, host, timeout=120, schema=None):
+            prompts.append(prompt)
+            return json.dumps({"rol": "R", "nivel": "media", "motivo": "m", "siguiente": "s"})
+
+        detail = self.analyse(job["id"], model)
+        self.assertEqual([p["ip"] for p in detail["prioridades"]], ["10.10.5.10"])
+        self.assertFalse(any('"10.10.5.11"' in prompt for prompt in prompts))
+
+    def test_a_host_taken_out_of_scope_leaves_the_prioritisation(self):
+        job = self.create()
+
+        def model(prompt, name, host, timeout=120, schema=None):
+            return json.dumps({"rol": "R", "nivel": "alta", "motivo": "m", "siguiente": "Revisar."})
+
+        self.assertEqual(len(self.analyse(job["id"], model)["prioridades"]), 2)
+        self.store.update_audit(self.audit["id"], {"nombre": "Cliente de prueba", "incluir": "10.10.0.0/17",
+                                                   "excluir": "10.10.6.20"})
+        self.assertEqual([p["ip"] for p in self.store.detail(job["id"])["prioridades"]], ["10.10.5.10"])
+
+    def test_a_database_failure_in_one_analysis_does_not_stop_the_queue(self):
+        first, second = self.create(), self.create()
+        real, seen = auditoria.analysis_of, []
+
+        def flaky(con, job_id):
+            seen.append(job_id)
+            if len(seen) == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return real(con, job_id)
+
+        def model(prompt, name, host, timeout=120, schema=None):
+            return json.dumps({"rol": "R", "nivel": "alta", "motivo": "m", "siguiente": "s"})
+
+        with patch("dedalo.web.auditoria.analysis_of", side_effect=flaky), \
+                patch("dedalo.web.modelo.generate", side_effect=model), redirect_stderr(io.StringIO()):
+            for job in (first, second):
+                self.assertEqual(self.request("/api/jobs/" + job["id"] + "/analizar", {})[0], 202)
+            deadline = time.monotonic() + 10
+            while self.store.detail(second["id"])["analisis"]["estado"] in ("en_cola", "en_curso") and time.monotonic() < deadline:
+                time.sleep(.02)
+        self.assertTrue(self.store.worker.is_alive())
+        self.assertEqual(self.store.detail(second["id"])["analisis"]["estado"], "completa")
+        self.assertEqual(self.store.detail(first["id"])["analisis"]["estado"], "error")
+
+    def test_an_analysis_that_cannot_be_saved_ends_in_error(self):
+        job = self.create()
+
+        def model(prompt, name, host, timeout=120, schema=None):
+            return json.dumps({"rol": "R", "nivel": "alta", "motivo": "m", "siguiente": "s"})
+
+        with patch("dedalo.web.auditoria.save_priorities", side_effect=sqlite3.OperationalError("disk I/O error")), \
+                redirect_stderr(io.StringIO()):
+            detail = self.analyse(job["id"], model)
+        self.assertEqual(detail["analisis"]["estado"], "error")
+        self.assertEqual(self.request("/api/jobs/" + job["id"] + "/analizar", {})[0], 202)  # se puede volver a intentar
+
     def test_a_run_being_captured_is_not_analysed(self):
         job = self.create()
         self.store.jobs[job["id"]]["estado"] = "en_curso"
