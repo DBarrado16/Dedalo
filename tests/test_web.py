@@ -307,6 +307,25 @@ class PortalTests(unittest.TestCase):
             detail = self.settled(job["id"])
         self.assertEqual((detail["analisis"]["estado"], len(detail["prioridades"])), ("completa", 2))
 
+    def test_deleting_the_run_stops_its_analysis_at_the_next_host(self):
+        job, release = self.create(), threading.Event()
+        model = model_waiting_at(1, release)
+        errors = io.StringIO()
+        with patch("dedalo.web.modelo.generate", side_effect=model), redirect_stderr(errors):
+            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/analizar", {})[0], 202)
+            self.until(lambda: len(model.calls) == 1)
+            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/delete", {})[0], 200)
+            release.set()
+            self.until(lambda: not self.store.analysis_progress)
+        self.assertEqual(len(model.calls), 1)  # el segundo host ya no se pregunta
+        self.assertNotIn("Error del portal", errors.getvalue())
+
+    def test_progress_is_dropped_when_an_analysis_does_not_complete(self):
+        job = self.create()
+        with redirect_stderr(io.StringIO()):
+            self.analyse(job["id"], ValueError("¿Está arrancado Ollama?"))
+        self.assertEqual(self.store.analysis_progress, {})
+
     def test_a_queued_analysis_is_cancelled_before_it_starts(self):
         first, second, third = self.create(), self.create(), self.create()
         release = threading.Event()

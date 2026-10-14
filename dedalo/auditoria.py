@@ -240,13 +240,9 @@ def start_analysis(con: sqlite3.Connection, import_id: str, options: dict, creat
 
 
 def begin_analysis(con: sqlite3.Connection, analysis_id: str) -> bool:
-    """Pasa a en curso un análisis que sigue en cola; False si entretanto se canceló o se sustituyó.
-
-    Es un UPDATE condicional: una cancelación que llegue a la vez no queda pisada.
-    """
+    """Pasa a en curso un análisis que sigue en cola; False si entretanto se canceló o se sustituyó."""
     with con:
-        return con.execute("UPDATE ejecucion SET estado = 'en_curso', iniciada = ? WHERE id = ? AND estado = 'en_cola'",
-                           (now(), analysis_id)).rowcount == 1
+        return _set_state(con, analysis_id, "en_curso", only_from="en_cola")
 
 
 def stop_analysis(con: sqlite3.Connection, import_id: str) -> str | None:
@@ -259,11 +255,9 @@ def stop_analysis(con: sqlite3.Connection, import_id: str) -> str | None:
     if row is None:
         return None
     with con:
-        if con.execute("UPDATE ejecucion SET estado = 'cancelada', error = 'Se canceló antes de empezar.', terminada = ? "
-                       "WHERE id = ? AND estado = 'en_cola'", (now(), row["id"])).rowcount:
+        if _set_state(con, row["id"], "cancelada", "Se canceló antes de empezar.", only_from="en_cola"):
             return "cancelada"
-        if con.execute("UPDATE ejecucion SET estado = 'deteniendo' WHERE id = ? AND estado = 'en_curso'",
-                       (row["id"],)).rowcount:
+        if _set_state(con, row["id"], "deteniendo", only_from="en_curso"):
             return "deteniendo"
     return None
 
@@ -314,13 +308,19 @@ def priorities(con: sqlite3.Connection, import_id: str) -> list[dict]:
     return [row for row in rows if current.status(row["ip"]) == current.IN]
 
 
-def _set_state(con: sqlite3.Connection, execution_id: str, state: str, error: str = "") -> None:
-    """Como set_state, dentro de la transacción de quien la llama."""
+def _set_state(con: sqlite3.Connection, execution_id: str, state: str, error: str = "",
+               only_from: str | None = None) -> bool:
+    """Como set_state, dentro de la transacción de quien la llama.
+
+    Con `only_from`, solo cambia si la ejecución sigue en ese estado (un UPDATE condicional:
+    otro hilo que la cambie a la vez no queda pisado). Devuelve si cambió.
+    """
     stamp = now()
-    con.execute("UPDATE ejecucion SET estado = ?, error = ?, "
-                "iniciada = CASE WHEN ? = 'en_curso' THEN COALESCE(iniciada, ?) ELSE iniciada END, "
-                "terminada = CASE WHEN ? THEN ? ELSE terminada END WHERE id = ?",
-                (state, error, state, stamp, state in FINAL, stamp, execution_id))
+    guard, values = ("", ()) if only_from is None else (" AND estado = ?", (only_from,))
+    return con.execute("UPDATE ejecucion SET estado = ?, error = ?, "
+                       "iniciada = CASE WHEN ? = 'en_curso' THEN COALESCE(iniciada, ?) ELSE iniciada END, "
+                       "terminada = CASE WHEN ? THEN ? ELSE terminada END WHERE id = ?" + guard,
+                       (state, error, state, stamp, state in FINAL, stamp, execution_id, *values)).rowcount == 1
 
 
 def set_state(con: sqlite3.Connection, execution_id: str, state: str, error: str = "") -> None:

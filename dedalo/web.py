@@ -709,11 +709,13 @@ class PortalStore:
             return modelo.generate(prompt, self.model_option, self.model_host, schema=prioridad.ESQUEMA)
 
         def stopping():
-            # Antes de cada host: se cierra el portal o el usuario pidió parar (stop_analysis).
+            # Antes de cada host: se cierra el portal, el usuario pidió parar (stop_analysis)
+            # o borró la ejecución, y con ella el análisis: no queda nada que preguntar.
             if self.closing:
                 return True
             with closing(self.database()) as con:
-                return auditoria.analysis_status(con, job_id)["estado"] == "deteniendo"
+                status = auditoria.analysis_status(con, job_id)
+            return status is None or status["estado"] == "deteniendo"
 
         def progress(done, total):
             with self.lock:
