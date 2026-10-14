@@ -273,7 +273,7 @@ def close_interrupted_analyses(con: sqlite3.Connection) -> None:
     with con:
         con.execute("UPDATE ejecucion SET estado = 'interrumpida', terminada = ?, "
                     "error = 'El portal se cerró antes de terminar el análisis.' "
-                    "WHERE tipo IN ('analisis', 'credenciales') AND estado IN ('en_cola', 'en_curso', 'deteniendo')", (now(),))
+                    "WHERE tipo IN ('analisis', 'credenciales', 'descubrimiento') AND estado IN ('en_cola', 'en_curso', 'deteniendo')", (now(),))
 
 
 def finish_analysis(con: sqlite3.Connection, analysis_id: str, rows: list[dict]) -> None:
@@ -371,6 +371,84 @@ def credential_results(con, import_id: str) -> list[dict]:
         return rows
     current = scope(con, audit_of(con, import_id))
     return [r for r in rows if current.status(r["ip"]) == current.IN]
+
+
+def start_discovery(con, import_id: str, options: dict, created: str | None = None) -> str:
+    """Crea en cola un descubrimiento; el último completo se conserva hasta que este termine bien."""
+    source = con.execute("SELECT auditoria_id, nombre FROM ejecucion WHERE id = ? AND tipo = 'importacion'",
+                         (import_id,)).fetchone()
+    if source is None:
+        raise FileNotFoundError("Importación no encontrada")
+    disc_id = uuid.uuid4().hex
+    with con:
+        con.execute("DELETE FROM ejecucion WHERE origen_id = ? AND tipo = 'descubrimiento' AND estado <> 'completa'",
+                    (import_id,))
+        con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada) "
+                    "VALUES (?, ?, 'descubrimiento', ?, ?, 'en_cola', ?, ?)",
+                    (disc_id, source["auditoria_id"], import_id, source["nombre"],
+                     json.dumps(options, ensure_ascii=False), created or now()))
+    return disc_id
+
+
+def begin_discovery(con, disc_id: str) -> bool:
+    with con:
+        return _set_state(con, disc_id, "en_curso", only_from="en_cola")
+
+
+def stop_discovery(con, import_id: str) -> str | None:
+    row = _derived(con, import_id, "descubrimiento")
+    if row is None:
+        return None
+    with con:
+        if _set_state(con, row["id"], "cancelada", "Se canceló antes de empezar.", only_from="en_cola"):
+            return "cancelada"
+        if _set_state(con, row["id"], "deteniendo", only_from="en_curso"):
+            return "deteniendo"
+    return None
+
+
+def discovery_status(con, import_id: str) -> dict | None:
+    row = _derived(con, import_id, "descubrimiento")
+    return {"estado": row["estado"], "error": row["error"]} if row else None
+
+
+def finish_discovery(con, disc_id: str, rows: list[dict]) -> None:
+    """Vuelca lo encontrado a observaciones (nombres y servidores DNS) y da el descubrimiento por completo."""
+    audit_id = con.execute("SELECT auditoria_id FROM ejecucion WHERE id = ?", (disc_id,)).fetchone()["auditoria_id"]
+    with con:
+        for row in rows:
+            if not row["encontrado"]:
+                continue
+            asset = _id(con, "SELECT id FROM activo WHERE auditoria_id = ? AND ip = ?",
+                        "INSERT INTO activo (auditoria_id, ip) VALUES (?, ?) ON CONFLICT DO NOTHING", (audit_id, row["ip"]))
+            if row["modo"] == "nombres":
+                con.execute("INSERT INTO observacion_activo (ejecucion_id, activo_id, nombres, scripts) VALUES (?, ?, ?, '[]')",
+                            (disc_id, asset, json.dumps([row["nombre"]], ensure_ascii=False)))
+            else:
+                service = _id(con, "SELECT id FROM servicio WHERE activo_id = ? AND protocolo = 'udp' AND puerto = 53",
+                              "INSERT INTO servicio (activo_id, protocolo, puerto) VALUES (?, 'udp', 53) ON CONFLICT DO NOTHING",
+                              (asset,))
+                con.execute("INSERT INTO observacion (ejecucion_id, servicio_id, nombre, tunel, producto, version, detalle, cpe, scripts) "
+                            "VALUES (?, ?, 'domain', '', '', '', ?, '[]', '[]')", (disc_id, service, row["detalle"]))
+        _set_state(con, disc_id, "completa")
+        con.execute("DELETE FROM ejecucion WHERE tipo = 'descubrimiento' AND id <> ? "
+                    "AND origen_id = (SELECT origen_id FROM ejecucion WHERE id = ?)", (disc_id, disc_id))
+
+
+def discovery_results(con, import_id: str) -> list[dict]:
+    """Lo que encontró el descubrimiento de una importación; solo activos en el alcance vigente."""
+    disc = _derived(con, import_id, "descubrimiento")
+    if disc is None:
+        return []
+    nombres = con.execute("SELECT a.ip, o.nombres AS dato FROM observacion_activo o "
+                          "JOIN activo a ON a.id = o.activo_id WHERE o.ejecucion_id = ?", (disc["id"],)).fetchall()
+    servidores = con.execute("SELECT a.ip, o.detalle FROM observacion o JOIN servicio s ON s.id = o.servicio_id "
+                             "JOIN activo a ON a.id = s.activo_id WHERE o.ejecucion_id = ?", (disc["id"],)).fetchall()
+    filas = [{"ip": r["ip"], "modo": "nombres", "nombre": json.loads(r["dato"])[0] if json.loads(r["dato"]) else "", "detalle": ""}
+             for r in nombres]
+    filas += [{"ip": r["ip"], "modo": "servidores", "nombre": "", "detalle": r["detalle"]} for r in servidores]
+    current = scope(con, audit_of(con, import_id))
+    return [f for f in filas if current.status(f["ip"]) == current.IN]
 
 
 def _set_state(con: sqlite3.Connection, execution_id: str, state: str, error: str = "",

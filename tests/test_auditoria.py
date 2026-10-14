@@ -199,3 +199,44 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(auditoria.stop_credential_test(self.con, "lunes"), "deteniendo")
         auditoria.close_interrupted_analyses(self.con)
         self.assertEqual(auditoria.credential_status(self.con, "lunes")["estado"], "interrumpida")
+
+    def discovery_row(self, ip, modo, encontrado=True, nombre="", detalle=""):
+        return {"ip": ip, "modo": modo, "encontrado": encontrado, "nombre": nombre, "detalle": detalle, "error": ""}
+
+    def test_discovery_names_become_asset_observations(self):
+        self.load_in_scope("lunes")
+        disc = auditoria.start_discovery(self.con, "lunes", {"modo": "nombres"})
+        self.assertTrue(auditoria.begin_discovery(self.con, disc))
+        auditoria.finish_discovery(self.con, disc, [self.discovery_row("192.0.2.10", "nombres", nombre="dc.local"),
+                                                   self.discovery_row("203.0.113.9", "nombres", nombre="fuera")])
+        self.assertEqual(auditoria.discovery_status(self.con, "lunes"), {"estado": "completa", "error": ""})
+        res = auditoria.discovery_results(self.con, "lunes")  # 203.0.113.9 no está en 192.0.2.0/24: no sale
+        self.assertEqual([(r["ip"], r["nombre"]) for r in res], [("192.0.2.10", "dc.local")])
+
+    def test_discovery_servers_become_a_udp53_service(self):
+        self.load_in_scope("lunes")
+        disc = auditoria.start_discovery(self.con, "lunes", {"modo": "servidores"})
+        auditoria.begin_discovery(self.con, disc)
+        auditoria.finish_discovery(self.con, disc, [self.discovery_row("192.0.2.10", "servidores", detalle="correcta; 1 respuesta(s)")])
+        fila = self.con.execute(
+            "SELECT s.protocolo, s.puerto, o.nombre FROM observacion o JOIN servicio s ON s.id = o.servicio_id "
+            "JOIN activo a ON a.id = s.activo_id WHERE a.ip = '192.0.2.10' AND s.puerto = 53").fetchone()
+        self.assertEqual((fila["protocolo"], fila["puerto"], fila["nombre"]), ("udp", 53, "domain"))
+        self.assertEqual([r["detalle"] for r in auditoria.discovery_results(self.con, "lunes")], ["correcta; 1 respuesta(s)"])
+
+    def test_re_discovering_does_not_duplicate_assets_or_services(self):
+        self.load_in_scope("lunes")
+        for _ in range(2):
+            disc = auditoria.start_discovery(self.con, "lunes", {"modo": "servidores"})
+            auditoria.begin_discovery(self.con, disc)
+            auditoria.finish_discovery(self.con, disc, [self.discovery_row("192.0.2.77", "servidores", detalle="correcta; 0 respuesta(s)")])
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM activo WHERE ip = '192.0.2.77'").fetchone()[0], 1)
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM servicio s JOIN activo a ON a.id=s.activo_id "
+                                          "WHERE a.ip='192.0.2.77' AND s.puerto=53").fetchone()[0], 1)
+
+    def test_only_found_discovery_rows_are_stored(self):
+        self.load_in_scope("lunes")
+        disc = auditoria.start_discovery(self.con, "lunes", {"modo": "nombres"})
+        auditoria.begin_discovery(self.con, disc)
+        auditoria.finish_discovery(self.con, disc, [self.discovery_row("192.0.2.10", "nombres", encontrado=False)])
+        self.assertEqual(auditoria.discovery_results(self.con, "lunes"), [])  # lo no encontrado no se guarda
