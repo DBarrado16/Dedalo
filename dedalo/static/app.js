@@ -248,10 +248,14 @@ function render() {
   $("inventory-tools").hidden = activeTab !== "inventory";
   $("priority-tools").hidden = activeTab !== "priority";
   document.querySelector(".tab-actions").hidden = activeTab === "logs" || activeTab === "priority";
-  const analysing = activeStates.has(current.analisis?.estado);
+  const analysis = current.analisis, analysing = activeStates.has(analysis?.estado), progress = analysis?.progreso;
   $("analyze-job").disabled = mutating || running || analysing;
-  $("analyze-job").textContent = analysing ? "Analizando…" : current.analisis ? "Volver a analizar" : "Analizar con IA";
+  $("analyze-job").textContent = analysing ? (progress ? `Analizando ${progress.hechos} de ${progress.total}…` : "Analizando…")
+    : analysis ? "Volver a analizar" : "Analizar con IA";
   $("analyze-job").title = running ? "Espera a que termine la captura" : "";
+  $("stop-analysis").hidden = !analysing;
+  $("stop-analysis").disabled = mutating || analysis?.estado === "deteniendo";
+  $("stop-analysis").textContent = analysis?.estado === "en_cola" ? "Cancelar análisis" : analysis?.estado === "deteniendo" ? "Parada solicitada…" : "Detener tras este host";
   $("status-filter-label").hidden = activeTab === "inventory";
   $("service-filter-label").hidden = activeTab !== "inventory";
   $("search").placeholder = activeTab === "inventory" ? "IP, nombre, puerto o producto" : "IP, URL o título";
@@ -305,7 +309,10 @@ function renderPriority() {
   renderKey = key;
   let message = "";
   if (!analysis) message = "Esta ejecución no se ha analizado todavía. Pulsa «Analizar con IA» para ordenar sus hosts en alcance.";
-  else if (activeStates.has(analysis.estado)) message = analysis.estado === "en_cola" ? "El análisis empezará cuando termine el trabajo anterior." : "El modelo local está analizando los hosts. Puedes seguir usando el portal.";
+  else if (analysis.estado === "en_cola") message = "El análisis empezará cuando termine el trabajo anterior.";
+  else if (analysis.estado === "deteniendo") message = "Deteniendo: el modelo termina el host en curso y no empieza más.";
+  else if (analysis.estado === "en_curso") message = "El modelo local está analizando los hosts" +
+    (analysis.progreso ? ` (${analysis.progreso.hechos} de ${analysis.progreso.total} hechos)` : "") + ". Puedes seguir usando el portal.";
   else if (analysis.estado !== "completa") message = (labels[analysis.estado] || analysis.estado) + ": " + (analysis.error || "el análisis no terminó.");
   else if (!items.length) message = "No hay hosts en el alcance de la ficha que analizar.";
   if (message && !items.length) { $("results").innerHTML = `<div class="empty-results">${escapeHtml(message)}</div>`; return; }
@@ -546,6 +553,7 @@ async function action(type) {
 }
 $("start-job").addEventListener("click", () => action("start"));
 $("analyze-job").addEventListener("click", () => action("analizar"));
+$("stop-analysis").addEventListener("click", () => action("detener-analisis"));
 $("export-hosts").addEventListener("click", () => exportHosts(false));
 $("export-web").addEventListener("click", () => exportHosts(true));
 $("cancel-job").addEventListener("click", () => action("cancel"));

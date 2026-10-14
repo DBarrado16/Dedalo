@@ -35,6 +35,17 @@ def model_answering(level="alta"):
     return model
 
 
+def model_waiting_at(call, release, level="alta"):
+    """Modelo falso que en la pregunta número `call` espera a `release`, como uno lento; anota cada pregunta."""
+    def model(prompt, name, host, timeout=120, schema=None):
+        model.calls.append(prompt)
+        if len(model.calls) == call:
+            release.wait(10)
+        return json.dumps({"rol": "R", "nivel": level, "motivo": "m", "siguiente": "s"})
+    model.calls = []
+    return model
+
+
 def payload():
     return {"nombre": "Prueba de portal", "archivos": [{"nombre": "escaneo.xml", "contenido": (ROOT / "ejemplos/escaneo.xml").read_text()}],
             "opciones": {"timeout": 5, "delay": 0}}
@@ -230,24 +241,92 @@ class PortalTests(unittest.TestCase):
         self.reopen()
         self.assertTrue((outside / "dato.txt").is_file())
 
+    @staticmethod
+    def until(condition):
+        deadline = time.monotonic() + 10
+        while not condition() and time.monotonic() < deadline:
+            time.sleep(.02)
+
+    def settled(self, job_id):
+        """Espera a que el análisis de una ejecución deje de estar en marcha y devuelve el detalle."""
+        self.until(lambda: self.store.detail(job_id)["analisis"]["estado"] not in ("en_cola", "en_curso", "deteniendo"))
+        return self.store.detail(job_id)
+
     def analyse(self, job_id, model):
         """Lanza el análisis con un modelo falso y espera a que termine."""
         with patch("dedalo.web.modelo.generate", side_effect=model):
             status, content = self.request("/api/jobs/" + job_id + "/analizar", {})
             self.assertEqual(status, 202, content)
-            deadline = time.monotonic() + 10
-            while self.store.detail(job_id)["analisis"]["estado"] in ("en_cola", "en_curso") and time.monotonic() < deadline:
-                time.sleep(.02)
-        return self.store.detail(job_id)
+            return self.settled(job_id)
 
     def test_analysis_requires_the_session_token_and_same_origin(self):
         job = self.create()
         with patch("dedalo.web.modelo.generate") as model:
-            for headers in ({"X-Dedalo-Token": "wrong"}, {"Origin": "https://example.org"}):
-                with self.subTest(headers=headers):
-                    self.assertEqual(self.request("/api/jobs/" + job["id"] + "/analizar", {}, headers)[0], 403)
+            for route in ("analizar", "detener-analisis"):
+                for headers in ({"X-Dedalo-Token": "wrong"}, {"Origin": "https://example.org"}):
+                    with self.subTest(route=route, headers=headers):
+                        self.assertEqual(self.request("/api/jobs/" + job["id"] + "/" + route, {}, headers)[0], 403)
             self.assertIsNone(self.store.detail(job["id"])["analisis"])
         model.assert_not_called()
+
+    def test_progress_counts_the_hosts_already_answered(self):
+        job, release = self.create(), threading.Event()
+        model = model_waiting_at(2, release)
+        with patch("dedalo.web.modelo.generate", side_effect=model):
+            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/analizar", {})[0], 202)
+            self.until(lambda: len(model.calls) == 2)
+            self.assertEqual(self.store.detail(job["id"])["analisis"]["progreso"], {"hechos": 1, "total": 2})
+            release.set()
+            detail = self.settled(job["id"])
+        self.assertEqual(detail["analisis"]["estado"], "completa")
+        self.assertNotIn("progreso", detail["analisis"])
+
+    def test_a_running_analysis_stops_after_the_current_host_and_keeps_the_last_result(self):
+        job, release = self.create(), threading.Event()
+        before = self.analyse(job["id"], model_answering())["prioridades"]
+        model = model_waiting_at(1, release, "baja")
+        with patch("dedalo.web.modelo.generate", side_effect=model):
+            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/analizar", {})[0], 202)
+            self.until(lambda: len(model.calls) == 1)
+            status, content = self.request("/api/jobs/" + job["id"] + "/detener-analisis", {})
+            self.assertEqual((status, json.loads(content)["analisis"]["estado"]), (200, "deteniendo"), content)
+            release.set()
+            detail = self.settled(job["id"])
+        self.assertEqual(len(model.calls), 1)  # el segundo host ya no se pregunta
+        self.assertEqual((detail["analisis"]["estado"], detail["prioridades"]), ("interrumpida", before))
+        self.assertIn("Detenido", detail["analisis"]["error"])
+
+    def test_a_stop_asked_during_the_last_host_lets_the_analysis_finish(self):
+        job, release = self.create(), threading.Event()
+        model = model_waiting_at(2, release)  # el segundo de dos hosts es el último
+        with patch("dedalo.web.modelo.generate", side_effect=model):
+            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/analizar", {})[0], 202)
+            self.until(lambda: len(model.calls) == 2)
+            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/detener-analisis", {})[0], 200)
+            release.set()
+            detail = self.settled(job["id"])
+        self.assertEqual((detail["analisis"]["estado"], len(detail["prioridades"])), ("completa", 2))
+
+    def test_a_queued_analysis_is_cancelled_before_it_starts(self):
+        first, second, third = self.create(), self.create(), self.create()
+        release = threading.Event()
+        model = model_waiting_at(1, release)
+        with patch("dedalo.web.modelo.generate", side_effect=model):
+            for job in (first, second, third):
+                self.assertEqual(self.request("/api/jobs/" + job["id"] + "/analizar", {})[0], 202)
+            self.until(lambda: len(model.calls) == 1)
+            status, content = self.request("/api/jobs/" + second["id"] + "/detener-analisis", {})
+            self.assertEqual((status, json.loads(content)["analisis"]["estado"]), (200, "cancelada"), content)
+            release.set()
+            self.settled(third["id"])  # la cola pasó por el segundo antes de llegar al tercero
+        self.assertEqual(len(model.calls), 4)  # dos hosts del primero y dos del tercero; del segundo, ninguno
+        self.assertEqual(self.store.detail(second["id"])["analisis"]["estado"], "cancelada")
+
+    def test_only_an_analysis_in_progress_can_be_stopped(self):
+        job = self.create()
+        self.assertEqual(self.request("/api/jobs/" + job["id"] + "/detener-analisis", {})[0], 409)
+        self.analyse(job["id"], model_answering())
+        self.assertEqual(self.request("/api/jobs/" + job["id"] + "/detener-analisis", {})[0], 409)
 
     def test_analysis_prioritises_the_hosts_in_scope_with_the_local_model(self):
         job = self.create()
@@ -892,9 +971,10 @@ class PortalTests(unittest.TestCase):
 
     def test_page_has_the_prioritisation_tab(self):
         page, script = self.request("/")[1], self.request("/app.js")[1]
-        for needle in (b'data-tab="priority"', b'id="analyze-job"', b'id="priority-tools"'):
+        for needle in (b'data-tab="priority"', b'id="analyze-job"', b'id="stop-analysis"', b'id="priority-tools"'):
             self.assertIn(needle, page)
         self.assertIn(b'action("analizar")', script)
+        self.assertIn(b'action("detener-analisis")', script)
         self.assertIn(b"escapeHtml(item.siguiente)", script)  # la respuesta del modelo nunca entra como HTML
 
     def store_options(self, job_id, value):

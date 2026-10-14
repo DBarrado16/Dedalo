@@ -130,6 +130,11 @@ class AnalysisTests(unittest.TestCase):
             prioridad.analizar([DC, FILES, DESK], model, parar=lambda: len(calls) >= 1)
         self.assertEqual(len(calls), 1)
 
+    def test_reports_how_many_hosts_are_done_out_of_the_total(self):
+        seen = []
+        prioridad.analizar([DC, FILES, DESK], lambda prompt: answer("media"), avance=lambda hechos, total: seen.append((hechos, total)))
+        self.assertEqual(seen, [(0, 3), (1, 3), (2, 3), (3, 3)])
+
     def test_no_hosts_means_no_calls(self):
         def never(prompt):
             raise AssertionError("no debería llamar al modelo")

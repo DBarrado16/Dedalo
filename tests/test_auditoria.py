@@ -118,6 +118,23 @@ class ImportTests(unittest.TestCase):
         self.assertEqual([p["rol"] for p in auditoria.priorities(self.con, "lunes")], ["Después"])
         self.assertEqual(self.analyses(), 1)
 
+    def test_a_queued_analysis_is_cancelled_and_never_starts(self):
+        self.load_in_scope("lunes")
+        analysis = auditoria.start_analysis(self.con, "lunes", {})
+        self.assertEqual(auditoria.stop_analysis(self.con, "lunes"), "cancelada")
+        self.assertFalse(auditoria.begin_analysis(self.con, analysis))  # el hilo de la cola ya no lo empieza
+        self.assertEqual(auditoria.analysis_status(self.con, "lunes")["estado"], "cancelada")
+
+    def test_a_running_analysis_is_asked_to_stop_once(self):
+        self.load_in_scope("lunes")
+        self.assertIsNone(auditoria.stop_analysis(self.con, "lunes"))  # no hay ninguno
+        analysis = auditoria.start_analysis(self.con, "lunes", {})
+        self.assertTrue(auditoria.begin_analysis(self.con, analysis))
+        self.assertEqual(auditoria.stop_analysis(self.con, "lunes"), "deteniendo")
+        self.assertIsNone(auditoria.stop_analysis(self.con, "lunes"))  # ya se pidió
+        auditoria.close_interrupted_analyses(self.con)  # si se cierra el portal mientras para
+        self.assertEqual(auditoria.analysis_status(self.con, "lunes")["estado"], "interrumpida")
+
     def test_the_newest_attempt_wins_even_if_the_clock_went_back(self):
         self.load_in_scope("lunes")
         first = auditoria.start_analysis(self.con, "lunes", {}, created="2026-10-14T10:00:00+00:00")

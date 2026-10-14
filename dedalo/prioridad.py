@@ -81,12 +81,14 @@ class Interrumpido(Exception):
     """Se pidió parar el análisis (por ejemplo, porque se cierra el portal)."""
 
 
-def analizar(activos: list[dict], generate, parar=lambda: False) -> list[dict]:
+def analizar(activos: list[dict], generate, parar=lambda: False, avance=lambda hechos, total: None) -> list[dict]:
     """Una pregunta por host. Si el modelo no responde, falla todo; si una respuesta no vale, ese host queda sin análisis.
 
     `parar` se consulta antes de cada host: si devuelve True, lanza Interrumpido.
+    `avance(hechos, total)` se llama al empezar y tras cada host.
     """
     filas = []
+    avance(0, len(activos))
     for activo in activos:
         if parar():
             raise Interrumpido()
@@ -96,5 +98,6 @@ def analizar(activos: list[dict], generate, parar=lambda: False) -> list[dict]:
         except ValueError as exc:
             fila = {"rol": "", "nivel": "sin_analisis", "motivo": f"Respuesta del modelo no válida: {exc}", "siguiente": ""}
         filas.append((fila | {"ip": activo["ip"]}, len(activo.get("servicios", []))))
+        avance(len(filas), len(activos))
     filas.sort(key=lambda par: (_ORDEN[par[0]["nivel"]], -par[1], par[0]["ip"]))
     return [fila | {"orden": orden} for orden, (fila, _) in enumerate(filas)]

@@ -239,6 +239,35 @@ def start_analysis(con: sqlite3.Connection, import_id: str, options: dict, creat
     return analysis_id
 
 
+def begin_analysis(con: sqlite3.Connection, analysis_id: str) -> bool:
+    """Pasa a en curso un análisis que sigue en cola; False si entretanto se canceló o se sustituyó.
+
+    Es un UPDATE condicional: una cancelación que llegue a la vez no queda pisada.
+    """
+    with con:
+        return con.execute("UPDATE ejecucion SET estado = 'en_curso', iniciada = ? WHERE id = ? AND estado = 'en_cola'",
+                           (now(), analysis_id)).rowcount == 1
+
+
+def stop_analysis(con: sqlite3.Connection, import_id: str) -> str | None:
+    """Cancela el análisis en cola de una importación o pide que pare el que está en curso.
+
+    Devuelve el estado nuevo (`cancelada` o `deteniendo`), o None si no había ninguno en marcha.
+    Uno en curso termina la pregunta del host actual; el hilo de la cola lo cierra después.
+    """
+    row = _derived(con, import_id, "analisis")
+    if row is None:
+        return None
+    with con:
+        if con.execute("UPDATE ejecucion SET estado = 'cancelada', error = 'Se canceló antes de empezar.', terminada = ? "
+                       "WHERE id = ? AND estado = 'en_cola'", (now(), row["id"])).rowcount:
+            return "cancelada"
+        if con.execute("UPDATE ejecucion SET estado = 'deteniendo' WHERE id = ? AND estado = 'en_curso'",
+                       (row["id"],)).rowcount:
+            return "deteniendo"
+    return None
+
+
 def analysis_status(con: sqlite3.Connection, import_id: str) -> dict | None:
     """Estado y error del último análisis pedido de una importación, o None si no se pidió ninguno."""
     row = _derived(con, import_id, "analisis")
@@ -246,11 +275,11 @@ def analysis_status(con: sqlite3.Connection, import_id: str) -> dict | None:
 
 
 def close_interrupted_analyses(con: sqlite3.Connection) -> None:
-    """Al arrancar, un análisis que seguía en cola o en curso se quedó a medias al cerrarse el portal."""
+    """Al arrancar, un análisis que seguía en cola, en curso o parando se quedó a medias al cerrarse el portal."""
     with con:
         con.execute("UPDATE ejecucion SET estado = 'interrumpida', terminada = ?, "
                     "error = 'El portal se cerró antes de terminar el análisis.' "
-                    "WHERE tipo = 'analisis' AND estado IN ('en_cola', 'en_curso')", (now(),))
+                    "WHERE tipo = 'analisis' AND estado IN ('en_cola', 'en_curso', 'deteniendo')", (now(),))
 
 
 def finish_analysis(con: sqlite3.Connection, analysis_id: str, rows: list[dict]) -> None:
