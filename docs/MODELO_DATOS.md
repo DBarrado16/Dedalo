@@ -10,6 +10,7 @@ auditoria ─┬─ alcance (reglas incluir/excluir)
            │     ├─ observacion_activo ──┐
            │     ├─ observacion ─────────┤  (qué vio esta ejecución)
            │     ├─ captura              │
+           │     ├─ prioridad (análisis) │
            │     └─ evidencia (archivos) │
            └─ activo (una IP) ◄──────────┘
                  └─ servicio (protocolo + puerto)
@@ -19,6 +20,7 @@ auditoria ─┬─ alcance (reglas incluir/excluir)
 - **Observación** dice *quién lo vio, cuándo y cómo*. Si dos escaneos describen distinto el mismo servicio, se guardan las dos observaciones y no se pisan.
 - **Captura** es el intento de capturar una URL, haya salido bien o no.
 - **Evidencia** es un archivo que respalda algo: el Nmap original, una imagen o un registro.
+- **Prioridad** es lo que un análisis con IA dijo de un activo de su importación: rol probable, nivel (alta, media, baja, o `sin_analisis` si la respuesta del modelo no valía), motivo y siguiente paso sugerido. Es una opinión asesora: no cambia nada del inventario.
 
 ## Tablas
 
@@ -42,8 +44,8 @@ CREATE TABLE alcance (
 CREATE TABLE ejecucion (
   id           TEXT PRIMARY KEY,       -- uuid hex; en importaciones coincide con la carpeta de portal_datos
   auditoria_id TEXT NOT NULL REFERENCES auditoria(id) ON DELETE CASCADE,
-  tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'descubrimiento')),
-  origen_id    TEXT REFERENCES ejecucion(id) ON DELETE CASCADE,  -- captura -> importación de la que salen sus objetivos
+  tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'descubrimiento', 'analisis')),
+  origen_id    TEXT REFERENCES ejecucion(id) ON DELETE CASCADE,  -- captura o análisis -> importación de la que salen
   nombre       TEXT NOT NULL,
   estado       TEXT NOT NULL CHECK (estado IN (...)),  -- los nueve estados de CONTRATOS.md 0.4
   opciones     TEXT NOT NULL DEFAULT '{}',      -- JSON: hilos, timeout, formato...
@@ -121,9 +123,22 @@ CREATE TABLE captura (
   fecha        TEXT,
   UNIQUE (ejecucion_id, url)
 );
+
+-- Lo que un análisis con IA (ejecución 'analisis') dijo de cada activo, en el orden en que se muestra.
+CREATE TABLE prioridad (
+  id           INTEGER PRIMARY KEY,
+  ejecucion_id TEXT NOT NULL REFERENCES ejecucion(id) ON DELETE CASCADE,
+  activo_id    INTEGER NOT NULL REFERENCES activo(id) ON DELETE CASCADE,
+  orden        INTEGER NOT NULL,
+  rol          TEXT NOT NULL DEFAULT '',
+  nivel        TEXT NOT NULL CHECK (nivel IN ('alta', 'media', 'baja', 'sin_analisis')),
+  motivo       TEXT NOT NULL DEFAULT '',
+  siguiente    TEXT NOT NULL DEFAULT '',   -- siguiente paso sugerido; texto asesor, nada lo ejecuta
+  UNIQUE (ejecucion_id, activo_id)
+);
 ```
 
-La migración 1 añade índices para las búsquedas habituales: ejecuciones por auditoría, observaciones por servicio y por activo, y capturas por servicio. La migración 2 reconstruye `ejecucion` para admitir el tipo `descubrimiento` y para que borrar una importación borre también las capturas que salieron de ella; añade el índice por `origen_id`. El esquema exacto está en `dedalo/db.py`.
+La migración 1 añade índices para las búsquedas habituales: ejecuciones por auditoría, observaciones por servicio y por activo, y capturas por servicio. La migración 2 reconstruye `ejecucion` para admitir el tipo `descubrimiento` y para que borrar una importación borre también las capturas que salieron de ella; añade el índice por `origen_id`. La migración 3 la reconstruye otra vez para admitir el tipo `analisis` y crea la tabla `prioridad` con su índice por ejecución. El esquema exacto está en `dedalo/db.py`.
 
 La situación de alcance de un activo (en alcance, excluido o fuera) **no se guarda**: se calcula con las reglas vigentes. Así, cambiar el alcance nunca deja datos desactualizados.
 

@@ -9,7 +9,7 @@ from dedalo import db
 LATEST = max(db.MIGRATIONS)
 NEXT = LATEST + 1  # número para migraciones de prueba
 TABLES = {"auditoria", "alcance", "ejecucion", "activo", "servicio", "observacion_activo",
-          "observacion", "evidencia", "captura"}
+          "observacion", "evidencia", "captura", "prioridad"}
 
 
 class DatabaseTests(unittest.TestCase):
@@ -145,6 +145,23 @@ ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
             self.con.execute("DELETE FROM ejecucion WHERE id = 'e1'")
         self.assertEqual([r[0] for r in self.con.execute("SELECT id FROM ejecucion")], ["d1"])
         self.assertEqual(self.con.execute("SELECT COUNT(*) FROM captura").fetchone()[0], 0)
+
+    def test_analysis_executions_keep_priorities_until_their_import_is_deleted(self):
+        asset, _ = self.audit()
+        self.assertGreaterEqual(LATEST, 3)
+        with self.con:
+            self.con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, creada) "
+                             "VALUES ('p1', 'a1', 'analisis', 'e1', 'Nmap lunes', 'completa', '2026-10-14T00:00:00Z')")
+            self.con.execute("INSERT INTO prioridad (ejecucion_id, activo_id, orden, rol, nivel, motivo, siguiente) "
+                             "VALUES ('p1', ?, 0, 'Servidor web', 'alta', 'nginx en 443', 'revisar el panel')", (asset,))
+        self.assertEqual(self.con.execute("SELECT nivel, siguiente FROM prioridad").fetchone()[:],
+                         ("alta", "revisar el panel"))
+        with self.assertRaises(sqlite3.IntegrityError), self.con:
+            self.con.execute("INSERT INTO prioridad (ejecucion_id, activo_id, orden, nivel) VALUES ('p1', ?, 1, 'urgente')",
+                             (asset,))
+        with self.con:
+            self.con.execute("DELETE FROM ejecucion WHERE id = 'e1'")
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM prioridad").fetchone()[0], 0)
 
     def test_refuses_database_from_newer_version(self):
         self.con.execute("PRAGMA user_version = 99")

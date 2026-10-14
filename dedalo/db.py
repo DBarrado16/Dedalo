@@ -138,6 +138,41 @@ ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
 CREATE INDEX ejecucion_auditoria ON ejecucion (auditoria_id);
 CREATE INDEX ejecucion_origen ON ejecucion (origen_id);
 """,
+    # Análisis con IA de una importación: rol, prioridad y siguiente paso de cada activo.
+    3: """
+CREATE TABLE nueva_ejecucion (
+  id           TEXT PRIMARY KEY,
+  auditoria_id TEXT NOT NULL REFERENCES auditoria(id) ON DELETE CASCADE,
+  tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'descubrimiento', 'analisis')),
+  origen_id    TEXT REFERENCES ejecucion(id) ON DELETE CASCADE,
+  nombre       TEXT NOT NULL,
+  estado       TEXT NOT NULL CHECK (estado IN ('preparada', 'en_cola', 'en_curso', 'deteniendo', 'completa',
+                                               'parcial', 'error', 'cancelada', 'interrumpida')),
+  opciones     TEXT NOT NULL DEFAULT '{}',
+  creada       TEXT NOT NULL,
+  iniciada     TEXT,
+  terminada    TEXT,
+  error        TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO nueva_ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada, iniciada, terminada, error)
+  SELECT id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada, iniciada, terminada, error FROM ejecucion;
+DROP TABLE ejecucion;
+ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
+CREATE INDEX ejecucion_auditoria ON ejecucion (auditoria_id);
+CREATE INDEX ejecucion_origen ON ejecucion (origen_id);
+CREATE TABLE prioridad (
+  id           INTEGER PRIMARY KEY,
+  ejecucion_id TEXT NOT NULL REFERENCES ejecucion(id) ON DELETE CASCADE,
+  activo_id    INTEGER NOT NULL REFERENCES activo(id) ON DELETE CASCADE,
+  orden        INTEGER NOT NULL,
+  rol          TEXT NOT NULL DEFAULT '',
+  nivel        TEXT NOT NULL CHECK (nivel IN ('alta', 'media', 'baja', 'sin_analisis')),
+  motivo       TEXT NOT NULL DEFAULT '',
+  siguiente    TEXT NOT NULL DEFAULT '',
+  UNIQUE (ejecucion_id, activo_id)
+);
+CREATE INDEX prioridad_ejecucion ON prioridad (ejecucion_id);
+""",
 }
 
 
