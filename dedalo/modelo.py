@@ -38,6 +38,19 @@ def check_local(host: str) -> str:
     return host
 
 
+def check_model(name: str) -> str:
+    """Devuelve el nombre si el modelo corre en este equipo; si no, ValueError.
+
+    Ollama atiende los modelos de etiqueta «cloud» o «…-cloud» (gpt-oss:120b-cloud) desde el
+    mismo servidor local, pero manda la pregunta a su nube.
+    """
+    tag = name.rpartition(":")[2].lower() if ":" in name else ""
+    if tag == "cloud" or tag.endswith("-cloud"):
+        raise ValueError(f"El modelo «{name}» corre en la nube de Ollama y los datos del cliente saldrían "
+                         "del equipo: usa un modelo descargado.")
+    return name
+
+
 def generate(prompt: str, model: str, host: str = OLLAMA, timeout: int = 120, schema: dict | None = None) -> str:
     """Pide al modelo una respuesta entera (sin streaming) y devuelve su texto.
 
@@ -46,6 +59,7 @@ def generate(prompt: str, model: str, host: str = OLLAMA, timeout: int = 120, sc
     antes de contestar, y así tarda 35 s.
     """
     check_local(host)
+    check_model(model)
     # Temperatura 0: la misma pregunta da siempre la misma respuesta (traza de auditoría reproducible).
     data = json.dumps({"model": model, "prompt": prompt, "stream": False, "format": schema or "json", "think": False,
                        "options": {"temperature": 0}})

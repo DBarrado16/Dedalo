@@ -58,7 +58,7 @@ Cada cosa que se hace es una **ejecución** de un tipo. En la primera versión h
 | --- | --- | --- | --- |
 | `importacion` | Lee archivos Nmap | No | Activos, servicios, observaciones y el Nmap original como evidencia |
 | `captura` | Hace capturas de los servicios web en alcance de una importación | Sí, HTTP/HTTPS | Un resultado por URL y las imágenes como evidencia |
-| `analisis` | Pide a un modelo local, host por host, el rol y la prioridad de los hosts en alcance con algún puerto abierto de una importación | No: solo habla con Ollama en este equipo (loopback, sin proxy ni redirecciones) | Una prioridad por activo (rol, nivel, motivo y siguiente paso sugerido) |
+| `analisis` | Pide a un modelo local, host por host, el rol y la prioridad de los hosts en alcance con algún puerto abierto de una importación | No: solo habla con Ollama en este equipo (loopback, sin proxy ni redirecciones) y con modelos descargados, nunca los «-cloud» | Una prioridad por activo (rol, nivel, motivo y siguiente paso sugerido) |
 
 Al modelo solo le llegan metadatos (IP, nombres, puerto, servicio, producto, versión, detalle y título web), como datos y no como instrucciones; su respuesta se valida contra un esquema fijo y lo que no encaja queda `sin_analisis`. Un análisis nuevo de la misma importación sustituye al anterior.
 

@@ -240,6 +240,15 @@ class PortalTests(unittest.TestCase):
                 time.sleep(.02)
         return self.store.detail(job_id)
 
+    def test_analysis_requires_the_session_token_and_same_origin(self):
+        job = self.create()
+        with patch("dedalo.web.modelo.generate") as model:
+            for headers in ({"X-Dedalo-Token": "wrong"}, {"Origin": "https://example.org"}):
+                with self.subTest(headers=headers):
+                    self.assertEqual(self.request("/api/jobs/" + job["id"] + "/analizar", {}, headers)[0], 403)
+            self.assertIsNone(self.store.detail(job["id"])["analisis"])
+        model.assert_not_called()
+
     def test_analysis_prioritises_the_hosts_in_scope_with_the_local_model(self):
         job = self.create()
         self.assertIsNone(self.store.detail(job["id"])["analisis"])
@@ -1414,6 +1423,12 @@ class ModelOptionTests(unittest.TestCase):
         with redirect_stderr(errors), self.assertRaises(SystemExit):
             cli.build_parser().parse_args(["web", "--ollama", "http://10.0.0.5:11434"])
         self.assertIn("este equipo", errors.getvalue())
+
+    def test_a_cloud_model_is_refused_at_startup(self):
+        errors = io.StringIO()
+        with redirect_stderr(errors), self.assertRaises(SystemExit):
+            cli.build_parser().parse_args(["web", "--modelo", "gpt-oss:120b-cloud"])
+        self.assertIn("nube", errors.getvalue())
 
     def test_the_chosen_model_reaches_the_portal(self):
         args = cli.build_parser().parse_args(["web", "--datos", "datos", "--modelo", "qwen2.5:7b",

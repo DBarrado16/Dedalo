@@ -104,6 +104,17 @@ class ModelTests(unittest.TestCase):
             with self.subTest(host=host), answering(json.dumps({"response": "ok"}).encode()):
                 self.assertEqual(modelo.generate("p", "m", host), "ok")
 
+    def test_a_cloud_model_is_refused(self):
+        # Ollama atiende los modelos «-cloud» desde el mismo servidor local, pero manda la pregunta a su nube.
+        for name in ("gpt-oss:120b-cloud", "qwen3-coder:480b-CLOUD", "deepseek:cloud"):
+            with self.subTest(name=name), answering(json.dumps({"response": "ok"}).encode()) as opened:
+                with self.assertRaisesRegex(ValueError, "nube"):
+                    modelo.generate("p", name)
+                opened.assert_not_called()
+        for name in ("llama3.2:3b", "cloudy-model:7b", "fsec-analyst:latest", "mistral"):
+            with self.subTest(name=name):
+                self.assertEqual(modelo.check_model(name), name)
+
     def test_a_redirect_is_not_followed(self):
         # Lo que conteste en el puerto no puede llevar la petición a otra dirección (CONTRATOS 0.4).
         Redirecting.visited = []

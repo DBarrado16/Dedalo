@@ -153,6 +153,7 @@ Pulsa **Analizar con IA**. El análisis va por la misma cola que las capturas, a
 - Si se cierra el portal a mitad, el análisis para tras el host en curso y queda como interrumpido.
 - Si después excluyes un host de la ficha, deja de aparecer en la priorización: la exclusión siempre gana.
 - Ollama tiene que estar en este equipo: `--ollama` solo acepta `127.0.0.1`, `::1` o `localhost`, y la conexión no pasa por el proxy del sistema ni sigue redirecciones, para que los datos del cliente no salgan del equipo.
+- Por lo mismo, `--modelo` rechaza los modelos en la nube de Ollama (etiqueta `cloud` o `…-cloud`, como `gpt-oss:120b-cloud`): Ollama los sirve desde el mismo servidor local, pero manda la pregunta a sus servidores. Para cerrar también esa puerta en el propio Ollama, arráncalo con `OLLAMA_NO_CLOUD=1`.
 
 `ejemplos/laboratorio.xml` es un laboratorio inventado para probarlo: un controlador de dominio, un panel web de administración, un servidor de ficheros y un puesto de usuario en `10.30.0.0/16`. Crea una ficha con ese rango, sube el archivo y pulsa **Analizar con IA**.
 

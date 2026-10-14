@@ -36,11 +36,14 @@ def port_number(value: str) -> int:
     return number
 
 
-def model_server(value: str) -> str:
-    try:
-        return modelo.check_local(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(str(exc)) from exc
+def model_option(check):
+    """Tipo de argparse a partir de una comprobación de modelo.py, que avisa con ValueError."""
+    def parse(value: str) -> str:
+        try:
+            return check(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(str(exc)) from exc
+    return parse
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -75,9 +78,9 @@ def build_parser() -> argparse.ArgumentParser:
     portal.add_argument("--chrome", help="Navegador del servidor")
     portal.add_argument("--gowitness", help="Ejecutable de gowitness v3")
     portal.add_argument("--abrir", action="store_true", help="Abrir el portal en el navegador")
-    portal.add_argument("--modelo", default=modelo.DEFAULT_MODEL,
+    portal.add_argument("--modelo", type=model_option(modelo.check_model), default=modelo.DEFAULT_MODEL,
                         help=f"Modelo local de Ollama para priorizar con IA ({modelo.DEFAULT_MODEL})")
-    portal.add_argument("--ollama", type=model_server, default=modelo.OLLAMA,
+    portal.add_argument("--ollama", type=model_option(modelo.check_local), default=modelo.OLLAMA,
                         help=f"Servidor de Ollama en este equipo ({modelo.OLLAMA})")
 
     show = subcommands.add_parser("ver", help="Abrir el visor de una subred, un rango o todo")
