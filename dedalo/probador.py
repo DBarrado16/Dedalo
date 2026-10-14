@@ -27,22 +27,24 @@ class _SinRedireccion(urllib.request.HTTPRedirectHandler):
         return None
 
 
+# Un opener por modo, reutilizado (como en modelo.py): sin proxy y sin verificar el certificado.
+# El de formulario, además, no sigue los 3xx (una redirección tras el login ya es señal de éxito).
+_HTTPS = urllib.request.HTTPSHandler(context=_SIN_VERIFICAR)
+_OPENER = urllib.request.build_opener(_SIN_PROXY, _HTTPS)
+_OPENER_SIN_REDIR = urllib.request.build_opener(_SIN_PROXY, _HTTPS, _SinRedireccion())
+
+
 def _url(ip: str, objetivo: dict, ruta: str = "/") -> str:
     esquema = "https" if objetivo["https"] else "http"
     anfitrion = f"[{ip}]" if ":" in ip else ip
     return f"{esquema}://{anfitrion}:{objetivo['puerto']}{ruta}"
 
 
-def _abrir(request, timeout):
-    opener = urllib.request.build_opener(_SIN_PROXY, urllib.request.HTTPSHandler(context=_SIN_VERIFICAR))
-    return opener.open(request, timeout=timeout)
-
-
 def _http_basic(ip, objetivo, timeout) -> bool:
     token = base64.b64encode(f"{objetivo['usuario']}:{objetivo['clave']}".encode()).decode()
     request = urllib.request.Request(_url(ip, objetivo), headers={"Authorization": "Basic " + token})
     try:
-        with _abrir(request, timeout) as respuesta:
+        with _OPENER.open(request, timeout=timeout) as respuesta:
             return respuesta.status < 400
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
@@ -59,12 +61,8 @@ def _http_form(ip, objetivo, timeout) -> bool:
     datos = urllib.parse.urlencode(campos).encode()
     request = urllib.request.Request(_url(ip, objetivo, receta.get("ruta", "/")), data=datos)
     exito = receta.get("exito") or {}
-    # No seguimos los 3xx: una redirección tras el login es, de suyo, señal de éxito, y seguirla
-    # (sin cookie) suele devolver a la propia página de login o a una zona protegida que pide auth.
-    opener = urllib.request.build_opener(_SIN_PROXY, urllib.request.HTTPSHandler(context=_SIN_VERIFICAR),
-                                         _SinRedireccion())
     try:
-        with opener.open(request, timeout=timeout) as respuesta:
+        with _OPENER_SIN_REDIR.open(request, timeout=timeout) as respuesta:
             codigo, cuerpo = respuesta.status, respuesta.read(65536).decode("utf-8", "replace").lower()
     except urllib.error.HTTPError as exc:
         codigo, cuerpo = exc.code, exc.read(65536).decode("utf-8", "replace").lower()

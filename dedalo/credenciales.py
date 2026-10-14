@@ -58,11 +58,11 @@ class Interrumpido(Exception):
 def probar_activos(activos, entradas, probar, parar=lambda: False, avance=lambda hechos, total: None,
                    intentos=5, pausa=lambda: None) -> list[dict]:
     """Prueba, servicio por servicio, las credenciales que le tocan; una fila de resultado por servicio."""
-    trabajos = [(activo["ip"], obj) for activo in activos for obj in objetivos(activo, entradas)]
     # Un servicio puede tener varias credenciales; se agrupan para contar «servicios», no intentos.
     por_servicio: dict = {}
-    for ip, obj in trabajos:
-        por_servicio.setdefault((ip, obj["puerto"], obj["servicio"]), []).append(obj)
+    for activo in activos:
+        for obj in objetivos(activo, entradas):
+            por_servicio.setdefault((activo["ip"], obj["puerto"], obj["servicio"]), []).append(obj)
     filas, total = [], len(por_servicio)
     avance(0, total)
     for (ip, puerto, servicio), objs in por_servicio.items():
