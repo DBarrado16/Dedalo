@@ -60,7 +60,7 @@ Cada cosa que se hace es una **ejecución** de un tipo. En la primera versión h
 | `captura` | Hace capturas de los servicios web en alcance de una importación | Sí, HTTP/HTTPS | Un resultado por URL y las imágenes como evidencia |
 | `analisis` | Pide a un modelo local, host por host, el rol y la prioridad de los hosts en alcance con algún puerto abierto de una importación | No: solo habla con Ollama en este equipo (loopback, sin proxy ni redirecciones) y con modelos descargados, nunca los «-cloud» | Una prioridad por activo (rol, nivel, motivo y siguiente paso sugerido) |
 
-Al modelo solo le llegan metadatos (IP, nombres, puerto, servicio, producto, versión, detalle y título web), como datos y no como instrucciones; su respuesta se valida contra un esquema fijo y lo que no encaja queda `sin_analisis`. Un análisis nuevo de la misma importación solo sustituye al anterior cuando termina bien; si falla, se cancela o se interrumpe, sigue valiendo el último completo.
+Al modelo solo le llegan metadatos (IP, nombres, puerto, servicio, producto, versión, detalle y título web), como datos y no como instrucciones; su respuesta se valida contra un esquema fijo y lo que no encaja queda `sin_analisis`. Un análisis nuevo de la misma importación solo sustituye al anterior cuando termina bien; si falla, se cancela o se interrumpe, sigue valiendo el último completo. Para ofrecer en el portal los modelos descargados, el portal pregunta a ese mismo Ollama por su lista (`/api/tags`), con las mismas reglas; el modelo que llega del navegador se comprueba antes de usarlo (forma de nombre de Ollama y nunca de la nube).
 
 Tipos futuros: `descubrimiento` y `escaneo` (conectan, solo en alcance) y `credenciales` (conecta, con límites).
 

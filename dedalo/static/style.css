@@ -191,6 +191,10 @@ tr:hover td { background: var(--selection); }
 .empty-state>p { color: var(--muted); max-width: 560px; line-height: 1.8; }
 .empty-state .hint { margin-top: 18px; }
 .empty-results { color: var(--muted); font-size: 14px; padding: 45px 0; }
+.model-choice { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; font-size: 12px; color: var(--muted); }
+.model-choice select { width: auto; max-width: min(340px, 100%); min-height: 34px; padding: 6px 8px; font-size: 12px; }
+.inventory-tools .model-hint { flex-basis: 100%; }
+.inventory-tools .actions { flex-shrink: 1; min-width: 0; }  /* con el desplegable de modelo, salta de línea en vez de desbordar */
 .priority-list { list-style: none; margin: 18px 0 0; padding: 0; border-top: 1px solid var(--line); }
 .priority-list li { display: grid; grid-template-columns: 28px minmax(0, 1fr); column-gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); }
 .priority-rank { grid-row: span 3; color: var(--muted); font: 13px var(--font-data); text-align: right; padding-top: 3px; }

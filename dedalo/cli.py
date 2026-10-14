@@ -6,6 +6,7 @@ import argparse
 from dataclasses import asdict
 from datetime import datetime, timezone
 import ipaddress
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -78,8 +79,11 @@ def build_parser() -> argparse.ArgumentParser:
     portal.add_argument("--chrome", help="Navegador del servidor")
     portal.add_argument("--gowitness", help="Ejecutable de gowitness v3")
     portal.add_argument("--abrir", action="store_true", help="Abrir el portal en el navegador")
-    portal.add_argument("--modelo", type=model_option(modelo.check_model), default=modelo.DEFAULT_MODEL,
-                        help=f"Modelo local de Ollama para priorizar con IA ({modelo.DEFAULT_MODEL})")
+    # argparse pasa por `type` también un valor por defecto de texto: DEDALO_MODELO se comprueba igual.
+    portal.add_argument("--modelo", type=model_option(modelo.check_model),
+                        default=os.environ.get("DEDALO_MODELO") or modelo.DEFAULT_MODEL,
+                        help="Modelo local de Ollama que se propone para priorizar con IA; en el portal se puede "
+                             f"elegir otro (DEDALO_MODELO o {modelo.DEFAULT_MODEL})")
     portal.add_argument("--ollama", type=model_option(modelo.check_local), default=modelo.OLLAMA,
                         help=f"Servidor de Ollama en este equipo ({modelo.OLLAMA})")
 

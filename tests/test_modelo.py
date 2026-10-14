@@ -115,6 +115,31 @@ class ModelTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(modelo.check_model(name), name)
 
+    def test_lists_the_local_models_that_can_answer(self):
+        tags = {"models": [
+            {"name": "qwen3:8b", "capabilities": ["completion", "tools"], "details": {"parameter_size": "8.2B"}},
+            {"name": "fsec-analyst:latest", "capabilities": ["completion"], "details": {"parameter_size": "8.0B"}},
+            {"name": "gpt-oss:120b-cloud", "capabilities": ["completion"], "details": {}},  # nube, por nombre
+            {"name": "alias-remoto:latest", "remote_host": "https://ollama.com:443", "details": {}},  # nube, por Ollama
+            {"name": "nomic-embed-text:latest", "capabilities": ["embedding"], "details": {}},  # no genera texto
+            {"name": "antiguo:7b", "details": {}},  # un Ollama viejo no dice capabilities: se ofrece
+        ]}
+        with answering(json.dumps(tags).encode()) as opened:
+            models = modelo.list_models("http://127.0.0.1:11434")
+        self.assertEqual(opened.call_args.args[0].full_url, "http://127.0.0.1:11434/api/tags")
+        self.assertEqual(models, [{"nombre": "antiguo:7b", "tamano": ""}, {"nombre": "fsec-analyst:latest", "tamano": "8.0B"},
+                                  {"nombre": "qwen3:8b", "tamano": "8.2B"}])
+
+    def test_listing_models_only_asks_this_machine_and_explains_failures(self):
+        with answering(b"{}") as opened, self.assertRaisesRegex(ValueError, "este equipo"):
+            modelo.list_models("http://10.0.0.5:11434")
+        opened.assert_not_called()
+        with patch.object(modelo._OPENER, "open", side_effect=urllib.error.URLError("refused")):
+            with self.assertRaisesRegex(ValueError, "Ollama"):
+                modelo.list_models()
+        with answering(b"no es json"), self.assertRaisesRegex(ValueError, "Ollama"):
+            modelo.list_models()
+
     def test_a_redirect_is_not_followed(self):
         # Lo que conteste en el puerto no puede llevar la petición a otra dirección (CONTRATOS 0.4).
         Redirecting.visited = []

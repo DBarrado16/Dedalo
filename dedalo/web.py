@@ -660,8 +660,21 @@ class PortalStore:
             self.pending.put(("captura", (job_id, binary, chrome)))
         return self.detail(job_id)
 
-    def analyze(self, job_id):
-        """Encola el análisis con IA de los hosts en alcance de una ejecución; solo lee la base."""
+    def models(self):
+        """Modelos descargados en el Ollama de este equipo y el que se propone; si Ollama no responde, por qué."""
+        try:
+            found, error = modelo.list_models(self.model_host), ""
+        except ValueError as exc:
+            found, error = [], str(exc)
+        return {"modelos": found, "predeterminado": self.model_option, "error": error}
+
+    def analyze(self, job_id, payload=None):
+        """Encola el análisis con IA de los hosts en alcance de una ejecución; solo lee la base.
+
+        El modelo puede llegar elegido desde el portal; si no, el de --modelo o DEDALO_MODELO.
+        """
+        model = payload.get("modelo", self.model_option) if isinstance(payload, dict) else self.model_option
+        modelo.check_model(model)
         with self.lock:
             meta = self._meta(job_id)
             if self.closing or meta["estado"] in ACTIVE:
@@ -670,8 +683,8 @@ class PortalStore:
                 status = auditoria.analysis_status(con, job_id)
                 if status and status["estado"] in ACTIVE:
                     raise Conflict("Ya hay un análisis de esta ejecución en marcha.")
-                analysis_id = auditoria.start_analysis(con, job_id, {"modelo": self.model_option, "servidor": self.model_host})
-            self.pending.put(("analisis", (job_id, analysis_id)))
+                analysis_id = auditoria.start_analysis(con, job_id, {"modelo": model, "servidor": self.model_host})
+            self.pending.put(("analisis", (job_id, analysis_id, model)))
         return self.detail(job_id)
 
     def stop_analysis(self, job_id):
@@ -683,10 +696,10 @@ class PortalStore:
                     raise Conflict("Esta ejecución no tiene un análisis en marcha.")
         return self.detail(job_id)
 
-    def _run_analysis(self, job_id, analysis_id):
+    def _run_analysis(self, job_id, analysis_id, model):
         """Nunca tumba el hilo de la cola: si falla la base, cierra el análisis en error si puede."""
         try:
-            self._analyse(job_id, analysis_id)
+            self._analyse(job_id, analysis_id, model)
         except Exception as exc:
             print(f"Error del portal: no se pudo completar el análisis de {job_id}: {exc}", file=sys.stderr)
             try:
@@ -697,7 +710,7 @@ class PortalStore:
                 # Al reabrir el portal, el análisis que quedó en cola o en curso se marca como interrumpido.
                 print(f"Error del portal: no se pudo cerrar el análisis de {job_id}: {again}", file=sys.stderr)
 
-    def _analyse(self, job_id, analysis_id):
+    def _analyse(self, job_id, analysis_id, model):
         # Sin el bloqueo del portal: solo lee lo que la importación observó y el alcance vigente.
         with closing(self.database()) as con:
             if not auditoria.begin_analysis(con, analysis_id):
@@ -706,7 +719,7 @@ class PortalStore:
             observed = auditoria.observed_hosts(con, job_id)
 
         def generate(prompt):
-            return modelo.generate(prompt, self.model_option, self.model_host, schema=prioridad.ESQUEMA)
+            return modelo.generate(prompt, model, self.model_host, schema=prioridad.ESQUEMA)
 
         def stopping():
             # Antes de cada host: se cierra el portal, el usuario pidió parar (stop_analysis)
@@ -1078,7 +1091,7 @@ class PortalHandler(BaseHTTPRequestHandler):
                         self.json(store.cancel(parts[2]))
                         return
                     if parts[3] == "analizar":
-                        self.json(store.analyze(parts[2]), 202)
+                        self.json(store.analyze(parts[2], payload), 202)
                         return
                     if parts[3] == "detener-analisis":
                         self.json(store.stop_analysis(parts[2]))
@@ -1099,6 +1112,9 @@ class PortalHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/audits":
                 self.json(store.audits())
+                return
+            if path == "/api/modelos":
+                self.json(store.models())
                 return
             if len(parts) >= 3 and parts[:2] == ["api", "jobs"]:
                 job_id = parts[2]

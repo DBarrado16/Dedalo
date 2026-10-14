@@ -249,10 +249,12 @@ function render() {
   $("priority-tools").hidden = activeTab !== "priority";
   document.querySelector(".tab-actions").hidden = activeTab === "logs" || activeTab === "priority";
   const analysis = current.analisis, analysing = activeStates.has(analysis?.estado), progress = analysis?.progreso;
-  $("analyze-job").disabled = mutating || running || analysing;
+  const chosenModel = $("model-select").value;
+  $("analyze-job").disabled = mutating || running || analysing || !chosenModel;
   $("analyze-job").textContent = analysing ? (progress ? `Analizando ${progress.hechos} de ${progress.total}…` : "Analizando…")
     : analysis ? "Volver a analizar" : "Analizar con IA";
-  $("analyze-job").title = running ? "Espera a que termine la captura" : "";
+  $("analyze-job").title = running ? "Espera a que termine la captura" : !chosenModel ? "No hay ningún modelo de Ollama para elegir" : "";
+  $("model-select").disabled = mutating || !chosenModel;
   $("stop-analysis").hidden = !analysing;
   $("stop-analysis").disabled = mutating || analysis?.estado === "deteniendo";
   $("stop-analysis").textContent = analysis?.estado === "en_cola" ? "Cancelar análisis" : analysis?.estado === "deteniendo" ? "Parada solicitada…" : "Detener tras este host";
@@ -299,6 +301,33 @@ function copyForOneNote(gi, button) {
     .catch(error => notice("No se pudo copiar al portapapeles: " + error.message))
     .finally(() => { button.disabled = false; button.textContent = "Copiar para OneNote"; });
 }
+// Modelos descargados en el Ollama de este equipo (/api/modelos); se piden al arrancar y al abrir Priorización.
+let models = null;
+function storedModel() { try { return localStorage.getItem("dedalo-modelo") || ""; } catch { return ""; } }
+async function loadModels() {
+  try { models = await request("/api/modelos"); }
+  catch (error) { models = {modelos: [], predeterminado: "", error: error.message}; }
+  renderModels();
+  if (current) render();
+}
+function renderModels() {
+  const select = $("model-select"), list = models.modelos, names = list.map(model => model.nombre);
+  // El último elegido en este navegador; si no, el predeterminado; si no está descargado, el primero.
+  const chosen = [select.value, storedModel(), models.predeterminado].find(name => names.includes(name)) || names[0] || "";
+  select.innerHTML = list.map(model => `<option value="${escapeHtml(model.nombre)}">${escapeHtml(model.nombre)}${model.tamano ? " · " + escapeHtml(model.tamano) : ""}</option>`).join("");
+  select.value = chosen;
+  let hint = "";
+  if (models.error) hint = "Ollama no responde en este equipo: arráncalo para analizar con IA. " + models.error;
+  else if (!list.length) hint = "Ollama no tiene modelos descargados. Descarga uno (por ejemplo, «ollama pull qwen3:8b») y vuelve a abrir esta pestaña.";
+  else if (models.predeterminado && !names.includes(models.predeterminado) && !names.includes(storedModel()))
+    hint = `El modelo predeterminado (${models.predeterminado}) no está descargado; se propone ${chosen}.`;
+  $("model-hint").textContent = hint;
+  $("model-hint").hidden = !hint;
+}
+$("model-select").addEventListener("change", () => {
+  try { localStorage.setItem("dedalo-modelo", $("model-select").value); } catch {}
+  renderModels(); render();
+});
 function renderPriority() {
   // Lo que escribe el modelo puede venir influido por el equipo analizado: todo pasa por escapeHtml.
   const analysis = current.analisis, items = current.prioridades || [];
@@ -541,18 +570,18 @@ $("upload-form").addEventListener("submit", async event => {
 });
 $("jobs").addEventListener("click", event => { const button = event.target.closest("[data-id]"); if (button) selectJob(button.dataset.id).catch(error => notice(error.message)); });
 for (const id of ["range-filter","subnet-filter","status-filter","service-filter","hide-empty","search"]) $(id).addEventListener(id === "search" ? "input" : "change", () => { shown=60; updateFilters(); renderResults(); });
-document.querySelectorAll("[data-tab]").forEach(button => button.addEventListener("click", () => { activeTab=button.dataset.tab; shown=60; render(); if (activeTab === "logs") loadLogs().catch(error=>notice(error.message)); }));
+document.querySelectorAll("[data-tab]").forEach(button => button.addEventListener("click", () => { activeTab=button.dataset.tab; shown=60; render(); if (activeTab === "logs") loadLogs().catch(error=>notice(error.message)); if (activeTab === "priority") loadModels(); }));
 $("more").addEventListener("click", () => { shown += 60; renderResults(); });
-async function action(type) {
+async function action(type, body = {}) {
   if (mutating) return;
   const id = currentId;
   mutating = true; render(); notice("");
-  try { const result = await request("/api/jobs/" + id + "/" + type, {}); if (id === currentId) { current=result; if (type === "start") activeTab="gallery"; render(); } await poll(); }
+  try { const result = await request("/api/jobs/" + id + "/" + type, body); if (id === currentId) { current=result; if (type === "start") activeTab="gallery"; render(); } await poll(); }
   catch (error) { notice(error.message); }
   finally { mutating=false; render(); }
 }
 $("start-job").addEventListener("click", () => action("start"));
-$("analyze-job").addEventListener("click", () => action("analizar"));
+$("analyze-job").addEventListener("click", () => action("analizar", {modelo: $("model-select").value}));
 $("stop-analysis").addEventListener("click", () => action("detener-analisis"));
 $("export-hosts").addEventListener("click", () => exportHosts(false));
 $("export-web").addEventListener("click", () => exportHosts(true));
@@ -621,6 +650,7 @@ async function boot() {
     $("engine-dot").classList.toggle("error", !engine.ready);
     if (!engine.ready) notice(engine.error);
     showMigrationFailures(bootstrap.migration_failures || []);
+    loadModels();
     await poll();
   } catch (error) { notice("No se pudo conectar: " + error.message); }
   setInterval(poll, 2000);

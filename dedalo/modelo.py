@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -15,8 +16,10 @@ import urllib.request
 from . import targets
 
 OLLAMA = "http://127.0.0.1:11434"
-# Modelo pequeño por defecto, que corra en equipos modestos; el portal lo cambia con --modelo.
+# Modelo pequeño por defecto, que corra en equipos modestos; se cambia con --modelo, con
+# DEDALO_MODELO o eligiendo otro en el portal.
 DEFAULT_MODEL = "llama3.2:3b"
+_MODEL_NAME = re.compile(r"[\w.:/-]{1,200}")
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -39,16 +42,47 @@ def check_local(host: str) -> str:
 
 
 def check_model(name: str) -> str:
-    """Devuelve el nombre si el modelo corre en este equipo; si no, ValueError.
+    """Devuelve el nombre si es el de un modelo que corre en este equipo; si no, ValueError.
 
     Ollama atiende los modelos de etiqueta «cloud» o «…-cloud» (gpt-oss:120b-cloud) desde el
-    mismo servidor local, pero manda la pregunta a su nube.
+    mismo servidor local, pero manda la pregunta a su nube. El nombre puede llegar del
+    navegador: solo se admite la forma de los de Ollama (como huggingface.co/org/modelo:etiqueta).
     """
-    tag = name.rpartition(":")[2].lower() if ":" in name else ""
-    if tag == "cloud" or tag.endswith("-cloud"):
+    if not isinstance(name, str) or not _MODEL_NAME.fullmatch(name):
+        raise ValueError(f"Nombre de modelo no válido: {str(name)[:60]!r}")
+    if _cloud(name):
         raise ValueError(f"El modelo «{name}» corre en la nube de Ollama y los datos del cliente saldrían "
                          "del equipo: usa un modelo descargado.")
     return name
+
+
+def _cloud(name: str) -> bool:
+    tag = name.rpartition(":")[2].lower() if ":" in name else ""
+    return tag == "cloud" or tag.endswith("-cloud")
+
+
+def list_models(host: str = OLLAMA, timeout: int = 5) -> list[dict]:
+    """Modelos descargados en el Ollama de este equipo que pueden contestar, por nombre y con su tamaño.
+
+    Quedan fuera los de la nube (por su etiqueta o porque Ollama los marca como remotos) y los
+    que no generan texto (solo embeddings). Si Ollama no responde, ValueError.
+    """
+    check_local(host)
+    try:
+        with _OPENER.open(urllib.request.Request(host.rstrip("/") + "/api/tags"), timeout=timeout) as response:
+            entries = json.loads(response.read())["models"]
+    except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as exc:
+        raise ValueError(f"No se pudo hablar con Ollama en {host}: {exc}. ¿Está arrancado?") from exc
+    models = []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            continue
+        remote = any(key.startswith("remote") for key in entry)
+        # Un Ollama antiguo no dice qué sabe hacer cada modelo: entonces se ofrece.
+        answers = "completion" in entry.get("capabilities", ["completion"])
+        if not remote and answers and not _cloud(entry["name"]):
+            models.append({"nombre": entry["name"], "tamano": (entry.get("details") or {}).get("parameter_size", "")})
+    return sorted(models, key=lambda model: model["nombre"].lower())
 
 
 def generate(prompt: str, model: str, host: str = OLLAMA, timeout: int = 120, schema: dict | None = None) -> str:

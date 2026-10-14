@@ -269,6 +269,44 @@ class PortalTests(unittest.TestCase):
             self.assertIsNone(self.store.detail(job["id"])["analisis"])
         model.assert_not_called()
 
+    def test_the_portal_lists_the_local_models_and_the_default(self):
+        models = [{"nombre": "fsec-analyst:latest", "tamano": "8.0B"}]
+        with patch("dedalo.web.modelo.list_models", return_value=models) as listed:
+            status, content = self.request("/api/modelos")
+        self.assertEqual((status, json.loads(content)), (200, {"modelos": models, "predeterminado": web.modelo.DEFAULT_MODEL, "error": ""}))
+        listed.assert_called_once_with(web.modelo.OLLAMA)
+
+    def test_the_model_list_explains_when_ollama_does_not_answer(self):
+        with patch("dedalo.web.modelo.list_models", side_effect=ValueError("No se pudo hablar con Ollama")):
+            status, content = self.request("/api/modelos")
+        self.assertEqual((status, json.loads(content)["modelos"], json.loads(content)["error"]),
+                         (200, [], "No se pudo hablar con Ollama"))
+
+    def test_the_analysis_uses_the_model_chosen_in_the_portal(self):
+        job, names = self.create(), []
+
+        def model(prompt, name, host, timeout=120, schema=None):
+            names.append(name)
+            return json.dumps({"rol": "R", "nivel": "media", "motivo": "m", "siguiente": "s"})
+
+        with patch("dedalo.web.modelo.generate", side_effect=model):
+            status, content = self.request("/api/jobs/" + job["id"] + "/analizar", {"modelo": "qwen3:8b"})
+            self.assertEqual(status, 202, content)
+            self.settled(job["id"])
+        self.assertEqual(set(names), {"qwen3:8b"})
+        with closing(self.store.database()) as con:
+            options = json.loads(con.execute("SELECT opciones FROM ejecucion WHERE tipo = 'analisis'").fetchone()[0])
+        self.assertEqual(options["modelo"], "qwen3:8b")  # queda anotado con qué modelo se analizó
+
+    def test_a_model_name_that_is_not_a_local_model_is_refused(self):
+        job = self.create()
+        with patch("dedalo.web.modelo.generate") as model:
+            for chosen in ("gpt-oss:120b-cloud", "", 7, "x" * 300, "modelo con espacios"):
+                with self.subTest(chosen=chosen):
+                    self.assertEqual(self.request("/api/jobs/" + job["id"] + "/analizar", {"modelo": chosen})[0], 400)
+            self.assertIsNone(self.store.detail(job["id"])["analisis"])
+        model.assert_not_called()
+
     def test_progress_counts_the_hosts_already_answered(self):
         job, release = self.create(), threading.Event()
         model = model_waiting_at(2, release)
@@ -990,10 +1028,13 @@ class PortalTests(unittest.TestCase):
 
     def test_page_has_the_prioritisation_tab(self):
         page, script = self.request("/")[1], self.request("/app.js")[1]
-        for needle in (b'data-tab="priority"', b'id="analyze-job"', b'id="stop-analysis"', b'id="priority-tools"'):
+        for needle in (b'data-tab="priority"', b'id="analyze-job"', b'id="stop-analysis"', b'id="priority-tools"',
+                       b'id="model-select"', b'id="model-hint"'):
             self.assertIn(needle, page)
-        self.assertIn(b'action("analizar")', script)
+        self.assertIn(b'action("analizar", {modelo: $("model-select").value})', script)  # se analiza con el modelo elegido
         self.assertIn(b'action("detener-analisis")', script)
+        self.assertIn(b'request("/api/modelos")', script)
+        self.assertIn(b"escapeHtml(model.nombre)", script)  # los nombres vienen de Ollama: nunca entran como HTML
         self.assertIn(b"escapeHtml(item.siguiente)", script)  # la respuesta del modelo nunca entra como HTML
 
     def store_options(self, job_id, value):
@@ -1530,8 +1571,22 @@ class PortTests(unittest.TestCase):
 
 class ModelOptionTests(unittest.TestCase):
     def test_the_portal_uses_a_small_local_model_unless_told_otherwise(self):
-        args = cli.build_parser().parse_args(["web"])
+        with patch.dict(os.environ):
+            os.environ.pop("DEDALO_MODELO", None)  # el equipo que pasa los tests puede tenerla puesta
+            args = cli.build_parser().parse_args(["web"])
         self.assertEqual((args.modelo, args.ollama), (web.modelo.DEFAULT_MODEL, web.modelo.OLLAMA))
+
+    def test_the_default_model_can_come_from_the_environment(self):
+        with patch.dict(os.environ, {"DEDALO_MODELO": "fsec-analyst:latest"}):
+            self.assertEqual(cli.build_parser().parse_args(["web"]).modelo, "fsec-analyst:latest")
+            self.assertEqual(cli.build_parser().parse_args(["web", "--modelo", "qwen3:8b"]).modelo, "qwen3:8b")  # la opción manda
+
+    def test_a_cloud_model_in_the_environment_is_refused(self):
+        errors = io.StringIO()
+        with patch.dict(os.environ, {"DEDALO_MODELO": "gpt-oss:120b-cloud"}), redirect_stderr(errors), \
+                self.assertRaises(SystemExit):
+            cli.build_parser().parse_args(["web"])
+        self.assertIn("nube", errors.getvalue())
 
     def test_the_model_server_must_be_on_this_machine(self):
         errors = io.StringIO()
