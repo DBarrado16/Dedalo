@@ -209,6 +209,47 @@ def start_capture(con: sqlite3.Connection, import_id: str, options: dict, groups
     return capture_id
 
 
+def analysis_of(con: sqlite3.Connection, import_id: str) -> str | None:
+    """El análisis con IA de una importación, si se pidió alguno."""
+    row = con.execute("SELECT id FROM ejecucion WHERE origen_id = ? AND tipo = 'analisis' ORDER BY creada LIMIT 1",
+                      (import_id,)).fetchone()
+    return row["id"] if row else None
+
+
+def start_analysis(con: sqlite3.Connection, import_id: str, options: dict, created: str | None = None) -> str:
+    """Crea en cola el análisis con IA de una importación; el anterior, si lo había, se sustituye."""
+    source = con.execute("SELECT auditoria_id, nombre FROM ejecucion WHERE id = ? AND tipo = 'importacion'",
+                         (import_id,)).fetchone()
+    if source is None:
+        raise FileNotFoundError("Importación no encontrada")
+    analysis_id = uuid.uuid4().hex
+    with con:
+        con.execute("DELETE FROM ejecucion WHERE origen_id = ? AND tipo = 'analisis'", (import_id,))
+        con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada) "
+                    "VALUES (?, ?, 'analisis', ?, ?, 'en_cola', ?, ?)",
+                    (analysis_id, source["auditoria_id"], import_id, source["nombre"],
+                     json.dumps(options, ensure_ascii=False), created or now()))
+    return analysis_id
+
+
+def save_priorities(con: sqlite3.Connection, analysis_id: str, rows: list[dict]) -> None:
+    """Guarda lo que el análisis dijo de cada activo; una IP que no es de su ficha se ignora."""
+    with con:
+        for row in rows:
+            con.execute("INSERT INTO prioridad (ejecucion_id, activo_id, orden, rol, nivel, motivo, siguiente) "
+                        "SELECT e.id, a.id, ?, ?, ?, ?, ? FROM ejecucion e "
+                        "JOIN activo a ON a.auditoria_id = e.auditoria_id AND a.ip = ? WHERE e.id = ?",
+                        (row["orden"], row["rol"], row["nivel"], row["motivo"], row["siguiente"], row["ip"], analysis_id))
+
+
+def priorities(con: sqlite3.Connection, import_id: str) -> list[dict]:
+    """Lo que dijo el análisis de una importación, en el orden en que se muestra."""
+    return [dict(row) for row in con.execute(
+        "SELECT a.ip, p.rol, p.nivel, p.motivo, p.siguiente FROM prioridad p "
+        "JOIN ejecucion e ON e.id = p.ejecucion_id JOIN activo a ON a.id = p.activo_id "
+        "WHERE e.origen_id = ? AND e.tipo = 'analisis' ORDER BY p.orden", (import_id,))]
+
+
 def set_state(con: sqlite3.Connection, execution_id: str, state: str, error: str = "") -> None:
     """Cambia el estado de una ejecución y anota cuándo empezó y terminó."""
     stamp = now()

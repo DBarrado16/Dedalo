@@ -73,6 +73,39 @@ class ImportTests(unittest.TestCase):
             self.load("lunes", hosts=hosts)  # misma ejecución dos veces
         self.assertEqual((self.count("ejecucion"), self.count("observacion")), (1, 9))
 
+    def priority(self, ip, order, level="alta", role="Rol"):
+        return {"ip": ip, "orden": order, "rol": role, "nivel": level, "motivo": "Por sus servicios.", "siguiente": "Revisar."}
+
+    def test_analysis_keeps_its_priorities_in_order(self):
+        self.load("lunes")
+        self.assertEqual((auditoria.analysis_of(self.con, "lunes"), auditoria.priorities(self.con, "lunes")), (None, []))
+        analysis = auditoria.start_analysis(self.con, "lunes", {"modelo": "llama3.2:3b"})
+        row = self.con.execute("SELECT tipo, origen_id, estado, opciones FROM ejecucion WHERE id = ?", (analysis,)).fetchone()
+        self.assertEqual(tuple(row[:3]), ("analisis", "lunes", "en_cola"))
+        self.assertIn("llama3.2:3b", row["opciones"])
+        self.assertEqual(auditoria.analysis_of(self.con, "lunes"), analysis)
+        auditoria.save_priorities(self.con, analysis, [
+            self.priority("192.0.2.20", 1, "baja", "Estación"), self.priority("192.0.2.10", 0, "alta", "Servidor"),
+            self.priority("203.0.113.9", 2)])  # una IP que no es de la ficha no se guarda
+        self.assertEqual([(p["ip"], p["rol"], p["nivel"]) for p in auditoria.priorities(self.con, "lunes")],
+                         [("192.0.2.10", "Servidor", "alta"), ("192.0.2.20", "Estación", "baja")])
+        self.assertEqual(set(auditoria.priorities(self.con, "lunes")[0]), {"ip", "rol", "nivel", "motivo", "siguiente"})
+
+    def test_analysing_again_replaces_the_previous_analysis(self):
+        self.load("lunes")
+        first = auditoria.start_analysis(self.con, "lunes", {"modelo": "m"})
+        auditoria.save_priorities(self.con, first, [self.priority("192.0.2.10", 0, role="Antes")])
+        second = auditoria.start_analysis(self.con, "lunes", {"modelo": "m"})
+        self.assertNotEqual(first, second)
+        self.assertEqual((self.count("prioridad"), auditoria.priorities(self.con, "lunes")), (0, []))
+        auditoria.save_priorities(self.con, second, [self.priority("192.0.2.10", 0, role="Después")])
+        self.assertEqual([p["rol"] for p in auditoria.priorities(self.con, "lunes")], ["Después"])
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM ejecucion WHERE tipo = 'analisis'").fetchone()[0], 1)
+
+    def test_only_imports_can_be_analysed(self):
+        with self.assertRaises(FileNotFoundError):
+            auditoria.start_analysis(self.con, "no-existe", {})
+
     def test_default_audit_is_created_once(self):
         self.assertEqual(auditoria.default_audit(self.con), self.audit)
         with closing(db.connect(self.root)) as other:
