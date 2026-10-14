@@ -12,14 +12,21 @@ DEFAULT_MODEL = "llama3.2:3b"
 
 
 def generate(prompt: str, model: str, host: str = OLLAMA, timeout: int = 120) -> str:
-    """Pide al modelo una respuesta entera (sin streaming) y devuelve su texto."""
-    data = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
-    request = urllib.request.Request(host.rstrip("/") + "/api/generate", data=data,
+    """Pide al modelo una respuesta entera (sin streaming) y devuelve su texto.
+
+    La respuesta se pide en JSON y sin razonamiento en voz alta: un modelo de razonamiento
+    tardaba 142 s por pregunta pensando antes de contestar, y así tarda 35 s.
+    """
+    data = json.dumps({"model": model, "prompt": prompt, "stream": False, "format": "json", "think": False})
+    request = urllib.request.Request(host.rstrip("/") + "/api/generate", data=data.encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             text = json.loads(response.read()).get("response")
     except (OSError, ValueError, AttributeError) as exc:  # URLError es OSError; JSON roto es ValueError
+        if isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
+            raise ValueError(f"El modelo «{model}» tardó más de {timeout} s en responder. "
+                             "Prueba con un modelo más pequeño con --modelo.") from exc
         raise ValueError(f"No se pudo usar el modelo «{model}» en {host}: {exc}. "
                          "¿Está arrancado Ollama y descargado ese modelo?") from exc
     if not isinstance(text, str):

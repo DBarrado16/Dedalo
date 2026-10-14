@@ -22,12 +22,19 @@ class ModelTests(unittest.TestCase):
             self.assertEqual(modelo.generate("¿qué es?", "llama3.2:3b", "http://127.0.0.1:11434/"), "hola")
         request = urlopen.call_args.args[0]
         self.assertEqual(request.full_url, "http://127.0.0.1:11434/api/generate")
-        self.assertEqual(json.loads(request.data), {"model": "llama3.2:3b", "prompt": "¿qué es?", "stream": False})
+        # JSON obligado y sin razonamiento en voz alta: con un modelo de razonamiento, 35 s en vez de 142 s por host.
+        self.assertEqual(json.loads(request.data), {"model": "llama3.2:3b", "prompt": "¿qué es?", "stream": False,
+                                                    "format": "json", "think": False})
 
     def test_explains_when_the_model_is_unreachable(self):
         with patch("dedalo.modelo.urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
             with self.assertRaisesRegex(ValueError, "Ollama"):
                 modelo.generate("p", "llama3.2:3b")
+
+    def test_a_slow_model_says_it_took_too_long(self):
+        with patch("dedalo.modelo.urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+            with self.assertRaisesRegex(ValueError, "tardó más de 120 s.*--modelo"):
+                modelo.generate("p", "fsec-analyst:latest")
 
     def test_an_answer_without_text_is_an_error(self):
         for body in (b"no es json", json.dumps({"error": "model not found"}).encode()):
