@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Laboratorio sintético para la demo de la priorización con IA: datos inventados, ninguna red real. -->
+<nmaprun>
+  <host>
+    <status state="up"/><address addr="10.30.1.10" addrtype="ipv4"/>
+    <hostnames><hostname name="dc01.laboratorio.local"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="88"><state state="open"/><service name="kerberos-sec" product="Microsoft Windows Kerberos"/></port>
+      <port protocol="tcp" portid="389"><state state="open"/><service name="ldap" product="Microsoft Windows Active Directory LDAP"/></port>
+      <port protocol="tcp" portid="445"><state state="open"/><service name="microsoft-ds"/></port>
+    </ports>
+  </host>
+  <host>
+    <status state="up"/><address addr="10.30.1.21" addrtype="ipv4"/>
+    <hostnames><hostname name="panel.laboratorio.local"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="8443"><state state="open"/><service name="http" tunnel="ssl" product="lighttpd"/>
+        <script id="http-title" output="Panel de administración"/></port>
+    </ports>
+  </host>
+  <host>
+    <status state="up"/><address addr="10.30.2.20" addrtype="ipv4"/>
+    <hostnames><hostname name="ficheros.laboratorio.local"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="445"><state state="open"/><service name="microsoft-ds" product="Samba smbd"/></port>
+      <port protocol="tcp" portid="2049"><state state="open"/><service name="nfs"/></port>
+    </ports>
+  </host>
+  <host>
+    <status state="up"/><address addr="10.30.2.44" addrtype="ipv4"/>
+    <hostnames><hostname name="pc-recepcion.laboratorio.local"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="3389"><state state="open"/><service name="ms-wbt-server" product="Microsoft Terminal Services"/></port>
+    </ports>
+  </host>
+</nmaprun>

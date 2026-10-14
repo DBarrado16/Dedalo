@@ -2,7 +2,8 @@ import json
 import re
 import unittest
 
-from dedalo import prioridad
+from dedalo import inventory, parser, prioridad
+from tests.test_dedalo import ROOT
 
 
 def service(port, name, product=""):
@@ -77,6 +78,15 @@ class AnalysisTests(unittest.TestCase):
             raise ValueError("No se pudo usar el modelo")
         with self.assertRaisesRegex(ValueError, "modelo"):
             prioridad.analizar([DC], unavailable)
+
+    def test_the_lab_fixture_has_the_demo_hosts_in_the_demo_order(self):
+        hosts = parser.merge([parser.parse_file(ROOT / "ejemplos" / "laboratorio.xml")])
+        assets = inventory.build(hosts, ["10.30.0.0/16"])["activos"]
+        self.assertEqual({a["ip"]: sorted(s["puerto"] for s in a["servicios"]) for a in assets},
+                         {"10.30.1.10": [88, 389, 445], "10.30.1.21": [8443], "10.30.2.20": [445, 2049], "10.30.2.44": [3389]})
+        rows = prioridad.analizar(assets, by_ip({"10.30.1.10": answer("alta"), "10.30.1.21": answer("alta"),
+                                                 "10.30.2.20": answer("media"), "10.30.2.44": answer("baja")}))
+        self.assertEqual([r["ip"] for r in rows], ["10.30.1.10", "10.30.1.21", "10.30.2.20", "10.30.2.44"])
 
     def test_no_hosts_means_no_calls(self):
         def never(prompt):
