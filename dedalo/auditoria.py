@@ -232,6 +232,21 @@ def start_analysis(con: sqlite3.Connection, import_id: str, options: dict, creat
     return analysis_id
 
 
+def analysis_status(con: sqlite3.Connection, import_id: str) -> dict | None:
+    """Estado y error del análisis de una importación, o None si no se pidió ninguno."""
+    row = con.execute("SELECT estado, error FROM ejecucion WHERE origen_id = ? AND tipo = 'analisis' ORDER BY creada LIMIT 1",
+                      (import_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def close_interrupted_analyses(con: sqlite3.Connection) -> None:
+    """Al arrancar, un análisis que seguía en cola o en curso se quedó a medias al cerrarse el portal."""
+    with con:
+        con.execute("UPDATE ejecucion SET estado = 'interrumpida', terminada = ?, "
+                    "error = 'El portal se cerró antes de terminar el análisis.' "
+                    "WHERE tipo = 'analisis' AND estado IN ('en_cola', 'en_curso')", (now(),))
+
+
 def save_priorities(con: sqlite3.Connection, analysis_id: str, rows: list[dict]) -> None:
     """Guarda lo que el análisis dijo de cada activo; una IP que no es de su ficha se ignora."""
     with con:

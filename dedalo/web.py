@@ -29,7 +29,7 @@ import webbrowser
 from xml.etree.ElementTree import ParseError
 import zipfile
 
-from . import auditoria, cli, db, gowitness, inventory, parser, report, targets
+from . import auditoria, cli, db, gowitness, inventory, modelo, parser, prioridad, report, targets
 
 STATIC = Path(__file__).parent / "static"
 STATIC_FILES = {
@@ -44,6 +44,10 @@ ACTIVE = {"en_cola", "en_curso", "deteniendo"}
 
 class Conflict(ValueError):
     pass
+
+
+class _Closing(Exception):
+    """El portal se está cerrando: el análisis en curso para entre un host y el siguiente."""
 
 
 def now():
@@ -96,10 +100,11 @@ def options_from(raw):
 
 
 class PortalStore:
-    def __init__(self, root, binary=None, chrome=None):
+    def __init__(self, root, binary=None, chrome=None, model=modelo.DEFAULT_MODEL, ollama=modelo.OLLAMA):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.binary_option, self.chrome_option = binary, chrome
+        self.model_option, self.model_host = model, ollama
         self.lock = threading.RLock()
         self.imports = threading.Lock()
         self.pending = queue.Queue()
@@ -140,6 +145,8 @@ class PortalStore:
             self._finish_deletes()
             self._migrate_folders()
             self._load()
+            with closing(self.database()) as con:
+                auditoria.close_interrupted_analyses(con)
         except Exception:
             self.file_lock.close()
             raise
@@ -628,6 +635,9 @@ class PortalStore:
                 "capturas": sum(bool(t["imagen"]) for t in targets), "objetivos": targets, "error": group.get("error", ""),
             })
         response["capturas"] = sum(g["capturas"] for g in response["grupos"])
+        with closing(self.database()) as con:
+            response["analisis"] = auditoria.analysis_status(con, job_id)
+            response["prioridades"] = auditoria.priorities(con, job_id)
         return response
 
     def start(self, job_id):
@@ -645,8 +655,53 @@ class PortalStore:
             with closing(self.database()) as con:
                 auditoria.start_capture(con, job_id, meta["opciones"], meta["grupos"])
             meta.update(estado="en_cola", error="")
-            self.pending.put((job_id, binary, chrome))
+            self.pending.put(("captura", (job_id, binary, chrome)))
         return self.detail(job_id)
+
+    def analyze(self, job_id):
+        """Encola el análisis con IA de los hosts en alcance de una ejecución; solo lee la base."""
+        with self.lock:
+            meta = self._meta(job_id)
+            if self.closing or meta["estado"] in ACTIVE:
+                raise Conflict("Espera a que termine la captura antes de analizar con IA.")
+            with closing(self.database()) as con:
+                status = auditoria.analysis_status(con, job_id)
+                if status and status["estado"] in ("en_cola", "en_curso"):
+                    raise Conflict("Ya hay un análisis de esta ejecución en marcha.")
+                auditoria.start_analysis(con, job_id, {"modelo": self.model_option, "servidor": self.model_host})
+            self.pending.put(("analisis", job_id))
+        return self.detail(job_id)
+
+    def _run_analysis(self, job_id):
+        with closing(self.database()) as con:
+            analysis_id = auditoria.analysis_of(con, job_id)
+            if analysis_id is None:
+                return  # se borró la ejecución mientras esperaba en la cola
+            auditoria.set_state(con, analysis_id, "en_curso")
+
+        def generate(prompt):
+            if self.closing:
+                raise _Closing()
+            return modelo.generate(prompt, self.model_option, self.model_host)
+
+        try:
+            # Solo lo que está en alcance: el siguiente paso sugerido no debe proponerse fuera de él.
+            hosts = [a for a in self.inventory(job_id)["activos"] if a["alcance"] == targets.Scope.IN]
+            rows = prioridad.analizar(hosts, generate)
+            state, error = "completa", ""
+        except _Closing:
+            rows, state, error = [], "interrumpida", "El portal se cerró antes de terminar el análisis."
+        except Exception as exc:
+            print(f"Error del portal: no se pudo analizar {job_id} con IA: {exc}", file=sys.stderr)
+            rows, state = [], "error"
+            error = str(exc) if isinstance(exc, ValueError) else "No se pudo completar el análisis. Consulta la terminal del portal."
+        try:
+            with closing(self.database()) as con:
+                auditoria.save_priorities(con, analysis_id, rows)
+                auditoria.set_state(con, analysis_id, state, error)
+        except Exception as exc:
+            # Al reabrir el portal, el análisis que quedó en curso se marca como interrumpido.
+            print(f"Error del portal: no se pudo guardar el análisis de {job_id}: {exc}", file=sys.stderr)
 
     def cancel(self, job_id):
         with self.lock:
@@ -681,7 +736,11 @@ class PortalStore:
             item = self.pending.get()
             if item is None:
                 return
-            job_id, binary, chrome = item
+            kind, payload = item
+            if kind == "analisis":
+                self._run_analysis(payload)
+                continue
+            job_id, binary, chrome = payload
             with self.lock:
                 meta = self.jobs.get(job_id)
                 if meta is None or meta["estado"] != "en_cola":
@@ -976,6 +1035,9 @@ class PortalHandler(BaseHTTPRequestHandler):
                     if parts[3] == "cancel":
                         self.json(store.cancel(parts[2]))
                         return
+                    if parts[3] == "analizar":
+                        self.json(store.analyze(parts[2]), 202)
+                        return
                     if parts[3] == "delete":
                         self.json(store.delete(parts[2]))
                         return
@@ -1058,7 +1120,7 @@ def ensure_gowitness(explicit):
 
 def serve_portal(args):
     ensure_gowitness(args.gowitness)
-    store = PortalStore(args.datos, args.gowitness, args.chrome)
+    store = PortalStore(args.datos, args.gowitness, args.chrome, model=args.modelo, ollama=args.ollama)
     try:
         server = PortalServer(("127.0.0.1", args.puerto), store)
     except Exception as exc:

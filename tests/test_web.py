@@ -223,6 +223,88 @@ class PortalTests(unittest.TestCase):
         self.reopen()
         self.assertTrue((outside / "dato.txt").is_file())
 
+    def analyse(self, job_id, model):
+        """Lanza el análisis con un modelo falso y espera a que termine."""
+        with patch("dedalo.web.modelo.generate", side_effect=model):
+            status, content = self.request("/api/jobs/" + job_id + "/analizar", {})
+            self.assertEqual(status, 202, content)
+            deadline = time.monotonic() + 10
+            while self.store.detail(job_id)["analisis"]["estado"] in ("en_cola", "en_curso") and time.monotonic() < deadline:
+                time.sleep(.02)
+        return self.store.detail(job_id)
+
+    def test_analysis_prioritises_the_hosts_in_scope_with_the_local_model(self):
+        job = self.create()
+        self.assertIsNone(self.store.detail(job["id"])["analisis"])
+        calls = []
+
+        def model(prompt, name, host, timeout=120):
+            calls.append((prompt, name, host))
+            level = "alta" if '"10.10.5.10"' in prompt else "media"
+            return json.dumps({"rol": "Servidor web", "nivel": level, "motivo": "Por sus puertos.", "siguiente": "Revisar."})
+
+        detail = self.analyse(job["id"], model)
+        self.assertEqual((detail["analisis"]["estado"], detail["analisis"]["error"]), ("completa", ""))
+        self.assertEqual([(p["ip"], p["nivel"]) for p in detail["prioridades"]], [("10.10.5.10", "alta"), ("10.10.6.20", "media")])
+        self.assertFalse(any("192.168.1.8" in prompt for prompt, _, _ in calls))  # fuera de alcance: no se analiza
+        self.assertEqual({(name, host) for _, name, host in calls}, {(web.modelo.DEFAULT_MODEL, web.modelo.OLLAMA)})
+
+    def test_analysis_without_the_model_ends_in_error_and_says_why(self):
+        job = self.create()
+        with redirect_stderr(io.StringIO()):
+            detail = self.analyse(job["id"], ValueError("No se pudo usar el modelo. ¿Está arrancado Ollama?"))
+        self.assertEqual(detail["analisis"]["estado"], "error")
+        self.assertIn("Ollama", detail["analisis"]["error"])
+        self.assertEqual(detail["prioridades"], [])
+        self.assertEqual(self.request("/api/jobs")[0], 200)  # el portal sigue
+
+    def test_a_run_being_captured_is_not_analysed(self):
+        job = self.create()
+        self.store.jobs[job["id"]]["estado"] = "en_curso"
+        self.assertEqual(self.request("/api/jobs/" + job["id"] + "/analizar", {})[0], 409)
+        self.assertIsNone(self.store.detail(job["id"])["analisis"])
+        self.store.jobs[job["id"]]["estado"] = "preparada"
+
+    def pending_analysis(self, job_id, state="en_cola"):
+        """Un análisis que quedó en la base sin terminar, sin pasar por la cola."""
+        with closing(self.store.database()) as con:
+            analysis = auditoria.start_analysis(con, job_id, {"modelo": "m"})
+            auditoria.set_state(con, analysis, state)
+
+    def test_a_second_analysis_waits_for_the_first(self):
+        job = self.create()
+        self.pending_analysis(job["id"])
+        self.assertEqual(self.request("/api/jobs/" + job["id"] + "/analizar", {})[0], 409)
+        self.assertEqual(self.store.detail(job["id"])["analisis"]["estado"], "en_cola")
+
+    def test_an_analysis_cut_by_closing_the_portal_is_marked_interrupted(self):
+        job = self.create()
+        self.pending_analysis(job["id"], "en_curso")
+        self.reopen()
+        analysis = self.store.detail(job["id"])["analisis"]
+        self.assertEqual(analysis["estado"], "interrumpida")
+        self.assertTrue(analysis["error"])
+
+    def test_closing_the_portal_stops_the_analysis_between_hosts(self):
+        job = self.create()
+        calls = []
+
+        def model(prompt, name, host, timeout=120):
+            calls.append(prompt)
+            self.store.closing = True  # el usuario cierra el portal mientras el modelo contesta al primer host
+            return json.dumps({"rol": "R", "nivel": "alta", "motivo": "m", "siguiente": "s"})
+
+        detail = self.analyse(job["id"], model)
+        self.assertEqual(len(calls), 1)  # el segundo host ya no se pregunta
+        self.assertEqual((detail["analisis"]["estado"], detail["prioridades"]), ("interrumpida", []))
+
+    def test_nothing_in_scope_means_an_empty_analysis_without_calling_the_model(self):
+        other = self.store.create_audit({"nombre": "Otra ficha", "incluir": "172.16.0.0/16"})
+        status, content = self.request("/api/jobs", payload() | {"auditoria": other["id"]})
+        self.assertEqual(status, 201, content)
+        detail = self.analyse(json.loads(content)["id"], AssertionError("no debería llamar al modelo"))
+        self.assertEqual((detail["analisis"]["estado"], detail["prioridades"]), ("completa", []))
+
     def test_csrf_origin_host_and_body_size(self):
         self.assertEqual(self.request("/api/jobs", self.payload(), {"X-Dedalo-Token": "wrong"})[0], 403)
         self.assertEqual(self.request("/api/jobs", self.payload(), {"Origin": "https://example.org"})[0], 403)
@@ -1241,7 +1323,8 @@ class PortTests(unittest.TestCase):
             server = PortalServer(("127.0.0.1", 0), store)
             try:
                 args = argparse.Namespace(datos=second_data, gowitness="indicado", chrome=None,
-                                          puerto=server.server_address[1], abrir=False)
+                                          puerto=server.server_address[1], abrir=False,
+                                          modelo=web.modelo.DEFAULT_MODEL, ollama=web.modelo.OLLAMA)
                 with self.assertRaisesRegex(ValueError, "ya está en uso"):
                     web.serve_portal(args)
             finally:
@@ -1249,6 +1332,25 @@ class PortTests(unittest.TestCase):
                 store.close()
             # El portal que no pudo arrancar liberó su carpeta de datos.
             PortalStore(second_data).close()
+
+
+class ModelOptionTests(unittest.TestCase):
+    def test_the_portal_uses_a_small_local_model_unless_told_otherwise(self):
+        args = cli.build_parser().parse_args(["web"])
+        self.assertEqual((args.modelo, args.ollama), (web.modelo.DEFAULT_MODEL, web.modelo.OLLAMA))
+
+    def test_the_chosen_model_reaches_the_portal(self):
+        args = cli.build_parser().parse_args(["web", "--datos", "datos", "--modelo", "qwen2.5:7b",
+                                              "--ollama", "http://127.0.0.1:9999"])
+
+        class Stop(Exception):
+            pass
+
+        with patch("dedalo.web.ensure_gowitness"), patch("dedalo.web.PortalStore", side_effect=Stop) as store:
+            with self.assertRaises(Stop):
+                web.serve_portal(args)
+        self.assertEqual((store.call_args.kwargs["model"], store.call_args.kwargs["ollama"]),
+                         ("qwen2.5:7b", "http://127.0.0.1:9999"))
 
 
 class StopTests(unittest.TestCase):

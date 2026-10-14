@@ -7,6 +7,8 @@ import urllib.error
 import urllib.request
 
 OLLAMA = "http://127.0.0.1:11434"
+# Modelo pequeño por defecto, que corra en equipos modestos; el portal lo cambia con --modelo.
+DEFAULT_MODEL = "llama3.2:3b"
 
 
 def generate(prompt: str, model: str, host: str = OLLAMA, timeout: int = 120) -> str:

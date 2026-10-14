@@ -12,7 +12,7 @@ import subprocess
 import sys
 from xml.etree.ElementTree import ParseError
 
-from . import __version__, gowitness, parser, report, targets, views
+from . import __version__, gowitness, modelo, parser, report, targets, views
 
 
 def positive(value: str) -> int:
@@ -68,6 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
     portal.add_argument("--chrome", help="Navegador del servidor")
     portal.add_argument("--gowitness", help="Ejecutable de gowitness v3")
     portal.add_argument("--abrir", action="store_true", help="Abrir el portal en el navegador")
+    portal.add_argument("--modelo", default=modelo.DEFAULT_MODEL,
+                        help=f"Modelo local de Ollama para priorizar con IA ({modelo.DEFAULT_MODEL})")
+    portal.add_argument("--ollama", default=modelo.OLLAMA, help=f"Servidor de Ollama ({modelo.OLLAMA})")
 
     show = subcommands.add_parser("ver", help="Abrir el visor de una subred, un rango o todo")
     show.add_argument("salida", help="Carpeta de una ejecución")
