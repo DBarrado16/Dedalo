@@ -80,8 +80,9 @@ def build_parser() -> argparse.ArgumentParser:
     portal.add_argument("--gowitness", help="Ejecutable de gowitness v3")
     portal.add_argument("--abrir", action="store_true", help="Abrir el portal en el navegador")
     # argparse pasa por `type` también un valor por defecto de texto: DEDALO_MODELO se comprueba igual.
+    # Sin espacios alrededor: en cmd, «set DEDALO_MODELO=modelo » guarda el espacio final.
     portal.add_argument("--modelo", type=model_option(modelo.check_model),
-                        default=os.environ.get("DEDALO_MODELO") or modelo.DEFAULT_MODEL,
+                        default=os.environ.get("DEDALO_MODELO", "").strip() or modelo.DEFAULT_MODEL,
                         help="Modelo local de Ollama que se propone para priorizar con IA; en el portal se puede "
                              f"elegir otro (DEDALO_MODELO o {modelo.DEFAULT_MODEL})")
     portal.add_argument("--ollama", type=model_option(modelo.check_local), default=modelo.OLLAMA,

@@ -130,6 +130,12 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(models, [{"nombre": "antiguo:7b", "tamano": ""}, {"nombre": "fsec-analyst:latest", "tamano": "8.0B"},
                                   {"nombre": "qwen3:8b", "tamano": "8.2B"}])
 
+    def test_an_odd_entry_in_the_model_list_does_not_hide_the_others(self):
+        tags = {"models": [{"name": "raro:1b", "capabilities": None, "details": "?"}, "no es un modelo",
+                           {"name": "qwen3:8b", "capabilities": ["completion"], "details": {"parameter_size": 8}}]}
+        with answering(json.dumps(tags).encode()):
+            self.assertEqual(modelo.list_models(), [{"nombre": "qwen3:8b", "tamano": "8"}, {"nombre": "raro:1b", "tamano": ""}])
+
     def test_listing_models_only_asks_this_machine_and_explains_failures(self):
         with answering(b"{}") as opened, self.assertRaisesRegex(ValueError, "este equipo"):
             modelo.list_models("http://10.0.0.5:11434")

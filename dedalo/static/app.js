@@ -253,7 +253,8 @@ function render() {
   $("analyze-job").disabled = mutating || running || analysing || !chosenModel;
   $("analyze-job").textContent = analysing ? (progress ? `Analizando ${progress.hechos} de ${progress.total}…` : "Analizando…")
     : analysis ? "Volver a analizar" : "Analizar con IA";
-  $("analyze-job").title = running ? "Espera a que termine la captura" : !chosenModel ? "No hay ningún modelo de Ollama para elegir" : "";
+  $("analyze-job").title = running ? "Espera a que termine la captura"
+    : !chosenModel ? (models ? "No hay ningún modelo de Ollama para elegir" : "Buscando los modelos de Ollama…") : "";
   $("model-select").disabled = mutating || !chosenModel;
   $("stop-analysis").hidden = !analysing;
   $("stop-analysis").disabled = mutating || analysis?.estado === "deteniendo";

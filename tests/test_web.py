@@ -1581,6 +1581,10 @@ class ModelOptionTests(unittest.TestCase):
             self.assertEqual(cli.build_parser().parse_args(["web"]).modelo, "fsec-analyst:latest")
             self.assertEqual(cli.build_parser().parse_args(["web", "--modelo", "qwen3:8b"]).modelo, "qwen3:8b")  # la opción manda
 
+    def test_spaces_around_the_model_in_the_environment_are_ignored(self):
+        with patch.dict(os.environ, {"DEDALO_MODELO": " fsec-analyst:latest "}):  # «set X=valor » en cmd deja el espacio
+            self.assertEqual(cli.build_parser().parse_args(["web"]).modelo, "fsec-analyst:latest")
+
     def test_a_cloud_model_in_the_environment_is_refused(self):
         errors = io.StringIO()
         with patch.dict(os.environ, {"DEDALO_MODELO": "gpt-oss:120b-cloud"}), redirect_stderr(errors), \

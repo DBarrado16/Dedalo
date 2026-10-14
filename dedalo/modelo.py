@@ -79,9 +79,11 @@ def list_models(host: str = OLLAMA, timeout: int = 5) -> list[dict]:
             continue
         remote = any(key.startswith("remote") for key in entry)
         # Un Ollama antiguo no dice qué sabe hacer cada modelo: entonces se ofrece.
-        answers = "completion" in entry.get("capabilities", ["completion"])
+        capabilities = entry.get("capabilities")
+        answers = not isinstance(capabilities, list) or "completion" in capabilities
+        details = entry.get("details") if isinstance(entry.get("details"), dict) else {}
         if not remote and answers and not _cloud(entry["name"]):
-            models.append({"nombre": entry["name"], "tamano": (entry.get("details") or {}).get("parameter_size", "")})
+            models.append({"nombre": entry["name"], "tamano": str(details.get("parameter_size") or "")})
     return sorted(models, key=lambda model: model["nombre"].lower())
 
 
