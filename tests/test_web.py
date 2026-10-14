@@ -307,6 +307,41 @@ class PortalTests(unittest.TestCase):
             self.assertIsNone(self.store.detail(job["id"])["analisis"])
         model.assert_not_called()
 
+    def credential_probe(self, resultado):
+        """Prueba de credenciales falsa, sin red: `resultado(ip, objetivo) -> bool`."""
+        return patch("dedalo.web.probador.probar", side_effect=resultado)
+
+    def settled_credentials(self, job_id):
+        """Espera a que la prueba de credenciales deje de estar en marcha y devuelve el detalle."""
+        self.until(lambda: self.store.detail(job_id)["credenciales"]["estado"] not in ("en_cola", "en_curso", "deteniendo"))
+        return self.store.detail(job_id)
+
+    def test_credential_test_needs_the_token_and_same_origin(self):
+        job = self.create()
+        with patch("dedalo.web.probador.probar") as probar:
+            for route in ("probar-credenciales", "detener-credenciales"):
+                for headers in ({"X-Dedalo-Token": "wrong"}, {"Origin": "https://example.org"}):
+                    self.assertEqual(self.request("/api/jobs/" + job["id"] + "/" + route, {}, headers)[0], 403)
+            self.assertIsNone(self.store.detail(job["id"])["credenciales"])
+        probar.assert_not_called()
+
+    def test_running_a_credential_test_stores_what_got_in(self):
+        job = self.create()
+        def probar(ip, objetivo):
+            return objetivo["clave"] == "admin"
+        with self.credential_probe(probar):
+            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/probar-credenciales", {})[0], 202)
+            detail = self.settled_credentials(job["id"])
+        self.assertEqual(detail["credenciales"]["estado"], "completa")
+        # al menos un «entró» si el laboratorio de prueba tiene un servicio web con admin/admin
+        self.assertTrue(any(r["estado"] == "entrada" for r in detail["credenciales_resultados"]) or detail["credenciales_resultados"] == [])
+
+    def test_a_credential_test_in_progress_is_not_restarted(self):
+        job = self.create()
+        self.store.jobs[job["id"]]["estado"] = "en_curso"
+        self.assertEqual(self.request("/api/jobs/" + job["id"] + "/probar-credenciales", {})[0], 409)
+        self.store.jobs[job["id"]]["estado"] = "preparada"
+
     def test_progress_counts_the_hosts_already_answered(self):
         job, release = self.create(), threading.Event()
         model = model_waiting_at(2, release)

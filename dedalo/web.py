@@ -29,7 +29,8 @@ import webbrowser
 from xml.etree.ElementTree import ParseError
 import zipfile
 
-from . import auditoria, cli, db, gowitness, inventory, modelo, parser, prioridad, report, targets
+from . import (auditoria, catalogo, cli, credenciales, db, gowitness, inventory, modelo, parser, prioridad,
+               probador, report, targets)
 
 STATIC = Path(__file__).parent / "static"
 STATIC_FILES = {
@@ -137,6 +138,8 @@ class PortalStore:
         # Hosts ya preguntados del análisis en curso de cada ejecución; solo en memoria:
         # al reabrir el portal, un análisis a medias queda interrumpido.
         self.analysis_progress = {}
+        # Servicios ya probados de la prueba de credenciales en curso; solo en memoria, como el análisis.
+        self.credential_progress = {}
         # Carpetas antiguas que no se pudieron pasar a la base en este arranque; el
         # portal las muestra (/api/bootstrap) porque no aparecen en el historial.
         self.migration_failures = []
@@ -242,6 +245,7 @@ class PortalStore:
         """Carga el historial desde la base y cierra lo que quedó a medias."""
         with closing(self.database()) as con:
             auditoria.close_interrupted_analyses(con)
+            catalogo.cargar(con)  # vuelca el catálogo de credenciales al abrir, si su fichero cambió
             for row in auditoria.portal_jobs(con):
                 if not (self.root / row["id"]).is_dir():
                     continue  # importación sin carpeta del portal
@@ -636,10 +640,15 @@ class PortalStore:
         with closing(self.database()) as con:
             response["analisis"] = auditoria.analysis_status(con, job_id)
             response["prioridades"] = auditoria.priorities(con, job_id)
+            response["credenciales"] = auditoria.credential_status(con, job_id)
+            response["credenciales_resultados"] = auditoria.credential_results(con, job_id)
         with self.lock:
             progress = self.analysis_progress.get(job_id)
+            progreso_c = self.credential_progress.get(job_id)
         if progress and response["analisis"] and response["analisis"]["estado"] in ACTIVE:
             response["analisis"]["progreso"] = progress
+        if progreso_c and response["credenciales"] and response["credenciales"]["estado"] in ACTIVE:
+            response["credenciales"]["progreso"] = progreso_c
         return response
 
     def start(self, job_id):
@@ -758,6 +767,86 @@ class PortalStore:
             else:
                 auditoria.set_state(con, analysis_id, state, error)
 
+    def test_credentials(self, job_id, payload=None):
+        """Encola la prueba de credenciales por defecto de los hosts en alcance; solo lee la base al encolar."""
+        with self.lock:
+            meta = self._meta(job_id)
+            if self.closing or meta["estado"] in ACTIVE:
+                raise Conflict("Espera a que termine la captura antes de probar credenciales.")
+            with closing(self.database()) as con:
+                estado = auditoria.credential_status(con, job_id)
+                if estado and estado["estado"] in ACTIVE:
+                    raise Conflict("Ya hay una prueba de credenciales de esta ejecución en marcha.")
+                test_id = auditoria.start_credential_test(con, job_id, {})
+            self.pending.put(("credenciales", (job_id, test_id)))
+        return self.detail(job_id)
+
+    def stop_credentials(self, job_id):
+        with self.lock:
+            self._meta(job_id)
+            with closing(self.database()) as con:
+                if auditoria.stop_credential_test(con, job_id) is None:
+                    raise Conflict("Esta ejecución no tiene una prueba de credenciales en marcha.")
+        return self.detail(job_id)
+
+    def _run_credentials(self, job_id, test_id):
+        try:
+            self._test_credentials(job_id, test_id)
+        except Exception as exc:
+            print(f"Error del portal: no se pudo completar la prueba de credenciales de {job_id}: {exc}", file=sys.stderr)
+            try:
+                with closing(self.database()) as con:
+                    auditoria.set_state(con, test_id, "error",
+                                        "No se pudo completar la prueba. Consulta la terminal del portal.")
+            except Exception as again:
+                print(f"Error del portal: no se pudo cerrar la prueba de {job_id}: {again}", file=sys.stderr)
+
+    def _test_credentials(self, job_id, test_id):
+        with closing(self.database()) as con:
+            if not auditoria.begin_credential_test(con, test_id):
+                return  # se canceló en la cola, o otra la sustituyó
+            current = auditoria.scope(con, auditoria.audit_of(con, job_id))
+            observed = auditoria.observed_hosts(con, job_id)
+            entradas = catalogo.entradas(con)
+
+        def parar():
+            if self.closing:
+                return True
+            with closing(self.database()) as con:
+                estado = auditoria.credential_status(con, job_id)
+            return estado is None or estado["estado"] == "deteniendo"
+
+        def avance(hechos, total):
+            with self.lock:
+                self.credential_progress[job_id] = {"hechos": hechos, "total": total}
+
+        def probar(ip, objetivo):
+            # El alcance se recomprueba justo antes de conectar: la exclusión gana.
+            if current.status(ip) != current.IN:
+                raise ValueError("fuera de alcance")
+            return probador.probar(ip, objetivo)
+
+        try:
+            hosts = [a for a in inventory.build(observed, [])["activos"]
+                     if a["servicios"] and current.status(a["ip"]) == current.IN]
+            rows = credenciales.probar_activos(hosts, entradas, probar, parar=parar, avance=avance, pausa=lambda: time.sleep(1))
+            state, error = "completa", ""
+        except credenciales.Interrumpido:
+            state = "interrumpida"
+            error = "El portal se cerró antes de terminar." if self.closing else "Detenido desde el portal antes de terminar."
+        except Exception as exc:
+            print(f"Error del portal: no se pudo probar credenciales en {job_id}: {exc}", file=sys.stderr)
+            state = "error"
+            error = str(exc) if isinstance(exc, ValueError) else "No se pudo completar la prueba. Consulta la terminal del portal."
+        finally:
+            with self.lock:
+                self.credential_progress.pop(job_id, None)
+        with closing(self.database()) as con:
+            if state == "completa":
+                auditoria.finish_credential_test(con, test_id, rows)
+            else:
+                auditoria.set_state(con, test_id, state, error)
+
     def cancel(self, job_id):
         with self.lock:
             meta = self._meta(job_id)
@@ -794,6 +883,9 @@ class PortalStore:
             kind, payload = item
             if kind == "analisis":
                 self._run_analysis(*payload)
+                continue
+            if kind == "credenciales":
+                self._run_credentials(*payload)
                 continue
             job_id, binary, chrome = payload
             with self.lock:
@@ -1095,6 +1187,12 @@ class PortalHandler(BaseHTTPRequestHandler):
                         return
                     if parts[3] == "detener-analisis":
                         self.json(store.stop_analysis(parts[2]))
+                        return
+                    if parts[3] == "probar-credenciales":
+                        self.json(store.test_credentials(parts[2], payload), 202)
+                        return
+                    if parts[3] == "detener-credenciales":
+                        self.json(store.stop_credentials(parts[2]))
                         return
                     if parts[3] == "delete":
                         self.json(store.delete(parts[2]))
