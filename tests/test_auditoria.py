@@ -163,3 +163,39 @@ class ImportTests(unittest.TestCase):
         with closing(db.connect(self.root)) as other:
             self.assertEqual(auditoria.default_audit(other), self.audit)
         self.assertEqual(self.count("auditoria"), 1)
+
+    def credential_row(self, ip, order, estado="entrada", servicio="http-form"):
+        return {"ip": ip, "orden": order, "puerto": 8443, "protocolo": "tcp", "servicio": servicio,
+                "estado": estado, "usuario": "admin", "clave": "admin", "detalle": ""}
+
+    def test_credential_test_keeps_results_and_replaces_only_on_complete(self):
+        self.load_in_scope("lunes")
+        self.assertEqual((auditoria.credential_status(self.con, "lunes"), auditoria.credential_results(self.con, "lunes")), (None, []))
+        first = auditoria.start_credential_test(self.con, "lunes", {})
+        self.assertTrue(auditoria.begin_credential_test(self.con, first))
+        auditoria.finish_credential_test(self.con, first, [self.credential_row("192.0.2.10", 0)])
+        self.assertEqual(auditoria.credential_status(self.con, "lunes"), {"estado": "completa", "error": ""})
+        self.assertEqual([r["ip"] for r in auditoria.credential_results(self.con, "lunes")], ["192.0.2.10"])
+        second = auditoria.start_credential_test(self.con, "lunes", {})  # vuelve a probar
+        auditoria.set_state(self.con, second, "error", "sin respuesta")
+        self.assertEqual(auditoria.credential_status(self.con, "lunes")["estado"], "error")
+        self.assertEqual([r["ip"] for r in auditoria.credential_results(self.con, "lunes")], ["192.0.2.10"])  # el bueno sigue
+
+    def test_a_host_excluded_after_the_credential_test_is_left_out(self):
+        self.load_in_scope("lunes")
+        test = auditoria.start_credential_test(self.con, "lunes", {})
+        auditoria.finish_credential_test(self.con, test, [self.credential_row("192.0.2.10", 0), self.credential_row("192.0.2.20", 1)])
+        auditoria.update_audit(self.con, self.audit, "Laboratorio", "192.0.2.0/24", "192.0.2.20")
+        self.assertEqual([r["ip"] for r in auditoria.credential_results(self.con, "lunes")], ["192.0.2.10"])
+
+    def test_stopping_and_closing_a_credential_test(self):
+        self.load_in_scope("lunes")
+        self.assertIsNone(auditoria.stop_credential_test(self.con, "lunes"))
+        test = auditoria.start_credential_test(self.con, "lunes", {})
+        self.assertEqual(auditoria.stop_credential_test(self.con, "lunes"), "cancelada")
+        self.assertFalse(auditoria.begin_credential_test(self.con, test))
+        other = auditoria.start_credential_test(self.con, "lunes", {})
+        auditoria.begin_credential_test(self.con, other)
+        self.assertEqual(auditoria.stop_credential_test(self.con, "lunes"), "deteniendo")
+        auditoria.close_interrupted_analyses(self.con)
+        self.assertEqual(auditoria.credential_status(self.con, "lunes")["estado"], "interrumpida")

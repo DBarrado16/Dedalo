@@ -273,7 +273,7 @@ def close_interrupted_analyses(con: sqlite3.Connection) -> None:
     with con:
         con.execute("UPDATE ejecucion SET estado = 'interrumpida', terminada = ?, "
                     "error = 'El portal se cerró antes de terminar el análisis.' "
-                    "WHERE tipo = 'analisis' AND estado IN ('en_cola', 'en_curso', 'deteniendo')", (now(),))
+                    "WHERE tipo IN ('analisis', 'credenciales') AND estado IN ('en_cola', 'en_curso', 'deteniendo')", (now(),))
 
 
 def finish_analysis(con: sqlite3.Connection, analysis_id: str, rows: list[dict]) -> None:
@@ -306,6 +306,71 @@ def priorities(con: sqlite3.Connection, import_id: str) -> list[dict]:
         return rows
     current = scope(con, audit_of(con, import_id))
     return [row for row in rows if current.status(row["ip"]) == current.IN]
+
+
+def start_credential_test(con, import_id: str, options: dict, created: str | None = None) -> str:
+    """Crea en cola una prueba de credenciales; el último intento completo se conserva hasta que esta termine bien."""
+    source = con.execute("SELECT auditoria_id, nombre FROM ejecucion WHERE id = ? AND tipo = 'importacion'",
+                         (import_id,)).fetchone()
+    if source is None:
+        raise FileNotFoundError("Importación no encontrada")
+    test_id = uuid.uuid4().hex
+    with con:
+        con.execute("DELETE FROM ejecucion WHERE origen_id = ? AND tipo = 'credenciales' AND estado <> 'completa'",
+                    (import_id,))
+        con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada) "
+                    "VALUES (?, ?, 'credenciales', ?, ?, 'en_cola', ?, ?)",
+                    (test_id, source["auditoria_id"], import_id, source["nombre"],
+                     json.dumps(options, ensure_ascii=False), created or now()))
+    return test_id
+
+
+def begin_credential_test(con, test_id: str) -> bool:
+    with con:
+        return _set_state(con, test_id, "en_curso", only_from="en_cola")
+
+
+def stop_credential_test(con, import_id: str) -> str | None:
+    row = _derived(con, import_id, "credenciales")
+    if row is None:
+        return None
+    with con:
+        if _set_state(con, row["id"], "cancelada", "Se canceló antes de empezar.", only_from="en_cola"):
+            return "cancelada"
+        if _set_state(con, row["id"], "deteniendo", only_from="en_curso"):
+            return "deteniendo"
+    return None
+
+
+def credential_status(con, import_id: str) -> dict | None:
+    row = _derived(con, import_id, "credenciales")
+    return {"estado": row["estado"], "error": row["error"]} if row else None
+
+
+def finish_credential_test(con, test_id: str, rows: list[dict]) -> None:
+    """Guarda los resultados, da la prueba por completa y solo entonces sustituye a la anterior, en una transacción."""
+    with con:
+        for row in rows:
+            con.execute("INSERT INTO credencial_resultado (ejecucion_id, activo_id, orden, puerto, protocolo, servicio, "
+                        "estado, usuario, clave, detalle) SELECT e.id, a.id, ?, ?, ?, ?, ?, ?, ?, ? FROM ejecucion e "
+                        "JOIN activo a ON a.auditoria_id = e.auditoria_id AND a.ip = ? WHERE e.id = ?",
+                        (row["orden"], row["puerto"], row["protocolo"], row["servicio"], row["estado"],
+                         row["usuario"], row["clave"], row["detalle"], row["ip"], test_id))
+        _set_state(con, test_id, "completa")
+        con.execute("DELETE FROM ejecucion WHERE tipo = 'credenciales' AND id <> ? "
+                    "AND origen_id = (SELECT origen_id FROM ejecucion WHERE id = ?)", (test_id, test_id))
+
+
+def credential_results(con, import_id: str) -> list[dict]:
+    """Lo que dieron las pruebas de una importación, en orden; solo activos en el alcance vigente."""
+    rows = [dict(r) for r in con.execute(
+        "SELECT a.ip, r.puerto, r.protocolo, r.servicio, r.estado, r.usuario, r.clave, r.detalle "
+        "FROM credencial_resultado r JOIN ejecucion e ON e.id = r.ejecucion_id JOIN activo a ON a.id = r.activo_id "
+        "WHERE e.origen_id = ? AND e.tipo = 'credenciales' ORDER BY r.orden", (import_id,))]
+    if not rows:
+        return rows
+    current = scope(con, audit_of(con, import_id))
+    return [r for r in rows if current.status(r["ip"]) == current.IN]
 
 
 def _set_state(con: sqlite3.Connection, execution_id: str, state: str, error: str = "",
