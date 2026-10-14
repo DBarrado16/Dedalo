@@ -1072,6 +1072,15 @@ class PortalTests(unittest.TestCase):
         self.assertIn(b"escapeHtml(model.nombre)", script)  # los nombres vienen de Ollama: nunca entran como HTML
         self.assertIn(b"escapeHtml(item.siguiente)", script)  # la respuesta del modelo nunca entra como HTML
 
+    def test_page_has_the_credentials_tab(self):
+        page, script = self.request("/")[1], self.request("/app.js")[1]
+        for needle in (b'data-tab="credentials"', b'id="credential-tools"', b'id="test-credentials"', b'id="stop-credentials"'):
+            self.assertIn(needle, page)
+        self.assertIn(b'action("probar-credenciales")', script)
+        self.assertIn(b'action("detener-credenciales")', script)
+        self.assertIn(b"escapeHtml(item.usuario)", script)  # lo que devuelve el objetivo nunca entra como HTML
+        self.assertIn(b"confirm(", script)  # la prueba activa pide confirmación
+
     def store_options(self, job_id, value):
         """Deja en la base las opciones de una ejecución tal cual: texto, o un valor que se guarda como JSON."""
         with closing(self.store.database()) as con, con:

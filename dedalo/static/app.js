@@ -26,7 +26,7 @@ systemTheme.addEventListener("change", event => {
   if (!savedTheme) applyTheme(event.matches ? "dark" : "light");
 });
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
-const labels = {preparada:"Preparada",en_cola:"En cola",en_curso:"Capturando",deteniendo:"Deteniendo",completa:"Completada",parcial:"Con incidencias",error:"Error",cancelada:"Cancelada",interrumpida:"Interrumpida",pendiente:"Pendiente",capturada:"Capturada",sin_captura:"Sin captura",completo:"Completada",alta:"Alta",media:"Media",baja:"Baja",sin_analisis:"Sin análisis"};
+const labels = {preparada:"Preparada",en_cola:"En cola",en_curso:"Capturando",deteniendo:"Deteniendo",completa:"Completada",parcial:"Con incidencias",error:"Error",cancelada:"Cancelada",interrumpida:"Interrumpida",pendiente:"Pendiente",capturada:"Capturada",sin_captura:"Sin captura",completo:"Completada",alta:"Alta",media:"Media",baja:"Baja",sin_analisis:"Sin análisis",entrada:"Entró",fallo:"No entró"};
 const activeStates = new Set(["en_cola","en_curso","deteniendo"]);
 let token = "", currentId = "", current = null, activeTab = "gallery", files = [], shown = 60, engine = {};
 let renderKey = "", polling = false, mutating = false;
@@ -242,12 +242,13 @@ function render() {
   $("run-description").textContent = description;
   updateFilters();
   document.querySelectorAll("[data-tab]").forEach(button => button.setAttribute("aria-selected", String(button.dataset.tab === activeTab)));
-  $("filters").hidden = activeTab === "logs" || activeTab === "priority";
+  $("filters").hidden = activeTab === "logs" || activeTab === "priority" || activeTab === "credentials";
   $("results").hidden = activeTab === "logs";
   $("logs").hidden = activeTab !== "logs";
   $("inventory-tools").hidden = activeTab !== "inventory";
   $("priority-tools").hidden = activeTab !== "priority";
-  document.querySelector(".tab-actions").hidden = activeTab === "logs" || activeTab === "priority";
+  $("credential-tools").hidden = activeTab !== "credentials";
+  document.querySelector(".tab-actions").hidden = activeTab === "logs" || activeTab === "priority" || activeTab === "credentials";
   const analysis = current.analisis, analysing = activeStates.has(analysis?.estado), progress = analysis?.progreso;
   const chosenModel = $("model-select").value;
   $("analyze-job").disabled = mutating || running || analysing || !chosenModel;
@@ -259,6 +260,14 @@ function render() {
   $("stop-analysis").hidden = !analysing;
   $("stop-analysis").disabled = mutating || analysis?.estado === "deteniendo";
   $("stop-analysis").textContent = analysis?.estado === "en_cola" ? "Cancelar análisis" : analysis?.estado === "deteniendo" ? "Parada solicitada…" : "Detener tras este host";
+  const prueba = current.credenciales, testing = activeStates.has(prueba?.estado), credProgress = prueba?.progreso;
+  $("test-credentials").disabled = mutating || running || testing;
+  $("test-credentials").textContent = testing ? (credProgress ? `Probando ${credProgress.hechos} de ${credProgress.total}…` : "Probando…")
+    : prueba ? "Volver a probar" : "Probar credenciales";
+  $("test-credentials").title = running ? "Espera a que termine la captura" : "";
+  $("stop-credentials").hidden = !testing;
+  $("stop-credentials").disabled = mutating || prueba?.estado === "deteniendo";
+  $("stop-credentials").textContent = prueba?.estado === "en_cola" ? "Cancelar prueba" : prueba?.estado === "deteniendo" ? "Parada solicitada…" : "Detener tras este servicio";
   $("status-filter-label").hidden = activeTab === "inventory";
   $("service-filter-label").hidden = activeTab !== "inventory";
   $("search").placeholder = activeTab === "inventory" ? "IP, nombre, puerto o producto" : "IP, URL o título";
@@ -355,10 +364,36 @@ function renderPriority() {
     ${item.siguiente ? `<p class="priority-next"><strong>Siguiente paso:</strong> ${escapeHtml(item.siguiente)}</p>` : ""}
   </li>`).join("") + "</ol>";
 }
+function renderCredentials() {
+  // Lo que anuncia el equipo (usuario, clave, servicio, detalle) puede venir influido por él: todo pasa por escapeHtml.
+  const prueba = current.credenciales, items = current.credenciales_resultados || [];
+  $("more").hidden = true;
+  const entrados = items.filter(r => r.estado === "entrada").length;
+  $("result-count").textContent = items.length ? `${entrados} con contraseña de fábrica, de ${items.length} servicio(s)` : "";
+  const key = JSON.stringify(["credentials", currentId, prueba, items]);
+  if (key === renderKey) return;
+  renderKey = key;
+  let message = "";
+  if (!prueba) message = "Esta ejecución no se ha probado todavía. Pulsa «Probar credenciales» para intentar las contraseñas de fábrica en sus servicios en alcance.";
+  else if (prueba.estado === "en_cola") message = "La prueba empezará cuando termine el trabajo anterior.";
+  else if (prueba.estado === "deteniendo") message = "Deteniendo: termina el servicio en curso y no empieza más.";
+  else if (prueba.estado === "en_curso") message = "Probando contraseñas de fábrica en los servicios en alcance" +
+    (prueba.progreso ? ` (${prueba.progreso.hechos} de ${prueba.progreso.total} servicios)` : "") + ". Puedes seguir usando el portal.";
+  else if (prueba.estado !== "completa") message = (labels[prueba.estado] || prueba.estado) + ": " + (prueba.error || "la prueba no terminó.");
+  else if (!items.length) message = "No se probó ningún servicio: ningún equipo en alcance encaja con la libreta de credenciales.";
+  if (message && !items.length) { $("results").innerHTML = `<div class="empty-results">${escapeHtml(message)}</div>`; return; }
+  const previous = message ? `<div class="notice">${escapeHtml(message + " Se muestra la última prueba completa.")}</div>` : "";
+  $("results").innerHTML = previous + '<ol class="priority-list">' + items.map((item, index) => `<li>
+    <span class="priority-rank">${index + 1}</span>
+    <div class="priority-head"><span class="priority-ip">${escapeHtml(item.ip)}:${escapeHtml(String(item.puerto))}</span><span class="priority-role">${escapeHtml(item.servicio)}</span><span class="badge ${escapeHtml(item.estado)}">${escapeHtml(labels[item.estado] || item.estado)}</span></div>
+    ${item.estado === "entrada" ? `<p class="priority-reason"><strong>Entró con</strong> ${escapeHtml(item.usuario)} / ${escapeHtml(item.clave)}</p>` : item.detalle ? `<p class="priority-reason">${escapeHtml(item.detalle)}</p>` : ""}
+  </li>`).join("") + "</ol>";
+}
 function renderResults() {
   if (!current || activeTab === "logs") { $("more").hidden = true; return; }
   if (activeTab === "inventory") { renderInventory(); return; }
   if (activeTab === "priority") { renderPriority(); return; }
+  if (activeTab === "credentials") { renderCredentials(); return; }
   const filtered = rows(), visible = filtered.slice(0, shown);
   $("result-count").textContent = filtered.length + " objetivo(s)";
   $("more").hidden = filtered.length <= shown;
@@ -584,6 +619,10 @@ async function action(type, body = {}) {
 $("start-job").addEventListener("click", () => action("start"));
 $("analyze-job").addEventListener("click", () => action("analizar", {modelo: $("model-select").value}));
 $("stop-analysis").addEventListener("click", () => action("detener-analisis"));
+$("test-credentials").addEventListener("click", () => {
+  if (confirm("Esto intentará entrar en los servicios en alcance de esta ejecución con sus contraseñas de fábrica. ¿Seguir?")) action("probar-credenciales");
+});
+$("stop-credentials").addEventListener("click", () => action("detener-credenciales"));
 $("export-hosts").addEventListener("click", () => exportHosts(false));
 $("export-web").addEventListener("click", () => exportHosts(true));
 $("cancel-job").addEventListener("click", () => action("cancel"));

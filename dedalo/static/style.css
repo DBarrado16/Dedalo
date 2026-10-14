@@ -110,8 +110,9 @@ main { margin-left: 260px; padding: 18px 32px 24px; max-width: 2100px; }
 .badge.complete, .badge.capturada { color: var(--good); }
 .badge.error, .badge.sin_captura { color: var(--warning); }
 .badge.running { color: var(--link); }
-.badge.alta { color: var(--bad); }
+.badge.alta, .badge.entrada { color: var(--bad); }
 .badge.media { color: var(--warning); }
+.badge.fallo { color: var(--muted); }
 .stats { display: flex; flex-wrap: wrap; gap: 12px 32px; padding: 14px 0; border-block: 1px solid var(--line); margin-bottom: 0; }
 .stats>div { display: flex; align-items: baseline; gap: 9px; }
 .stats strong { font-family: var(--font-heading); font-size: 23px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; }
