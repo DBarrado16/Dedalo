@@ -699,14 +699,17 @@ class PortalStore:
             rows = prioridad.analizar(hosts, generate, parar=lambda: self.closing)
             state, error = "completa", ""
         except prioridad.Interrumpido:
-            rows, state, error = [], "interrumpida", "El portal se cerró antes de terminar el análisis."
+            state, error = "interrumpida", "El portal se cerró antes de terminar el análisis."
         except Exception as exc:
             print(f"Error del portal: no se pudo analizar {job_id} con IA: {exc}", file=sys.stderr)
-            rows, state = [], "error"
+            state = "error"
             error = str(exc) if isinstance(exc, ValueError) else "No se pudo completar el análisis. Consulta la terminal del portal."
+        # Solo un análisis completo sustituye al anterior: si este falla, se sigue viendo el último bueno.
         with closing(self.database()) as con:
-            auditoria.save_priorities(con, analysis_id, rows)
-            auditoria.set_state(con, analysis_id, state, error)
+            if state == "completa":
+                auditoria.finish_analysis(con, analysis_id, rows)
+            else:
+                auditoria.set_state(con, analysis_id, state, error)
 
     def cancel(self, job_id):
         with self.lock:

@@ -180,9 +180,9 @@ def _service_id(con: sqlite3.Connection, audit_id: str, ip: str, port: int) -> i
 
 
 def _derived(con: sqlite3.Connection, import_id: str, kind: str) -> sqlite3.Row | None:
-    """La ejecución de un tipo (captura, análisis) que salió de una importación, si la hay."""
-    return con.execute("SELECT id, estado, error FROM ejecucion WHERE origen_id = ? AND tipo = ? ORDER BY creada LIMIT 1",
-                       (import_id, kind)).fetchone()
+    """La última ejecución de un tipo (captura, análisis) que salió de una importación, si la hay."""
+    return con.execute("SELECT id, estado, error FROM ejecucion WHERE origen_id = ? AND tipo = ? "
+                       "ORDER BY creada DESC, rowid DESC LIMIT 1", (import_id, kind)).fetchone()
 
 
 def capture_of(con: sqlite3.Connection, import_id: str) -> str | None:
@@ -215,14 +215,19 @@ def start_capture(con: sqlite3.Connection, import_id: str, options: dict, groups
 
 
 def start_analysis(con: sqlite3.Connection, import_id: str, options: dict, created: str | None = None) -> str:
-    """Crea en cola el análisis con IA de una importación; el anterior, si lo había, se sustituye."""
+    """Crea en cola un análisis con IA de una importación.
+
+    El último análisis completo se sigue mostrando hasta que este termine bien (finish_analysis);
+    los intentos que fallaron o se interrumpieron ya no hacen falta.
+    """
     source = con.execute("SELECT auditoria_id, nombre FROM ejecucion WHERE id = ? AND tipo = 'importacion'",
                          (import_id,)).fetchone()
     if source is None:
         raise FileNotFoundError("Importación no encontrada")
     analysis_id = uuid.uuid4().hex
     with con:
-        con.execute("DELETE FROM ejecucion WHERE origen_id = ? AND tipo = 'analisis'", (import_id,))
+        con.execute("DELETE FROM ejecucion WHERE origen_id = ? AND tipo = 'analisis' AND estado <> 'completa'",
+                    (import_id,))
         con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada) "
                     "VALUES (?, ?, 'analisis', ?, ?, 'en_cola', ?, ?)",
                     (analysis_id, source["auditoria_id"], import_id, source["nombre"],
@@ -231,7 +236,7 @@ def start_analysis(con: sqlite3.Connection, import_id: str, options: dict, creat
 
 
 def analysis_status(con: sqlite3.Connection, import_id: str) -> dict | None:
-    """Estado y error del análisis de una importación, o None si no se pidió ninguno."""
+    """Estado y error del último análisis pedido de una importación, o None si no se pidió ninguno."""
     row = _derived(con, import_id, "analisis")
     return {"estado": row["estado"], "error": row["error"]} if row else None
 
@@ -244,14 +249,21 @@ def close_interrupted_analyses(con: sqlite3.Connection) -> None:
                     "WHERE tipo = 'analisis' AND estado IN ('en_cola', 'en_curso')", (now(),))
 
 
-def save_priorities(con: sqlite3.Connection, analysis_id: str, rows: list[dict]) -> None:
-    """Guarda lo que el análisis dijo de cada activo; una IP que no es de su ficha se ignora."""
+def finish_analysis(con: sqlite3.Connection, analysis_id: str, rows: list[dict]) -> None:
+    """Guarda lo que el análisis dijo de cada activo, lo da por completo y solo entonces sustituye al anterior.
+
+    Todo en una transacción: si algo falla, sigue valiendo el último análisis completo.
+    Una IP que no es de su ficha se ignora.
+    """
     with con:
         for row in rows:
             con.execute("INSERT INTO prioridad (ejecucion_id, activo_id, orden, rol, nivel, motivo, siguiente) "
                         "SELECT e.id, a.id, ?, ?, ?, ?, ? FROM ejecucion e "
                         "JOIN activo a ON a.auditoria_id = e.auditoria_id AND a.ip = ? WHERE e.id = ?",
                         (row["orden"], row["rol"], row["nivel"], row["motivo"], row["siguiente"], row["ip"], analysis_id))
+        con.execute("UPDATE ejecucion SET estado = 'completa', error = '', terminada = ? WHERE id = ?", (now(), analysis_id))
+        con.execute("DELETE FROM ejecucion WHERE tipo = 'analisis' AND id <> ? "
+                    "AND origen_id = (SELECT origen_id FROM ejecucion WHERE id = ?)", (analysis_id, analysis_id))
 
 
 def priorities(con: sqlite3.Connection, import_id: str) -> list[dict]:

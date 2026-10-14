@@ -20,7 +20,7 @@ auditoria ─┬─ alcance (reglas incluir/excluir)
 - **Observación** dice *quién lo vio, cuándo y cómo*. Si dos escaneos describen distinto el mismo servicio, se guardan las dos observaciones y no se pisan.
 - **Captura** es el intento de capturar una URL, haya salido bien o no.
 - **Evidencia** es un archivo que respalda algo: el Nmap original, una imagen o un registro.
-- **Prioridad** es lo que un análisis con IA dijo de un activo de su importación: rol probable, nivel (alta, media, baja, o `sin_analisis` si la respuesta del modelo no valía), motivo y siguiente paso sugerido. Es una opinión asesora: no cambia nada del inventario.
+- **Prioridad** es lo que un análisis con IA dijo de un activo de su importación: rol probable, nivel (alta, media, baja, o `sin_analisis` si la respuesta del modelo no valía), motivo y siguiente paso sugerido. Es una opinión asesora: no cambia nada del inventario. Una importación guarda su último análisis completo y, como mucho, un intento posterior; el intento solo sustituye al completo, en la misma transacción en que guarda sus prioridades, si termina bien.
 
 ## Tablas
 

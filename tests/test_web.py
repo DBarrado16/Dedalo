@@ -324,11 +324,19 @@ class PortalTests(unittest.TestCase):
     def test_an_analysis_that_cannot_be_saved_ends_in_error(self):
         job = self.create()
 
-        with patch("dedalo.web.auditoria.save_priorities", side_effect=sqlite3.OperationalError("disk I/O error")), \
+        with patch("dedalo.web.auditoria.finish_analysis", side_effect=sqlite3.OperationalError("disk I/O error")), \
                 redirect_stderr(io.StringIO()):
             detail = self.analyse(job["id"], model_answering())
         self.assertEqual(detail["analisis"]["estado"], "error")
         self.assertEqual(self.request("/api/jobs/" + job["id"] + "/analizar", {})[0], 202)  # se puede volver a intentar
+
+    def test_a_failed_reanalysis_keeps_showing_the_previous_result(self):
+        job = self.create()
+        before = self.analyse(job["id"], model_answering())["prioridades"]
+        with redirect_stderr(io.StringIO()):
+            detail = self.analyse(job["id"], ValueError("¿Está arrancado Ollama?"))
+        self.assertEqual((detail["analisis"]["estado"], detail["analisis"]["error"]), ("error", "¿Está arrancado Ollama?"))
+        self.assertEqual(detail["prioridades"], before)
 
     def test_a_run_being_captured_is_not_analysed(self):
         job = self.create()

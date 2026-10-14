@@ -308,8 +308,10 @@ function renderPriority() {
   else if (activeStates.has(analysis.estado)) message = analysis.estado === "en_cola" ? "El análisis empezará cuando termine el trabajo anterior." : "El modelo local está analizando los hosts. Puedes seguir usando el portal.";
   else if (analysis.estado !== "completa") message = (labels[analysis.estado] || analysis.estado) + ": " + (analysis.error || "el análisis no terminó.");
   else if (!items.length) message = "No hay hosts en el alcance de la ficha que analizar.";
-  if (message) { $("results").innerHTML = `<div class="empty-results">${escapeHtml(message)}</div>`; return; }
-  $("results").innerHTML = '<ol class="priority-list">' + items.map((item, index) => `<li>
+  if (message && !items.length) { $("results").innerHTML = `<div class="empty-results">${escapeHtml(message)}</div>`; return; }
+  // Un análisis nuevo en marcha o que falló no borra el último completo: se avisa encima de su lista.
+  const previous = message ? `<div class="notice">${escapeHtml(message + " Se muestra el último análisis completo.")}</div>` : "";
+  $("results").innerHTML = previous + '<ol class="priority-list">' + items.map((item, index) => `<li>
     <span class="priority-rank">${index + 1}</span>
     <div class="priority-head"><span class="priority-ip">${escapeHtml(item.ip)}</span><span class="priority-role">${escapeHtml(item.rol || "Rol sin determinar")}</span><span class="badge ${escapeHtml(item.nivel)}">${escapeHtml(labels[item.nivel] || item.nivel)}</span></div>
     <p class="priority-reason">${escapeHtml(item.motivo)}</p>

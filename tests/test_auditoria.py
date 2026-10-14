@@ -89,7 +89,7 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(tuple(row[:3]), ("analisis", "lunes", "en_cola"))
         self.assertIn("llama3.2:3b", row["opciones"])
         self.assertEqual(auditoria.analysis_status(self.con, "lunes"), {"estado": "en_cola", "error": ""})
-        auditoria.save_priorities(self.con, analysis, [
+        auditoria.finish_analysis(self.con, analysis, [
             self.priority("192.0.2.20", 1, "baja", "Estación"), self.priority("192.0.2.10", 0, "alta", "Servidor"),
             self.priority("203.0.113.9", 2)])  # una IP que no es de la ficha no se guarda
         self.assertEqual([(p["ip"], p["rol"], p["nivel"]) for p in auditoria.priorities(self.con, "lunes")],
@@ -99,20 +99,36 @@ class ImportTests(unittest.TestCase):
     def test_a_host_excluded_after_the_analysis_is_left_out(self):
         self.load_in_scope("lunes")
         analysis = auditoria.start_analysis(self.con, "lunes", {})
-        auditoria.save_priorities(self.con, analysis, [self.priority("192.0.2.10", 0), self.priority("192.0.2.20", 1)])
+        auditoria.finish_analysis(self.con, analysis, [self.priority("192.0.2.10", 0), self.priority("192.0.2.20", 1)])
         auditoria.update_audit(self.con, self.audit, "Laboratorio", "192.0.2.0/24", "192.0.2.20")
         self.assertEqual([p["ip"] for p in auditoria.priorities(self.con, "lunes")], ["192.0.2.10"])  # la exclusión gana
 
-    def test_analysing_again_replaces_the_previous_analysis(self):
+    def analyses(self):
+        return self.con.execute("SELECT COUNT(*) FROM ejecucion WHERE tipo = 'analisis'").fetchone()[0]
+
+    def test_analysing_again_keeps_the_previous_result_until_the_new_one_completes(self):
         self.load_in_scope("lunes")
         first = auditoria.start_analysis(self.con, "lunes", {"modelo": "m"})
-        auditoria.save_priorities(self.con, first, [self.priority("192.0.2.10", 0, role="Antes")])
+        auditoria.finish_analysis(self.con, first, [self.priority("192.0.2.10", 0, role="Antes")])
         second = auditoria.start_analysis(self.con, "lunes", {"modelo": "m"})
-        self.assertNotEqual(first, second)
-        self.assertEqual((self.count("prioridad"), auditoria.priorities(self.con, "lunes")), (0, []))
-        auditoria.save_priorities(self.con, second, [self.priority("192.0.2.10", 0, role="Después")])
+        self.assertEqual(auditoria.analysis_status(self.con, "lunes"), {"estado": "en_cola", "error": ""})
+        self.assertEqual([p["rol"] for p in auditoria.priorities(self.con, "lunes")], ["Antes"])
+        auditoria.finish_analysis(self.con, second, [self.priority("192.0.2.10", 0, role="Después")])
+        self.assertEqual(auditoria.analysis_status(self.con, "lunes"), {"estado": "completa", "error": ""})
         self.assertEqual([p["rol"] for p in auditoria.priorities(self.con, "lunes")], ["Después"])
-        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM ejecucion WHERE tipo = 'analisis'").fetchone()[0], 1)
+        self.assertEqual(self.analyses(), 1)
+
+    def test_a_failed_reanalysis_keeps_the_previous_result(self):
+        self.load_in_scope("lunes")
+        first = auditoria.start_analysis(self.con, "lunes", {})
+        auditoria.finish_analysis(self.con, first, [self.priority("192.0.2.10", 0, role="Antes")])
+        failed = auditoria.start_analysis(self.con, "lunes", {})
+        auditoria.set_state(self.con, failed, "error", "Ollama apagado")
+        self.assertEqual(auditoria.analysis_status(self.con, "lunes"), {"estado": "error", "error": "Ollama apagado"})
+        self.assertEqual([p["rol"] for p in auditoria.priorities(self.con, "lunes")], ["Antes"])
+        auditoria.start_analysis(self.con, "lunes", {})  # el intento fallido ya no hace falta; el completo, sí
+        self.assertEqual(self.analyses(), 2)
+        self.assertEqual([p["rol"] for p in auditoria.priorities(self.con, "lunes")], ["Antes"])
 
     def test_only_imports_can_be_analysed(self):
         with self.assertRaises(FileNotFoundError):
