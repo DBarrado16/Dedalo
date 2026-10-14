@@ -102,13 +102,19 @@ def answers(host: str = OLLAMA, timeout: int = 2) -> bool:
 
 
 def find_ollama() -> str | None:
-    """El ejecutable de Ollama: en el PATH o donde lo deja su instalador de Windows."""
-    found = shutil.which("ollama")
-    if found:
-        return found
+    """El ejecutable de Ollama: primero donde lo deja su instalador de Windows y, si no, en el PATH.
+
+    Uno en la carpeta actual no cuenta: en Windows, shutil.which también mira ahí, y el lanzador
+    se sitúa en la carpeta del repo; un ollama.exe u ollama.cmd dejado en ella no debe ejecutarse.
+    """
     local = os.environ.get("LOCALAPPDATA")
     installed = Path(local) / "Programs" / "Ollama" / "ollama.exe" if local else None
-    return str(installed) if installed and installed.is_file() else None
+    if installed and installed.is_file():
+        return str(installed)
+    found = shutil.which("ollama")
+    if found and Path(found).resolve().parent != Path.cwd().resolve():
+        return found
+    return None
 
 
 def ensure_running(host: str = OLLAMA, wait: float = 20) -> tuple[bool, str]:
@@ -126,11 +132,20 @@ def ensure_running(host: str = OLLAMA, wait: float = 20) -> tuple[bool, str]:
     if binary is None:
         return False, ("Ollama no está instalado: el portal funciona, pero la priorización con IA no estará "
                        "disponible hasta que lo instales (https://ollama.com).")
+    failed = (f"No se pudo arrancar Ollama ({binary}): el portal funciona, pero la priorización con IA "
+              "no estará disponible hasta que lo arranques.")
+    # Donde Dédalo lo va a buscar: el puerto de --ollama o, si no lo lleva, el de su esquema.
     address = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
-    env = {**os.environ, "OLLAMA_HOST": f"{address}:{parts.port or 11434}", "OLLAMA_NO_CLOUD": "1"}
-    # Sin shell y sin ventana; su salida no hace falta: si falla, se ve en que no responde.
-    process = subprocess.Popen([binary, "serve"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    env = {**os.environ, "OLLAMA_HOST": f"{address}:{port}", "OLLAMA_NO_CLOUD": "1"}
+    try:
+        # Sin shell ni ventana, y en su propia sesión (en Linux, el Ctrl+C que cierra el portal no le
+        # llega); su salida no hace falta: si falla, se ve en que no responde.
+        process = subprocess.Popen([binary, "serve"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, start_new_session=True,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except OSError as exc:  # por ejemplo, un antivirus que lo bloquea: el portal arranca igual
+        return False, f"{failed} ({exc})"
     deadline = time.monotonic() + wait
     while time.monotonic() < deadline and process.poll() is None:
         if answers(host):
@@ -138,8 +153,10 @@ def ensure_running(host: str = OLLAMA, wait: float = 20) -> tuple[bool, str]:
         time.sleep(0.5)
     if answers(host):
         return False, ""  # ya estaba en marcha y tardó en contestar; el lanzado no pudo usar el puerto
-    return False, (f"No se pudo arrancar Ollama ({binary}): el portal funciona, pero la priorización con IA "
-                   "no estará disponible hasta que lo arranques.")
+    if process.poll() is None:
+        return True, ("Ollama se está arrancando en segundo plano, pero tarda en responder: cuando lo haga, "
+                      "vuelve a abrir la pestaña Priorización.")
+    return False, failed
 
 
 def generate(prompt: str, model: str, host: str = OLLAMA, timeout: int = 120, schema: dict | None = None) -> str:

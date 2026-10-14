@@ -188,18 +188,56 @@ class StartOllamaTests(unittest.TestCase):
         with patch.object(modelo._OPENER, "open", side_effect=urllib.error.URLError("refused")):
             self.assertFalse(modelo.answers())
 
-    def test_finds_ollama_on_the_path_or_where_the_windows_installer_puts_it(self):
-        with patch.object(modelo.shutil, "which", return_value="/usr/bin/ollama"):
-            self.assertEqual(modelo.find_ollama(), "/usr/bin/ollama")
+    def test_finds_ollama_where_the_windows_installer_puts_it_or_on_the_path(self):
         with tempfile.TemporaryDirectory() as home:
             installed = Path(home) / "Programs" / "Ollama" / "ollama.exe"
             installed.parent.mkdir(parents=True)
             installed.touch()
-            with patch.object(modelo.shutil, "which", return_value=None):
+            with patch.object(modelo.shutil, "which", return_value="/usr/bin/ollama"):
                 with patch.dict(os.environ, {"LOCALAPPDATA": home}):
-                    self.assertEqual(modelo.find_ollama(), str(installed))
+                    self.assertEqual(modelo.find_ollama(), str(installed))  # la del instalador, primero
                 with patch.dict(os.environ, {"LOCALAPPDATA": str(Path(home) / "otro")}):
-                    self.assertIsNone(modelo.find_ollama())
+                    self.assertEqual(modelo.find_ollama(), "/usr/bin/ollama")
+            with patch.object(modelo.shutil, "which", return_value=None), \
+                    patch.dict(os.environ, {"LOCALAPPDATA": str(Path(home) / "otro")}):
+                self.assertIsNone(modelo.find_ollama())
+
+    def test_an_ollama_in_the_current_folder_is_not_run(self):
+        # En Windows, shutil.which también mira la carpeta actual, y el lanzador se sitúa en la del repo.
+        with tempfile.TemporaryDirectory() as here:
+            planted = Path(here) / "ollama.cmd"
+            planted.touch()
+            with patch.object(modelo.shutil, "which", return_value=str(planted)), \
+                    patch.object(modelo.Path, "cwd", return_value=Path(here)), \
+                    patch.dict(os.environ, {"LOCALAPPDATA": str(Path(here) / "otro")}):
+                self.assertIsNone(modelo.find_ollama())
+
+    def test_an_ollama_that_cannot_run_only_warns(self):
+        with patch.object(modelo, "answers", return_value=False), \
+                patch.object(modelo, "find_ollama", return_value="C:/Ollama/ollama.exe"), \
+                patch.object(modelo.subprocess, "Popen", side_effect=PermissionError("bloqueado por el antivirus")):
+            started, message = modelo.ensure_running()
+        self.assertFalse(started)
+        self.assertIn("No se pudo arrancar Ollama", message)
+
+    def test_a_slow_first_start_is_not_reported_as_a_failure(self):
+        with patch.object(modelo, "answers", return_value=False), \
+                patch.object(modelo, "find_ollama", return_value="C:/Ollama/ollama.exe"), \
+                patch.object(modelo.subprocess, "Popen") as popen:
+            popen.return_value.poll.return_value = None  # sigue arrancando
+            started, message = modelo.ensure_running(wait=0)
+        self.assertTrue(started)
+        self.assertIn("tarda", message)
+
+    def test_ollama_listens_where_dedalo_will_look_for_it(self):
+        for host, address in (("http://[::1]:11434", "[::1]:11434"), ("http://localhost", "localhost:80"),
+                              ("http://127.0.0.1:9999", "127.0.0.1:9999")):
+            with self.subTest(host=host), patch.object(modelo, "answers", side_effect=[False, True]), \
+                    patch.object(modelo, "find_ollama", return_value="ollama"), \
+                    patch.object(modelo.subprocess, "Popen") as popen:
+                popen.return_value.poll.return_value = None
+                modelo.ensure_running(host)
+                self.assertEqual(popen.call_args.kwargs["env"]["OLLAMA_HOST"], address)
 
     def test_nothing_is_started_when_ollama_already_answers(self):
         with patch.object(modelo, "answers", return_value=True), patch.object(modelo.subprocess, "Popen") as popen:
@@ -218,6 +256,7 @@ class StartOllamaTests(unittest.TestCase):
         self.assertEqual(args[0], ["C:/Ollama/ollama.exe", "serve"])  # una lista: sin shell
         self.assertNotIn("shell", kwargs)
         self.assertEqual((kwargs["env"]["OLLAMA_HOST"], kwargs["env"]["OLLAMA_NO_CLOUD"]), ("127.0.0.1:11434", "1"))
+        self.assertTrue(kwargs["start_new_session"])  # en Linux, el Ctrl+C que cierra el portal no le llega
 
     def test_without_ollama_installed_the_portal_only_warns(self):
         with patch.object(modelo, "answers", return_value=False), patch.object(modelo, "find_ollama", return_value=None), \
