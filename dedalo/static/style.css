@@ -110,6 +110,8 @@ main { margin-left: 260px; padding: 18px 32px 24px; max-width: 2100px; }
 .badge.complete, .badge.capturada { color: var(--good); }
 .badge.error, .badge.sin_captura { color: var(--warning); }
 .badge.running { color: var(--link); }
+.badge.alta { color: var(--bad); }
+.badge.media { color: var(--warning); }
 .stats { display: flex; flex-wrap: wrap; gap: 12px 32px; padding: 14px 0; border-block: 1px solid var(--line); margin-bottom: 0; }
 .stats>div { display: flex; align-items: baseline; gap: 9px; }
 .stats strong { font-family: var(--font-heading); font-size: 23px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; }
@@ -189,6 +191,14 @@ tr:hover td { background: var(--selection); }
 .empty-state>p { color: var(--muted); max-width: 560px; line-height: 1.8; }
 .empty-state .hint { margin-top: 18px; }
 .empty-results { color: var(--muted); font-size: 14px; padding: 45px 0; }
+.priority-list { list-style: none; margin: 18px 0 0; padding: 0; border-top: 1px solid var(--line); }
+.priority-list li { display: grid; grid-template-columns: 28px minmax(0, 1fr); column-gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.priority-rank { grid-row: span 3; color: var(--muted); font: 13px var(--font-data); text-align: right; padding-top: 3px; }
+.priority-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.priority-ip { font: 600 17px var(--font-data); overflow-wrap: anywhere; }
+.priority-role { font-size: 14px; font-weight: 600; }
+.priority-reason, .priority-next { margin: 6px 0 0; font-size: 13px; line-height: 1.5; color: var(--muted); }
+.priority-next strong { color: var(--ink); font-weight: 600; }
 .more { display: flex; margin: 24px auto; }
 .page-footer { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; margin-top: 32px; padding-top: 12px; border-top: 1px solid var(--line); }
 dialog { color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 28px; width: min(890px,calc(100vw - 32px)); max-height: 92vh; overflow: auto; box-shadow: 0 16px 48px #0004; }

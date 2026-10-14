@@ -802,6 +802,13 @@ class PortalTests(unittest.TestCase):
         self.assertIn(b'id="migration-notice"', self.request("/")[1])
         self.assertIn(b"migration_failures", self.request("/app.js")[1])
 
+    def test_page_has_the_prioritisation_tab(self):
+        page, script = self.request("/")[1], self.request("/app.js")[1]
+        for needle in (b'data-tab="priority"', b'id="analyze-job"', b'id="priority-tools"'):
+            self.assertIn(needle, page)
+        self.assertIn(b'action("analizar")', script)
+        self.assertIn(b"escapeHtml(item.siguiente)", script)  # la respuesta del modelo nunca entra como HTML
+
     def store_options(self, job_id, value):
         """Deja en la base las opciones de una ejecución tal cual: texto, o un valor que se guarda como JSON."""
         with closing(self.store.database()) as con, con:

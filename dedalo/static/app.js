@@ -26,7 +26,7 @@ systemTheme.addEventListener("change", event => {
   if (!savedTheme) applyTheme(event.matches ? "dark" : "light");
 });
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
-const labels = {preparada:"Preparada",en_cola:"En cola",en_curso:"Capturando",deteniendo:"Deteniendo",completa:"Completada",parcial:"Con incidencias",error:"Error",cancelada:"Cancelada",interrumpida:"Interrumpida",pendiente:"Pendiente",capturada:"Capturada",sin_captura:"Sin captura",completo:"Completada"};
+const labels = {preparada:"Preparada",en_cola:"En cola",en_curso:"Capturando",deteniendo:"Deteniendo",completa:"Completada",parcial:"Con incidencias",error:"Error",cancelada:"Cancelada",interrumpida:"Interrumpida",pendiente:"Pendiente",capturada:"Capturada",sin_captura:"Sin captura",completo:"Completada",alta:"Alta",media:"Media",baja:"Baja",sin_analisis:"Sin análisis"};
 const activeStates = new Set(["en_cola","en_curso","deteniendo"]);
 let token = "", currentId = "", current = null, activeTab = "gallery", files = [], shown = 60, engine = {};
 let renderKey = "", polling = false, mutating = false;
@@ -242,11 +242,16 @@ function render() {
   $("run-description").textContent = description;
   updateFilters();
   document.querySelectorAll("[data-tab]").forEach(button => button.setAttribute("aria-selected", String(button.dataset.tab === activeTab)));
-  $("filters").hidden = activeTab === "logs";
+  $("filters").hidden = activeTab === "logs" || activeTab === "priority";
   $("results").hidden = activeTab === "logs";
   $("logs").hidden = activeTab !== "logs";
   $("inventory-tools").hidden = activeTab !== "inventory";
-  document.querySelector(".tab-actions").hidden = activeTab === "logs";
+  $("priority-tools").hidden = activeTab !== "priority";
+  document.querySelector(".tab-actions").hidden = activeTab === "logs" || activeTab === "priority";
+  const analysing = activeStates.has(current.analisis?.estado);
+  $("analyze-job").disabled = mutating || running || analysing;
+  $("analyze-job").textContent = analysing ? "Analizando…" : current.analisis ? "Volver a analizar" : "Analizar con IA";
+  $("analyze-job").title = running ? "Espera a que termine la captura" : "";
   $("status-filter-label").hidden = activeTab === "inventory";
   $("service-filter-label").hidden = activeTab !== "inventory";
   $("search").placeholder = activeTab === "inventory" ? "IP, nombre, puerto o producto" : "IP, URL o título";
@@ -290,9 +295,31 @@ function copyForOneNote(gi, button) {
     .catch(error => notice("No se pudo copiar al portapapeles: " + error.message))
     .finally(() => { button.disabled = false; button.textContent = "Copiar para OneNote"; });
 }
+function renderPriority() {
+  // Lo que escribe el modelo puede venir influido por el equipo analizado: todo pasa por escapeHtml.
+  const analysis = current.analisis, items = current.prioridades || [];
+  $("more").hidden = true;
+  $("result-count").textContent = items.length ? items.length + " host(s) priorizados" : "";
+  const key = JSON.stringify(["priority", currentId, analysis, items]);
+  if (key === renderKey) return;
+  renderKey = key;
+  let message = "";
+  if (!analysis) message = "Esta ejecución no se ha analizado todavía. Pulsa «Analizar con IA» para ordenar sus hosts en alcance.";
+  else if (activeStates.has(analysis.estado)) message = analysis.estado === "en_cola" ? "El análisis empezará cuando termine el trabajo anterior." : "El modelo local está analizando los hosts. Puedes seguir usando el portal.";
+  else if (analysis.estado !== "completa") message = (labels[analysis.estado] || analysis.estado) + ": " + (analysis.error || "el análisis no terminó.");
+  else if (!items.length) message = "No hay hosts en el alcance de la ficha que analizar.";
+  if (message) { $("results").innerHTML = `<div class="empty-results">${escapeHtml(message)}</div>`; return; }
+  $("results").innerHTML = '<ol class="priority-list">' + items.map((item, index) => `<li>
+    <span class="priority-rank">${index + 1}</span>
+    <div class="priority-head"><span class="priority-ip">${escapeHtml(item.ip)}</span><span class="priority-role">${escapeHtml(item.rol || "Rol sin determinar")}</span><span class="badge ${escapeHtml(item.nivel)}">${escapeHtml(labels[item.nivel] || item.nivel)}</span></div>
+    <p class="priority-reason">${escapeHtml(item.motivo)}</p>
+    ${item.siguiente ? `<p class="priority-next"><strong>Siguiente paso:</strong> ${escapeHtml(item.siguiente)}</p>` : ""}
+  </li>`).join("") + "</ol>";
+}
 function renderResults() {
   if (!current || activeTab === "logs") { $("more").hidden = true; return; }
   if (activeTab === "inventory") { renderInventory(); return; }
+  if (activeTab === "priority") { renderPriority(); return; }
   const filtered = rows(), visible = filtered.slice(0, shown);
   $("result-count").textContent = filtered.length + " objetivo(s)";
   $("more").hidden = filtered.length <= shown;
@@ -516,6 +543,7 @@ async function action(type) {
   finally { mutating=false; render(); }
 }
 $("start-job").addEventListener("click", () => action("start"));
+$("analyze-job").addEventListener("click", () => action("analizar"));
 $("export-hosts").addEventListener("click", () => exportHosts(false));
 $("export-web").addEventListener("click", () => exportHosts(true));
 $("cancel-job").addEventListener("click", () => action("cancel"));
