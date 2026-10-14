@@ -28,6 +28,13 @@ def first_image(results):
     return sorted(Path(results).glob("*/*/capturas/*.png"))[0]
 
 
+def model_answering(level="alta"):
+    """Modelo falso, sin red, que contesta lo mismo a cada host."""
+    def model(prompt, name, host, timeout=120, schema=None):
+        return json.dumps({"rol": "R", "nivel": level, "motivo": "m", "siguiente": "s"})
+    return model
+
+
 def payload():
     return {"nombre": "Prueba de portal", "archivos": [{"nombre": "escaneo.xml", "contenido": (ROOT / "ejemplos/escaneo.xml").read_text()}],
             "opciones": {"timeout": 5, "delay": 0}}
@@ -279,17 +286,14 @@ class PortalTests(unittest.TestCase):
     def test_a_host_taken_out_of_scope_leaves_the_prioritisation(self):
         job = self.create()
 
-        def model(prompt, name, host, timeout=120, schema=None):
-            return json.dumps({"rol": "R", "nivel": "alta", "motivo": "m", "siguiente": "Revisar."})
-
-        self.assertEqual(len(self.analyse(job["id"], model)["prioridades"]), 2)
+        self.assertEqual(len(self.analyse(job["id"], model_answering())["prioridades"]), 2)
         self.store.update_audit(self.audit["id"], {"nombre": "Cliente de prueba", "incluir": "10.10.0.0/17",
                                                    "excluir": "10.10.6.20"})
         self.assertEqual([p["ip"] for p in self.store.detail(job["id"])["prioridades"]], ["10.10.5.10"])
 
     def test_a_database_failure_in_one_analysis_does_not_stop_the_queue(self):
         first, second = self.create(), self.create()
-        real, seen = auditoria.analysis_of, []
+        real, seen = auditoria.observed_hosts, []
 
         def flaky(con, job_id):
             seen.append(job_id)
@@ -297,11 +301,8 @@ class PortalTests(unittest.TestCase):
                 raise sqlite3.OperationalError("database is locked")
             return real(con, job_id)
 
-        def model(prompt, name, host, timeout=120, schema=None):
-            return json.dumps({"rol": "R", "nivel": "alta", "motivo": "m", "siguiente": "s"})
-
-        with patch("dedalo.web.auditoria.analysis_of", side_effect=flaky), \
-                patch("dedalo.web.modelo.generate", side_effect=model), redirect_stderr(io.StringIO()):
+        with patch("dedalo.web.auditoria.observed_hosts", side_effect=flaky), \
+                patch("dedalo.web.modelo.generate", side_effect=model_answering()), redirect_stderr(io.StringIO()):
             for job in (first, second):
                 self.assertEqual(self.request("/api/jobs/" + job["id"] + "/analizar", {})[0], 202)
             deadline = time.monotonic() + 10
@@ -314,12 +315,9 @@ class PortalTests(unittest.TestCase):
     def test_an_analysis_that_cannot_be_saved_ends_in_error(self):
         job = self.create()
 
-        def model(prompt, name, host, timeout=120, schema=None):
-            return json.dumps({"rol": "R", "nivel": "alta", "motivo": "m", "siguiente": "s"})
-
         with patch("dedalo.web.auditoria.save_priorities", side_effect=sqlite3.OperationalError("disk I/O error")), \
                 redirect_stderr(io.StringIO()):
-            detail = self.analyse(job["id"], model)
+            detail = self.analyse(job["id"], model_answering())
         self.assertEqual(detail["analisis"]["estado"], "error")
         self.assertEqual(self.request("/api/jobs/" + job["id"] + "/analizar", {})[0], 202)  # se puede volver a intentar
 

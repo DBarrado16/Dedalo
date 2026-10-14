@@ -224,12 +224,7 @@ def capture(args) -> int:
     return 130 if interrupted else (1 if has_error else (3 if shots < count else 0))
 
 
-def only_this_machine(host: str) -> bool:
-    """Si una dirección de escucha es de loopback; un nombre que no sea localhost cuenta como de fuera."""
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return host.lower() == "localhost"
+only_this_machine = targets.is_local_host  # dirección de escucha del visor
 
 
 def show(args) -> int:

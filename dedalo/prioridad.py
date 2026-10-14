@@ -77,10 +77,19 @@ def parse_result(text: str) -> dict:
     return {"rol": rol, "nivel": nivel, "motivo": data["motivo"].strip(), "siguiente": data["siguiente"].strip()}
 
 
-def analizar(activos: list[dict], generate) -> list[dict]:
-    """Una pregunta por host. Si el modelo no responde, falla todo; si una respuesta no vale, ese host queda sin análisis."""
+class Interrumpido(Exception):
+    """Se pidió parar el análisis (por ejemplo, porque se cierra el portal)."""
+
+
+def analizar(activos: list[dict], generate, parar=lambda: False) -> list[dict]:
+    """Una pregunta por host. Si el modelo no responde, falla todo; si una respuesta no vale, ese host queda sin análisis.
+
+    `parar` se consulta antes de cada host: si devuelve True, lanza Interrumpido.
+    """
     filas = []
     for activo in activos:
+        if parar():
+            raise Interrumpido()
         respuesta = generate(build_prompt(activo))
         try:
             fila = parse_result(respuesta)

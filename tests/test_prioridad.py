@@ -119,6 +119,17 @@ class AnalysisTests(unittest.TestCase):
                                                  "10.30.2.20": answer("media"), "10.30.2.44": answer("baja")}))
         self.assertEqual([r["ip"] for r in rows], ["10.30.1.10", "10.30.1.21", "10.30.2.20", "10.30.2.44"])
 
+    def test_it_stops_between_hosts_when_asked(self):
+        calls = []
+
+        def model(prompt):
+            calls.append(prompt)
+            return answer("alta")
+
+        with self.assertRaises(prioridad.Interrumpido):
+            prioridad.analizar([DC, FILES, DESK], model, parar=lambda: len(calls) >= 1)
+        self.assertEqual(len(calls), 1)
+
     def test_no_hosts_means_no_calls(self):
         def never(prompt):
             raise AssertionError("no debería llamar al modelo")

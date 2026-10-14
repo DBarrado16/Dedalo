@@ -127,6 +127,14 @@ def parse_scope_lines(text: str, limit: int = 10_000) -> list[tuple[str, str]]:
     return list(rules.items())
 
 
+def is_local_host(name: str) -> bool:
+    """Si un nombre o una IP es de este equipo (loopback); cualquier otro nombre cuenta como de fuera."""
+    try:
+        return ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        return name.lower() == "localhost"
+
+
 class Scope:
     """Alcance de una auditoría (docs/CONTRATOS.md 0.3): incluir menos excluir.
 

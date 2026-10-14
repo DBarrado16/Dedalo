@@ -179,10 +179,15 @@ def _service_id(con: sqlite3.Connection, audit_id: str, ip: str, port: int) -> i
     return row[0]
 
 
+def _derived(con: sqlite3.Connection, import_id: str, kind: str) -> sqlite3.Row | None:
+    """La ejecución de un tipo (captura, análisis) que salió de una importación, si la hay."""
+    return con.execute("SELECT id, estado, error FROM ejecucion WHERE origen_id = ? AND tipo = ? ORDER BY creada LIMIT 1",
+                       (import_id, kind)).fetchone()
+
+
 def capture_of(con: sqlite3.Connection, import_id: str) -> str | None:
     """La ejecución de captura que salió de una importación, si ya se lanzó."""
-    row = con.execute("SELECT id FROM ejecucion WHERE origen_id = ? AND tipo = 'captura' ORDER BY creada LIMIT 1",
-                      (import_id,)).fetchone()
+    row = _derived(con, import_id, "captura")
     return row["id"] if row else None
 
 
@@ -209,13 +214,6 @@ def start_capture(con: sqlite3.Connection, import_id: str, options: dict, groups
     return capture_id
 
 
-def analysis_of(con: sqlite3.Connection, import_id: str) -> str | None:
-    """El análisis con IA de una importación, si se pidió alguno."""
-    row = con.execute("SELECT id FROM ejecucion WHERE origen_id = ? AND tipo = 'analisis' ORDER BY creada LIMIT 1",
-                      (import_id,)).fetchone()
-    return row["id"] if row else None
-
-
 def start_analysis(con: sqlite3.Connection, import_id: str, options: dict, created: str | None = None) -> str:
     """Crea en cola el análisis con IA de una importación; el anterior, si lo había, se sustituye."""
     source = con.execute("SELECT auditoria_id, nombre FROM ejecucion WHERE id = ? AND tipo = 'importacion'",
@@ -234,17 +232,8 @@ def start_analysis(con: sqlite3.Connection, import_id: str, options: dict, creat
 
 def analysis_status(con: sqlite3.Connection, import_id: str) -> dict | None:
     """Estado y error del análisis de una importación, o None si no se pidió ninguno."""
-    row = con.execute("SELECT estado, error FROM ejecucion WHERE origen_id = ? AND tipo = 'analisis' ORDER BY creada LIMIT 1",
-                      (import_id,)).fetchone()
-    return dict(row) if row else None
-
-
-def fail_analysis(con: sqlite3.Connection, import_id: str, error: str) -> None:
-    """Cierra en error el análisis de una importación que seguía en cola o en curso."""
-    with con:
-        con.execute("UPDATE ejecucion SET estado = 'error', error = ?, terminada = ? "
-                    "WHERE origen_id = ? AND tipo = 'analisis' AND estado IN ('en_cola', 'en_curso')",
-                    (error, now(), import_id))
+    row = _derived(con, import_id, "analisis")
+    return {"estado": row["estado"], "error": row["error"]} if row else None
 
 
 def close_interrupted_analyses(con: sqlite3.Connection) -> None:
@@ -266,11 +255,18 @@ def save_priorities(con: sqlite3.Connection, analysis_id: str, rows: list[dict])
 
 
 def priorities(con: sqlite3.Connection, import_id: str) -> list[dict]:
-    """Lo que dijo el análisis de una importación, en el orden en que se muestra."""
-    return [dict(row) for row in con.execute(
+    """Lo que dijo el análisis de una importación, en el orden en que se muestra.
+
+    Solo los activos en el alcance vigente: si se excluye uno después, la exclusión gana.
+    """
+    rows = [dict(row) for row in con.execute(
         "SELECT a.ip, p.rol, p.nivel, p.motivo, p.siguiente FROM prioridad p "
         "JOIN ejecucion e ON e.id = p.ejecucion_id JOIN activo a ON a.id = p.activo_id "
         "WHERE e.origen_id = ? AND e.tipo = 'analisis' ORDER BY p.orden", (import_id,))]
+    if not rows:
+        return rows
+    current = scope(con, audit_of(con, import_id))
+    return [row for row in rows if current.status(row["ip"]) == current.IN]
 
 
 def set_state(con: sqlite3.Connection, execution_id: str, state: str, error: str = "") -> None:

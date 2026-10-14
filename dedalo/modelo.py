@@ -6,11 +6,12 @@ nunca a otra máquina ni a través del proxy del sistema.
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from . import targets
 
 OLLAMA = "http://127.0.0.1:11434"
 # Modelo pequeño por defecto, que corra en equipos modestos; el portal lo cambia con --modelo.
@@ -22,12 +23,7 @@ _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 def check_local(host: str) -> str:
     """Devuelve la URL si apunta a este equipo (http o https en loopback); si no, ValueError."""
     parts = urllib.parse.urlsplit(host)
-    name = parts.hostname or ""
-    try:
-        local = name == "localhost" or ipaddress.ip_address(name).is_loopback
-    except ValueError:
-        local = False
-    if parts.scheme not in ("http", "https") or not local:
+    if parts.scheme not in ("http", "https") or not targets.is_local_host(parts.hostname or ""):
         raise ValueError(f"El servidor del modelo tiene que estar en este equipo (127.0.0.1, ::1 o localhost): {host}")
     return host
 

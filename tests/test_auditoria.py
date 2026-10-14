@@ -76,14 +76,19 @@ class ImportTests(unittest.TestCase):
     def priority(self, ip, order, level="alta", role="Rol"):
         return {"ip": ip, "orden": order, "rol": role, "nivel": level, "motivo": "Por sus servicios.", "siguiente": "Revisar."}
 
+    def load_in_scope(self, execution):
+        """Importa el inventario de ejemplo en una ficha cuyo alcance cubre sus hosts."""
+        self.audit = auditoria.create_audit(self.con, "Laboratorio", "192.0.2.0/24")
+        return self.load(execution)
+
     def test_analysis_keeps_its_priorities_in_order(self):
-        self.load("lunes")
-        self.assertEqual((auditoria.analysis_of(self.con, "lunes"), auditoria.priorities(self.con, "lunes")), (None, []))
+        self.load_in_scope("lunes")
+        self.assertEqual((auditoria.analysis_status(self.con, "lunes"), auditoria.priorities(self.con, "lunes")), (None, []))
         analysis = auditoria.start_analysis(self.con, "lunes", {"modelo": "llama3.2:3b"})
         row = self.con.execute("SELECT tipo, origen_id, estado, opciones FROM ejecucion WHERE id = ?", (analysis,)).fetchone()
         self.assertEqual(tuple(row[:3]), ("analisis", "lunes", "en_cola"))
         self.assertIn("llama3.2:3b", row["opciones"])
-        self.assertEqual(auditoria.analysis_of(self.con, "lunes"), analysis)
+        self.assertEqual(auditoria.analysis_status(self.con, "lunes"), {"estado": "en_cola", "error": ""})
         auditoria.save_priorities(self.con, analysis, [
             self.priority("192.0.2.20", 1, "baja", "Estación"), self.priority("192.0.2.10", 0, "alta", "Servidor"),
             self.priority("203.0.113.9", 2)])  # una IP que no es de la ficha no se guarda
@@ -91,8 +96,15 @@ class ImportTests(unittest.TestCase):
                          [("192.0.2.10", "Servidor", "alta"), ("192.0.2.20", "Estación", "baja")])
         self.assertEqual(set(auditoria.priorities(self.con, "lunes")[0]), {"ip", "rol", "nivel", "motivo", "siguiente"})
 
+    def test_a_host_excluded_after_the_analysis_is_left_out(self):
+        self.load_in_scope("lunes")
+        analysis = auditoria.start_analysis(self.con, "lunes", {})
+        auditoria.save_priorities(self.con, analysis, [self.priority("192.0.2.10", 0), self.priority("192.0.2.20", 1)])
+        auditoria.update_audit(self.con, self.audit, "Laboratorio", "192.0.2.0/24", "192.0.2.20")
+        self.assertEqual([p["ip"] for p in auditoria.priorities(self.con, "lunes")], ["192.0.2.10"])  # la exclusión gana
+
     def test_analysing_again_replaces_the_previous_analysis(self):
-        self.load("lunes")
+        self.load_in_scope("lunes")
         first = auditoria.start_analysis(self.con, "lunes", {"modelo": "m"})
         auditoria.save_priorities(self.con, first, [self.priority("192.0.2.10", 0, role="Antes")])
         second = auditoria.start_analysis(self.con, "lunes", {"modelo": "m"})

@@ -46,10 +46,6 @@ class Conflict(ValueError):
     pass
 
 
-class _Closing(Exception):
-    """El portal se está cerrando: el análisis en curso para entre un host y el siguiente."""
-
-
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -145,8 +141,6 @@ class PortalStore:
             self._finish_deletes()
             self._migrate_folders()
             self._load()
-            with closing(self.database()) as con:
-                auditoria.close_interrupted_analyses(con)
         except Exception:
             self.file_lock.close()
             raise
@@ -244,6 +238,7 @@ class PortalStore:
     def _load(self):
         """Carga el historial desde la base y cierra lo que quedó a medias."""
         with closing(self.database()) as con:
+            auditoria.close_interrupted_analyses(con)
             for row in auditoria.portal_jobs(con):
                 if not (self.root / row["id"]).is_dir():
                     continue  # importación sin carpeta del portal
@@ -637,9 +632,7 @@ class PortalStore:
         response["capturas"] = sum(g["capturas"] for g in response["grupos"])
         with closing(self.database()) as con:
             response["analisis"] = auditoria.analysis_status(con, job_id)
-            # La exclusión siempre gana: un host que salió del alcance después del análisis no se muestra.
-            scope = auditoria.scope(con, auditoria.audit_of(con, job_id))
-            response["prioridades"] = [p for p in auditoria.priorities(con, job_id) if scope.status(p["ip"]) == scope.IN]
+            response["prioridades"] = auditoria.priorities(con, job_id)
         return response
 
     def start(self, job_id):
@@ -670,42 +663,42 @@ class PortalStore:
                 status = auditoria.analysis_status(con, job_id)
                 if status and status["estado"] in ("en_cola", "en_curso"):
                     raise Conflict("Ya hay un análisis de esta ejecución en marcha.")
-                auditoria.start_analysis(con, job_id, {"modelo": self.model_option, "servidor": self.model_host})
-            self.pending.put(("analisis", job_id))
+                analysis_id = auditoria.start_analysis(con, job_id, {"modelo": self.model_option, "servidor": self.model_host})
+            self.pending.put(("analisis", (job_id, analysis_id)))
         return self.detail(job_id)
 
-    def _run_analysis(self, job_id):
+    def _run_analysis(self, job_id, analysis_id):
         """Nunca tumba el hilo de la cola: si falla la base, cierra el análisis en error si puede."""
         try:
-            self._analyse(job_id)
+            self._analyse(job_id, analysis_id)
         except Exception as exc:
             print(f"Error del portal: no se pudo completar el análisis de {job_id}: {exc}", file=sys.stderr)
             try:
                 with closing(self.database()) as con:
-                    auditoria.fail_analysis(con, job_id, "No se pudo completar el análisis. Consulta la terminal del portal.")
+                    auditoria.set_state(con, analysis_id, "error",
+                                        "No se pudo completar el análisis. Consulta la terminal del portal.")
             except Exception as again:
                 # Al reabrir el portal, el análisis que quedó en cola o en curso se marca como interrumpido.
                 print(f"Error del portal: no se pudo cerrar el análisis de {job_id}: {again}", file=sys.stderr)
 
-    def _analyse(self, job_id):
+    def _analyse(self, job_id, analysis_id):
+        # Sin el bloqueo del portal: solo lee lo que la importación observó y el alcance vigente.
         with closing(self.database()) as con:
-            analysis_id = auditoria.analysis_of(con, job_id)
-            if analysis_id is None:
-                return  # se borró la ejecución mientras esperaba en la cola
             auditoria.set_state(con, analysis_id, "en_curso")
+            current = auditoria.scope(con, auditoria.audit_of(con, job_id))
+            observed = auditoria.observed_hosts(con, job_id)
 
         def generate(prompt):
-            if self.closing:
-                raise _Closing()
             return modelo.generate(prompt, self.model_option, self.model_host, schema=prioridad.ESQUEMA)
 
         try:
             # Solo lo que está en alcance (el siguiente paso sugerido no debe proponerse fuera de él)
             # y tiene algún puerto abierto: sin servicios, el modelo no tiene nada que valorar.
-            hosts = [a for a in self.inventory(job_id)["activos"] if a["alcance"] == targets.Scope.IN and a["servicios"]]
-            rows = prioridad.analizar(hosts, generate)
+            hosts = [a for a in inventory.build(observed, [])["activos"]
+                     if a["servicios"] and current.status(a["ip"]) == current.IN]
+            rows = prioridad.analizar(hosts, generate, parar=lambda: self.closing)
             state, error = "completa", ""
-        except _Closing:
+        except prioridad.Interrumpido:
             rows, state, error = [], "interrumpida", "El portal se cerró antes de terminar el análisis."
         except Exception as exc:
             print(f"Error del portal: no se pudo analizar {job_id} con IA: {exc}", file=sys.stderr)
@@ -750,7 +743,7 @@ class PortalStore:
                 return
             kind, payload = item
             if kind == "analisis":
-                self._run_analysis(payload)
+                self._run_analysis(*payload)
                 continue
             job_id, binary, chrome = payload
             with self.lock:
