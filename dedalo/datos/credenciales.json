@@ -1,0 +1,16 @@
+{
+  "version": "2026-10-14",
+  "nota": "Credenciales por defecto curadas a mano para la demo. Ampliar desde recopilaciones públicas tras revisar su licencia.",
+  "entradas": [
+    {"fabricante": "Genérico", "producto": "Panel de administración", "servicio": "http-form",
+     "credenciales": [{"usuario": "admin", "clave": "admin"}, {"usuario": "admin", "clave": "password"}],
+     "receta": {"ruta": "/login", "campo_usuario": "usuario", "campo_clave": "clave", "exito": {"texto_falla": "incorrect"}},
+     "fuente": "curado a mano", "licencia": "propio"},
+    {"fabricante": "Genérico", "producto": "lighttpd", "servicio": "http-basic",
+     "credenciales": [{"usuario": "admin", "clave": "admin"}],
+     "fuente": "curado a mano", "licencia": "propio"},
+    {"fabricante": "Genérico", "producto": "vsftpd", "servicio": "ftp",
+     "credenciales": [{"usuario": "anonymous", "clave": "anonymous"}, {"usuario": "ftp", "clave": "ftp"}],
+     "fuente": "curado a mano", "licencia": "propio"}
+  ]
+}
