@@ -173,6 +173,60 @@ CREATE TABLE prioridad (
 );
 CREATE INDEX prioridad_activo ON prioridad (activo_id);
 """,
+    # Credenciales por defecto (bloque 6): catálogo curado + prueba activa.
+    4: """
+CREATE TABLE nueva_ejecucion (
+  id           TEXT PRIMARY KEY,
+  auditoria_id TEXT NOT NULL REFERENCES auditoria(id) ON DELETE CASCADE,
+  tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'descubrimiento', 'analisis', 'credenciales')),
+  origen_id    TEXT REFERENCES ejecucion(id) ON DELETE CASCADE,
+  nombre       TEXT NOT NULL,
+  estado       TEXT NOT NULL CHECK (estado IN ('preparada', 'en_cola', 'en_curso', 'deteniendo', 'completa',
+                                               'parcial', 'error', 'cancelada', 'interrumpida')),
+  opciones     TEXT NOT NULL DEFAULT '{}',
+  creada       TEXT NOT NULL,
+  iniciada     TEXT,
+  terminada    TEXT,
+  error        TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO nueva_ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada, iniciada, terminada, error)
+  SELECT id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada, iniciada, terminada, error FROM ejecucion;
+DROP TABLE ejecucion;
+ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
+CREATE INDEX ejecucion_auditoria ON ejecucion (auditoria_id);
+CREATE INDEX ejecucion_origen ON ejecucion (origen_id);
+CREATE TABLE config (
+  clave TEXT PRIMARY KEY,
+  valor TEXT NOT NULL
+);
+CREATE TABLE credencial_catalogo (
+  id           INTEGER PRIMARY KEY,
+  fabricante   TEXT NOT NULL DEFAULT '',
+  producto     TEXT NOT NULL,
+  version      TEXT NOT NULL DEFAULT '',
+  servicio     TEXT NOT NULL CHECK (servicio IN ('http-basic', 'http-form', 'ftp')),
+  usuario      TEXT NOT NULL,
+  clave        TEXT NOT NULL,
+  receta       TEXT NOT NULL DEFAULT '',
+  fuente       TEXT NOT NULL DEFAULT '',
+  licencia     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX credencial_catalogo_servicio ON credencial_catalogo (servicio);
+CREATE TABLE credencial_resultado (
+  id           INTEGER PRIMARY KEY,
+  ejecucion_id TEXT NOT NULL REFERENCES ejecucion(id) ON DELETE CASCADE,
+  activo_id    INTEGER NOT NULL REFERENCES activo(id) ON DELETE CASCADE,
+  orden        INTEGER NOT NULL,
+  puerto       INTEGER NOT NULL,
+  protocolo    TEXT NOT NULL DEFAULT 'tcp',
+  servicio     TEXT NOT NULL,
+  estado       TEXT NOT NULL CHECK (estado IN ('entrada', 'fallo', 'error')),
+  usuario      TEXT NOT NULL DEFAULT '',
+  clave        TEXT NOT NULL DEFAULT '',
+  detalle      TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX credencial_resultado_activo ON credencial_resultado (activo_id);
+""",
 }
 
 

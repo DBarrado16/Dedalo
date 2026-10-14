@@ -4,12 +4,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from dedalo import db
+from dedalo import auditoria, db
 
 LATEST = max(db.MIGRATIONS)
 NEXT = LATEST + 1  # número para migraciones de prueba
 TABLES = {"auditoria", "alcance", "ejecucion", "activo", "servicio", "observacion_activo",
-          "observacion", "evidencia", "captura", "prioridad"}
+          "observacion", "evidencia", "captura", "prioridad",
+          "config", "credencial_catalogo", "credencial_resultado"}
 
 
 class DatabaseTests(unittest.TestCase):
@@ -166,6 +167,20 @@ ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
         indexes = {row[0] for row in self.con.execute("SELECT name FROM sqlite_master WHERE type = 'index' "
                                                       "AND tbl_name = 'prioridad' AND sql IS NOT NULL")}
         self.assertEqual(indexes, {"prioridad_activo"})
+
+    def test_migration_4_adds_credential_tables_and_type(self):
+        con = self.con
+        self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], 4)
+        tablas = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertLessEqual({"credencial_catalogo", "credencial_resultado", "config"}, tablas)
+        indices = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        self.assertLessEqual({"credencial_catalogo_servicio", "credencial_resultado_activo"}, indices)
+        audit = auditoria.default_audit(con)
+        con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, nombre, estado, creada) "
+                    "VALUES ('c1', ?, 'credenciales', 'x', 'en_cola', ?)", (audit, auditoria.now()))
+        with self.assertRaises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, nombre, estado, creada) "
+                        "VALUES ('c2', ?, 'inventado', 'x', 'en_cola', ?)", (audit, auditoria.now()))
 
     def test_refuses_database_from_newer_version(self):
         self.con.execute("PRAGMA user_version = 99")
