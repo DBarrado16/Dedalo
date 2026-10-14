@@ -12,8 +12,9 @@ Qué hace la primera versión, qué puede tocar cada módulo y qué estados usan
 - Exportación: inventario CSV/JSON, índice de capturas y ZIP por subred.
 - Migración del historial anterior de `portal_datos/` a una auditoría «Importadas».
 - Instalación automática de gowitness verificada por SHA-256.
+- Priorización con IA (bloque 5, adelantado el 2026-10-14): un modelo local (Ollama) ordena los hosts en alcance de una importación por prioridad, con su rol probable, el motivo y un siguiente paso sugerido. Solo lee la base; no conecta con ningún objetivo y no ejecuta nada.
 
-**Queda para después:** descubrimiento de red (bloque 2), lanzar Nmap desde el portal (bloque 3), correlación y priorización con IA (bloque 5) y comprobación de credenciales (bloque 6).
+**Queda para después:** descubrimiento de red (bloque 2), lanzar Nmap desde el portal (bloque 3) y comprobación de credenciales (bloque 6).
 
 **No se hará:** uso multiusuario, publicar el portal en red, explotar vulnerabilidades ni iniciar sesión en los servicios capturados.
 
@@ -51,14 +52,17 @@ Una IP queda en una de estas situaciones:
 
 ## 0.4 Etapas, estados y resultados
 
-Cada cosa que se hace es una **ejecución** de un tipo. En la primera versión hay dos tipos:
+Cada cosa que se hace es una **ejecución** de un tipo. En la primera versión hay tres tipos:
 
 | Tipo | Qué hace | ¿Conecta con objetivos? | Qué escribe |
 | --- | --- | --- | --- |
 | `importacion` | Lee archivos Nmap | No | Activos, servicios, observaciones y el Nmap original como evidencia |
 | `captura` | Hace capturas de los servicios web en alcance de una importación | Sí, HTTP/HTTPS | Un resultado por URL y las imágenes como evidencia |
+| `analisis` | Pide a un modelo local, host por host, el rol y la prioridad de los hosts en alcance de una importación | No: solo habla con Ollama en `127.0.0.1` | Una prioridad por activo (rol, nivel, motivo y siguiente paso sugerido) |
 
-Tipos futuros: `descubrimiento` y `escaneo` (conectan, solo en alcance), `correlacion` (no conecta) y `credenciales` (conecta, con límites).
+Al modelo solo le llegan metadatos (IP, nombres, puerto, servicio, producto, versión, detalle y título web), como datos y no como instrucciones; su respuesta se valida contra un esquema fijo y lo que no encaja queda `sin_analisis`. Un análisis nuevo de la misma importación sustituye al anterior.
+
+Tipos futuros: `descubrimiento` y `escaneo` (conectan, solo en alcance) y `credenciales` (conecta, con límites).
 
 **Estados de una ejecución**
 

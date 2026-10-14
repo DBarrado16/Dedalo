@@ -17,6 +17,7 @@ Acepta XML (`-oX`), grepable (`-oG`) y salida normal (`-oN`), detectados por el 
 - Python 3.12 o superior. Solo usa la librería estándar; no hay paquetes que instalar con pip.
 - [gowitness v3](https://github.com/sensepost/gowitness), probado con **3.2.0**. Colocar el ejecutable en `bin/gowitness.exe` (Windows), `bin/gowitness` (Linux), en el PATH o indicar `--gowitness`.
 - Chrome, Chromium o Edge. Se detectan automáticamente o se indican con `--chrome`. Si no se encuentra ninguno, gowitness puede descargar su navegador.
+- Opcional, para la priorización con IA: [Ollama](https://ollama.com) en el mismo equipo, con un modelo descargado. El resto del portal funciona sin él.
 
 El ejecutable de gowitness no se incluye en el repositorio. `python -m dedalo instalar` descarga el binario oficial para Windows, Linux o macOS (Intel o ARM), comprueba su SHA-256 contra la huella fijada en `dedalo/gowitness.py` y lo coloca en `bin/`. El portal lo hace automáticamente al arrancar si no encuentra gowitness y no se indicó `--gowitness`; si la descarga falla, arranca igualmente y muestra el aviso. Los comandos `capturar` y `ver` no descargan nada por su cuenta.
 
@@ -139,6 +140,19 @@ Si varios archivos describen la misma IP y puerto/protocolo, se unen sus puertos
 El inventario admite hasta 100.000 activos o servicios por ejecución. Las tablas muestran inicialmente 60 filas y permiten cargar más. El CSV incluye una fila por servicio y una fila vacía de servicio para los hosts sin puertos abiertos; los resultados de scripts se conservan en el JSON. El CSV neutraliza campos que una hoja de cálculo podría interpretar como fórmulas.
 
 Puedes subir `ejemplos/inventario.xml` para revisar cuatro activos de documentación con servicios HTTP/HTTPS, SSH, LDAP, SMB, Kerberos y DNS, incluyendo TCP, UDP e IPv6. Basta con revisar la importación; no es necesario iniciar capturas contra esas direcciones de ejemplo.
+
+## Priorización con IA
+
+La pestaña **Priorización** de una ejecución ordena sus hosts en alcance por prioridad con un modelo local de [Ollama](https://ollama.com). Cada host sale con su rol probable (por ejemplo, «controlador de dominio»), un nivel (alta, media o baja), el motivo y un siguiente paso sugerido. Es una opinión asesora: Dédalo solo lee el inventario de la base, no conecta con ningún equipo y no ejecuta lo que sugiera el modelo.
+
+Pulsa **Analizar con IA**. El análisis va por la misma cola que las capturas, así que el portal sigue respondiendo; puede tardar alrededor de medio minuto por host con un modelo de 8B. Volver a analizar sustituye el resultado anterior.
+
+- El modelo se elige al arrancar el portal: `python -m dedalo web --modelo NOMBRE` (por defecto `llama3.2:3b`, pequeño para que corra en equipos modestos) y `--ollama URL` si Ollama no está en `http://127.0.0.1:11434`. El modelo tiene que estar ya descargado (`ollama pull NOMBRE`).
+- Al modelo solo le llegan metadatos de cada host (IP, nombres, puerto, servicio, producto, versión, detalle y título web), uno por pregunta, nunca credenciales ni volcados. Lo que dice el equipo analizado se le pasa como datos, no como instrucciones.
+- La respuesta se pide en JSON con un esquema fijo y temperatura 0, así que la misma red da el mismo resultado. Si la respuesta de un host no encaja, ese host queda **Sin análisis** con el motivo; si el modelo no responde (Ollama apagado, modelo sin descargar o demasiado lento), el análisis acaba en error y lo explica.
+- Si se cierra el portal a mitad, el análisis para tras el host en curso y queda como interrumpido.
+
+`ejemplos/laboratorio.xml` es un laboratorio inventado para probarlo: un controlador de dominio, un panel web de administración, un servidor de ficheros y un puesto de usuario en `10.30.0.0/16`. Crea una ficha con ese rango, sube el archivo y pulsa **Analizar con IA**.
 
 ## Uso desde consola
 
