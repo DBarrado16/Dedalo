@@ -114,7 +114,7 @@ class AnalysisTests(unittest.TestCase):
         hosts = parser.merge([parser.parse_file(ROOT / "ejemplos" / "laboratorio.xml")])
         assets = inventory.build(hosts, ["10.30.0.0/16"])["activos"]
         self.assertEqual({a["ip"]: sorted(s["puerto"] for s in a["servicios"]) for a in assets},
-                         {"10.30.1.10": [88, 389, 445], "10.30.1.21": [8443], "10.30.2.20": [445, 2049], "10.30.2.44": [3389]})
+                         {"10.30.1.10": [88, 389, 445], "10.30.1.21": [8443], "10.30.2.20": [21, 445, 2049], "10.30.2.44": [3389]})
         rows = prioridad.analizar(assets, by_ip({"10.30.1.10": answer("alta"), "10.30.1.21": answer("alta"),
                                                  "10.30.2.20": answer("media"), "10.30.2.44": answer("baja")}))
         self.assertEqual([r["ip"] for r in rows], ["10.30.1.10", "10.30.1.21", "10.30.2.20", "10.30.2.44"])

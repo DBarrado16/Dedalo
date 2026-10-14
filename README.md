@@ -160,6 +160,19 @@ Pulsa **Analizar con IA**. El análisis va por la misma cola que las capturas, a
 
 `ejemplos/laboratorio.xml` es un laboratorio inventado para probarlo: un controlador de dominio, un panel web de administración, un servidor de ficheros y un puesto de usuario en `10.30.0.0/16`. Crea una ficha con ese rango, sube el archivo y pulsa **Analizar con IA**.
 
+## Credenciales por defecto
+
+La pestaña **Credenciales** de una ejecución prueba, contra los servicios en alcance, las contraseñas de fábrica que le tocan a cada equipo según lo que parece ser (su fabricante, producto y versión). Es una acción que se lanza a propósito: pulsa **Probar credenciales** y confirma. A diferencia del análisis con IA, **esto sí se conecta** a los servicios.
+
+- Las contraseñas salen de un **catálogo curado y versionado** que viaja con la herramienta (`dedalo/datos/credenciales.json`), no de una IA que las invente. Se vuelca a la base al arrancar. Para ampliarlo, edita el fichero (su origen y licencia van en cada entrada); el portal lo recarga cuando cambia.
+- A cada servicio solo se le prueban las credenciales que **pegan con su fingerprint**; si no se reconoce el aparato, no se le prueba nada.
+- Prueba tres tipos de servicio, solo con librería estándar: **HTTP Basic/Digest**, **login por formulario** (con una «receta» por panel) y **FTP**. En HTTPS no verifica el certificado (los aparatos suelen llevar uno autofirmado).
+- Comprueba el **alcance justo antes** de cada conexión (la exclusión gana), con un **tope de intentos por servicio y una pausa** para no bloquear cuentas. Se puede ver el progreso, pararla y cancelarla, como el análisis.
+- Lo ves por servicio: **entró** (con qué usuario/clave, resaltado), no entró o error. La contraseña encontrada es dato sensible: se guarda en la base local y **no sale del equipo**.
+- Volver a probar sustituye el resultado anterior solo cuando el nuevo termina bien.
+
+Para probarlo de verdad necesitas servicios reales en las IP en alcance (un laboratorio con un panel web y un FTP, por ejemplo); el `ejemplos/laboratorio.xml` sirve para ver qué credenciales se le propondrían a cada servicio, pero esas IP no responden solas.
+
 ## Uso desde consola
 
 Crear `rangos.txt` con un CIDR por línea:

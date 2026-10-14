@@ -22,6 +22,7 @@
     <status state="up"/><address addr="10.30.2.20" addrtype="ipv4"/>
     <hostnames><hostname name="ficheros.laboratorio.local"/></hostnames>
     <ports>
+      <port protocol="tcp" portid="21"><state state="open"/><service name="ftp" product="vsftpd" version="3.0.5"/></port>
       <port protocol="tcp" portid="445"><state state="open"/><service name="microsoft-ds" product="Samba smbd"/></port>
       <port protocol="tcp" portid="2049"><state state="open"/><service name="nfs"/></port>
     </ports>

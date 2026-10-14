@@ -21,6 +21,7 @@ auditoria ─┬─ alcance (reglas incluir/excluir)
 - **Captura** es el intento de capturar una URL, haya salido bien o no.
 - **Evidencia** es un archivo que respalda algo: el Nmap original, una imagen o un registro.
 - **Prioridad** es lo que un análisis con IA dijo de un activo de su importación: rol probable, nivel (alta, media, baja, o `sin_analisis` si la respuesta del modelo no valía), motivo y siguiente paso sugerido. Es una opinión asesora: no cambia nada del inventario. Una importación guarda su último análisis completo y, como mucho, un intento posterior; el intento solo sustituye al completo, en la misma transacción en que guarda sus prioridades, si termina bien.
+- **Resultado de credenciales** es lo que una prueba de credenciales por defecto obtuvo de cada servicio en alcance: si entró (con qué usuario y clave), no entró o error. El catálogo de contraseñas de fábrica vive en `credencial_catalogo`, volcado desde un fichero versionado del repo. Como el análisis, una importación guarda su última prueba completa y, como mucho, un intento posterior; solo se sustituye al terminar bien.
 
 ## Tablas
 
@@ -136,9 +137,45 @@ CREATE TABLE prioridad (
   siguiente    TEXT NOT NULL DEFAULT '',   -- siguiente paso sugerido; texto asesor, nada lo ejecuta
   UNIQUE (ejecucion_id, activo_id)
 );
+
+-- Catálogo curado de credenciales por defecto, volcado del fichero dedalo/datos/credenciales.json
+-- al arrancar (se refresca cuando su huella cambia; la huella se guarda en config).
+CREATE TABLE credencial_catalogo (
+  id           INTEGER PRIMARY KEY,
+  fabricante   TEXT NOT NULL DEFAULT '',
+  producto     TEXT NOT NULL,            -- debe aparecer en el producto o el título del servicio
+  version      TEXT NOT NULL DEFAULT '', -- patrón opcional (fnmatch); vacío = cualquiera
+  servicio     TEXT NOT NULL CHECK (servicio IN ('http-basic', 'http-form', 'ftp')),
+  usuario      TEXT NOT NULL,
+  clave        TEXT NOT NULL,
+  receta       TEXT NOT NULL DEFAULT '', -- JSON del login por formulario (solo http-form)
+  fuente       TEXT NOT NULL DEFAULT '',
+  licencia     TEXT NOT NULL DEFAULT ''
+);
+
+-- Lo que una prueba de credenciales (ejecución 'credenciales') obtuvo de cada servicio.
+CREATE TABLE credencial_resultado (
+  id           INTEGER PRIMARY KEY,
+  ejecucion_id TEXT NOT NULL REFERENCES ejecucion(id) ON DELETE CASCADE,
+  activo_id    INTEGER NOT NULL REFERENCES activo(id) ON DELETE CASCADE,
+  orden        INTEGER NOT NULL,
+  puerto       INTEGER NOT NULL,
+  protocolo    TEXT NOT NULL DEFAULT 'tcp',
+  servicio     TEXT NOT NULL,
+  estado       TEXT NOT NULL CHECK (estado IN ('entrada', 'fallo', 'error')),
+  usuario      TEXT NOT NULL DEFAULT '',  -- con qué se entró, solo si estado = 'entrada'
+  clave        TEXT NOT NULL DEFAULT '',
+  detalle      TEXT NOT NULL DEFAULT ''
+);
+
+-- Pares clave/valor del portal (p. ej. la huella del catálogo cargado).
+CREATE TABLE config (
+  clave TEXT PRIMARY KEY,
+  valor TEXT NOT NULL
+);
 ```
 
-La migración 1 añade índices para las búsquedas habituales: ejecuciones por auditoría, observaciones por servicio y por activo, y capturas por servicio. La migración 2 reconstruye `ejecucion` para admitir el tipo `descubrimiento` y para que borrar una importación borre también las capturas que salieron de ella; añade el índice por `origen_id`. La migración 3 la reconstruye otra vez para admitir el tipo `analisis` y crea la tabla `prioridad` con un índice por activo (el de ejecución ya lo da su `UNIQUE`). El esquema exacto está en `dedalo/db.py`.
+La migración 1 añade índices para las búsquedas habituales: ejecuciones por auditoría, observaciones por servicio y por activo, y capturas por servicio. La migración 2 reconstruye `ejecucion` para admitir el tipo `descubrimiento` y para que borrar una importación borre también las capturas que salieron de ella; añade el índice por `origen_id`. La migración 3 la reconstruye otra vez para admitir el tipo `analisis` y crea la tabla `prioridad` con un índice por activo (el de ejecución ya lo da su `UNIQUE`). La migración 4 la reconstruye para admitir el tipo `credenciales` y crea `credencial_catalogo` (con índice por servicio), `credencial_resultado` (con índice por activo) y `config`. El esquema exacto está en `dedalo/db.py`.
 
 La situación de alcance de un activo (en alcance, excluido o fuera) **no se guarda**: se calcula con las reglas vigentes. Así, cambiar el alcance nunca deja datos desactualizados.
 

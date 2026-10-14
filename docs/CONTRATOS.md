@@ -13,8 +13,9 @@ Qué hace la primera versión, qué puede tocar cada módulo y qué estados usan
 - Migración del historial anterior de `portal_datos/` a una auditoría «Importadas».
 - Instalación automática de gowitness verificada por SHA-256.
 - Priorización con IA (bloque 5, adelantado el 2026-10-14): un modelo local (Ollama) ordena los hosts en alcance de una importación por prioridad, con su rol probable, el motivo y un siguiente paso sugerido. Solo lee la base; no conecta con ningún objetivo y no ejecuta nada.
+- Credenciales por defecto (bloque 6, adelantado el 2026-10-14): a petición del operador, prueba contra los servicios en alcance las contraseñas de fábrica que les tocan según su fingerprint, a partir de un catálogo curado que viaja con la herramienta; conecta con límites y enseña dónde se entró.
 
-**Queda para después:** descubrimiento de red (bloque 2), lanzar Nmap desde el portal (bloque 3) y comprobación de credenciales (bloque 6).
+**Queda para después:** descubrimiento de red (bloque 2) y lanzar Nmap desde el portal (bloque 3).
 
 **No se hará:** uso multiusuario, publicar el portal en red, explotar vulnerabilidades ni iniciar sesión en los servicios capturados.
 
@@ -59,10 +60,13 @@ Cada cosa que se hace es una **ejecución** de un tipo. En la primera versión h
 | `importacion` | Lee archivos Nmap | No | Activos, servicios, observaciones y el Nmap original como evidencia |
 | `captura` | Hace capturas de los servicios web en alcance de una importación | Sí, HTTP/HTTPS | Un resultado por URL y las imágenes como evidencia |
 | `analisis` | Pide a un modelo local, host por host, el rol y la prioridad de los hosts en alcance con algún puerto abierto de una importación | No: solo habla con Ollama en este equipo (loopback, sin proxy ni redirecciones) y con modelos descargados, nunca los «-cloud» | Una prioridad por activo (rol, nivel, motivo y siguiente paso sugerido) |
+| `credenciales` | Prueba las contraseñas de fábrica que le tocan a cada servicio en alcance de una importación, según su fingerprint, solo cuando el operador lo pide y confirma | Sí, a los servicios en alcance (HTTP Basic/Digest, login por formulario, FTP), con conexión directa, tope de intentos por servicio y pausa | Por servicio probado: si entró (con qué usuario/clave), no entró o error |
 
 Al modelo solo le llegan metadatos (IP, nombres, puerto, servicio, producto, versión, detalle y título web), como datos y no como instrucciones; su respuesta se valida contra un esquema fijo y lo que no encaja queda `sin_analisis`. Un análisis nuevo de la misma importación solo sustituye al anterior cuando termina bien; si falla, se cancela o se interrumpe, sigue valiendo el último completo. Para ofrecer en el portal los modelos descargados, el portal pregunta a ese mismo Ollama por su lista (`/api/tags`), con las mismas reglas; el modelo que llega del navegador se comprueba antes de usarlo (forma de nombre de Ollama y nunca de la nube). Con `--arrancar-ollama` (lo usa `iniciar_portal.cmd`), si ese Ollama no responde y está instalado, Dédalo lo arranca en este equipo (`ollama serve`, sin shell, en la dirección de `--ollama`) con `OLLAMA_NO_CLOUD=1`; no conecta con nada más.
 
-Tipos futuros: `descubrimiento` y `escaneo` (conectan, solo en alcance) y `credenciales` (conecta, con límites).
+Las credenciales que prueba salen de un catálogo curado y versionado que viaja con la herramienta (`dedalo/datos/credenciales.json`, volcado a la base al arrancar), nunca de una IA en caliente. Solo se prueban las que pegan con lo que parece ser cada servicio (fabricante, producto, versión); si no se reconoce, no se prueba nada. La prueba se activa a propósito (botón y confirmación en el portal), recomprueba el alcance justo antes de cada conexión y respeta un tope de intentos por servicio para no bloquear cuentas. La contraseña encontrada es dato sensible: se guarda en la base local y no sale del equipo. Un análisis nuevo solo sustituye al anterior cuando termina bien.
+
+Tipos futuros: `descubrimiento` y `escaneo` (conectan, solo en alcance).
 
 **Estados de una ejecución**
 
