@@ -49,3 +49,46 @@ def objetivos(activo: dict, entradas: list[dict]) -> list[dict]:
                                "servicio": entrada["servicio"], "https": es_https(servicio),
                                "usuario": entrada["usuario"], "clave": entrada["clave"], "receta": entrada["receta"]})
     return salida
+
+
+class Interrumpido(Exception):
+    """Se pidió parar la prueba de credenciales (por ejemplo, porque se cierra el portal)."""
+
+
+def probar_activos(activos, entradas, probar, parar=lambda: False, avance=lambda hechos, total: None,
+                   intentos=5, pausa=lambda: None) -> list[dict]:
+    """Prueba, servicio por servicio, las credenciales que le tocan; una fila de resultado por servicio."""
+    trabajos = [(activo["ip"], obj) for activo in activos for obj in objetivos(activo, entradas)]
+    # Un servicio puede tener varias credenciales; se agrupan para contar «servicios», no intentos.
+    por_servicio: dict = {}
+    for ip, obj in trabajos:
+        por_servicio.setdefault((ip, obj["puerto"], obj["servicio"]), []).append(obj)
+    filas, total = [], len(por_servicio)
+    avance(0, total)
+    for (ip, puerto, servicio), objs in por_servicio.items():
+        if parar():
+            raise Interrumpido()
+        fila = {"ip": ip, "puerto": puerto, "protocolo": objs[0]["protocolo"], "servicio": servicio,
+                "estado": "fallo", "usuario": "", "clave": "", "detalle": ""}
+        for numero, obj in enumerate(objs):
+            if numero >= intentos:
+                fila["detalle"] = f"Se abandonó tras {intentos} intentos sin entrar."
+                break
+            if numero:
+                pausa()
+            try:
+                if probar(ip, obj):
+                    fila.update(estado="entrada", usuario=obj["usuario"], clave=obj["clave"])
+                    break
+            except Exception as exc:  # servicio caído, receta inservible: ese servicio queda en error
+                fila.update(estado="error", detalle=str(exc))
+                break
+        filas.append(fila)
+        avance(len(filas), total)
+    return [fila | {"orden": orden} for orden, fila in enumerate(_ordenar(filas))]
+
+
+def _ordenar(filas):
+    # Lo importante arriba: primero donde se entró, luego por IP y puerto.
+    prioridad = {"entrada": 0, "fallo": 1, "error": 1}
+    return sorted(filas, key=lambda f: (prioridad[f["estado"]], f["ip"], f["puerto"]))
