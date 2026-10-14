@@ -152,7 +152,7 @@ Pulsa **Analizar con IA**. El análisis va por la misma cola que las capturas, a
 - La respuesta se pide en JSON con un esquema fijo y temperatura 0, así que la misma red da el mismo resultado. Si la respuesta de un host no encaja, ese host queda **Sin análisis** con el motivo; si el modelo no responde (Ollama apagado, modelo sin descargar o demasiado lento), el análisis acaba en error y lo explica.
 - Si se cierra el portal a mitad, el análisis para tras el host en curso y queda como interrumpido.
 - Si después excluyes un host de la ficha, deja de aparecer en la priorización: la exclusión siempre gana.
-- Ollama tiene que estar en este equipo: `--ollama` solo acepta `127.0.0.1`, `::1` o `localhost`, y la conexión no pasa por el proxy del sistema, para que los datos del cliente no salgan del equipo.
+- Ollama tiene que estar en este equipo: `--ollama` solo acepta `127.0.0.1`, `::1` o `localhost`, y la conexión no pasa por el proxy del sistema ni sigue redirecciones, para que los datos del cliente no salgan del equipo.
 
 `ejemplos/laboratorio.xml` es un laboratorio inventado para probarlo: un controlador de dominio, un panel web de administración, un servidor de ficheros y un puesto de usuario en `10.30.0.0/16`. Crea una ficha con ese rango, sube el archivo y pulsa **Analizar con IA**.
 

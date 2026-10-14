@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+import http.client
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import io
 import json
@@ -37,6 +39,37 @@ class FakeOllama(BaseHTTPRequestHandler):
         pass
 
 
+class Redirecting(FakeOllama):
+    """Lo que escucha en el puerto de Ollama manda a otra dirección; esa otra anota si la visitan."""
+    target = ""
+    visited = []
+
+    def do_GET(self):
+        Redirecting.visited.append(self.path)
+        self.send_response(200)
+        self.end_headers()
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self.send_response(302)
+        self.send_header("Location", Redirecting.target)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+
+@contextmanager
+def serving(handler):
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
 class ModelTests(unittest.TestCase):
     def test_asks_the_local_model_for_one_whole_answer(self):
         with answering(json.dumps({"response": "hola"}).encode()) as opened:
@@ -55,18 +88,11 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(json.loads(opened.call_args.args[0].data)["format"], schema)
 
     def test_the_model_is_reached_directly_even_with_a_system_proxy(self):
-        server = HTTPServer(("127.0.0.1", 0), FakeOllama)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
         closed_proxy = "http://127.0.0.1:1"  # si se usara el proxy, la conexión fallaría
         clean = {key: value for key, value in os.environ.items() if key.lower() not in ("no_proxy", "http_proxy", "all_proxy")}
-        try:
+        with serving(FakeOllama) as ollama:
             with patch.dict(os.environ, clean | {"HTTP_PROXY": closed_proxy, "http_proxy": closed_proxy}, clear=True):
-                self.assertEqual(modelo.generate("p", "m", f"http://127.0.0.1:{server.server_address[1]}"), "ok")
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join()
+                self.assertEqual(modelo.generate("p", "m", ollama), "ok")
 
     def test_only_a_model_on_this_machine_is_used(self):
         for host in ("http://10.0.0.5:11434", "http://ollama.example:11434", "file:///etc/passwd"):
@@ -78,8 +104,22 @@ class ModelTests(unittest.TestCase):
             with self.subTest(host=host), answering(json.dumps({"response": "ok"}).encode()):
                 self.assertEqual(modelo.generate("p", "m", host), "ok")
 
+    def test_a_redirect_is_not_followed(self):
+        # Lo que conteste en el puerto no puede llevar la petición a otra dirección (CONTRATOS 0.4).
+        Redirecting.visited = []
+        with serving(Redirecting) as elsewhere, serving(Redirecting) as ollama:
+            Redirecting.target = elsewhere + "/fuera"
+            with self.assertRaisesRegex(ValueError, "Ollama"):
+                modelo.generate("p", "m", ollama)
+        self.assertEqual(Redirecting.visited, [])
+
     def test_explains_when_the_model_is_unreachable(self):
         with patch.object(modelo._OPENER, "open", side_effect=urllib.error.URLError("refused")):
+            with self.assertRaisesRegex(ValueError, "Ollama"):
+                modelo.generate("p", "llama3.2:3b")
+
+    def test_explains_when_the_model_stops_mid_answer(self):
+        with patch.object(modelo._OPENER, "open", side_effect=http.client.IncompleteRead(b"{")):
             with self.assertRaisesRegex(ValueError, "Ollama"):
                 modelo.generate("p", "llama3.2:3b")
 

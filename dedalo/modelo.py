@@ -6,6 +6,7 @@ nunca a otra máquina ni a través del proxy del sistema.
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.parse
@@ -16,8 +17,17 @@ from . import targets
 OLLAMA = "http://127.0.0.1:11434"
 # Modelo pequeño por defecto, que corra en equipos modestos; el portal lo cambia con --modelo.
 DEFAULT_MODEL = "llama3.2:3b"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Una redirección llevaría la petición a otra dirección: se trata como un error."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
 # Sin ProxyHandler, urllib usaría HTTP_PROXY o el proxy de Windows también para 127.0.0.1.
-_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
 
 
 def check_local(host: str) -> str:
@@ -44,7 +54,8 @@ def generate(prompt: str, model: str, host: str = OLLAMA, timeout: int = 120, sc
     try:
         with _OPENER.open(request, timeout=timeout) as response:
             text = json.loads(response.read()).get("response")
-    except (OSError, ValueError, AttributeError) as exc:  # URLError es OSError; JSON roto es ValueError
+    # URLError es OSError; JSON roto es ValueError; una respuesta cortada es HTTPException.
+    except (OSError, ValueError, AttributeError, http.client.HTTPException) as exc:
         if isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
             raise ValueError(f"El modelo «{model}» tardó más de {timeout} s en responder. "
                              "Prueba con un modelo más pequeño con --modelo.") from exc
