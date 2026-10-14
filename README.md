@@ -63,7 +63,7 @@ Los mismos pasos con estas diferencias: usa `python3` (`python3 -m dedalo instal
 
 ## Operar desde la web
 
-En Windows puedes hacer doble clic en **`iniciar_portal.cmd`**. Abre el navegador y mantiene el servidor en una terminal; déjala abierta mientras trabajas. No requiere instalar paquetes con pip ni Node.
+En Windows puedes hacer doble clic en **`iniciar_portal.cmd`**. Abre el navegador y mantiene el servidor en una terminal; déjala abierta mientras trabajas. No requiere instalar paquetes con pip ni Node. Si tienes [Ollama](https://ollama.com) instalado y no está en marcha, el lanzador lo arranca en segundo plano para la priorización con IA (con el comando, `--arrancar-ollama`); sigue en marcha al cerrar el portal.
 
 También puedes iniciarlo con:
 
@@ -153,7 +153,7 @@ Pulsa **Analizar con IA**. El análisis va por la misma cola que las capturas, a
 - La respuesta se pide en JSON con un esquema fijo y temperatura 0, así que la misma red da el mismo resultado. Si la respuesta de un host no encaja, ese host queda **Sin análisis** con el motivo; si el modelo no responde (Ollama apagado, modelo sin descargar o demasiado lento), el análisis acaba en error y lo explica.
 - Mientras analiza, la pestaña y el botón muestran cuántos hosts lleva («Analizando 3 de 12…»). **Detener tras este host** para el análisis cuando el modelo termina la pregunta en curso, y queda como interrumpido; uno que aún espera en la cola se cancela al momento con **Cancelar análisis**. En los dos casos se descarta lo de ese intento y se sigue viendo el último análisis completo. Si ya iba por el último host, no queda nada que parar: termina y se queda el resultado nuevo.
 - Si se cierra el portal a mitad, el análisis para tras el host en curso y queda como interrumpido.
-- Solo «Analizar con IA» necesita Ollama arrancado y un modelo descargado; importar, el inventario y las capturas funcionan sin él.
+- Solo «Analizar con IA» necesita Ollama arrancado y un modelo descargado; importar, el inventario y las capturas funcionan sin él. El doble clic en `iniciar_portal.cmd` (o `--arrancar-ollama`) arranca Ollama si está instalado y no responde, y lo hace con `OLLAMA_NO_CLOUD=1`: ese Ollama no sirve modelos de la nube, ni siquiera con otro nombre. Si Ollama ya estaba en marcha, se usa tal cual.
 - Si después excluyes un host de la ficha, deja de aparecer en la priorización: la exclusión siempre gana.
 - Ollama tiene que estar en este equipo: `--ollama` solo acepta `127.0.0.1`, `::1` o `localhost`, y la conexión no pasa por el proxy del sistema ni sigue redirecciones, para que los datos del cliente no salgan del equipo.
 - Por lo mismo, `--modelo` rechaza los modelos en la nube de Ollama (etiqueta `cloud` o `…-cloud`, como `gpt-oss:120b-cloud`): Ollama los sirve desde el mismo servidor local, pero manda la pregunta a sus servidores. Para cerrar también esa puerta en el propio Ollama, arráncalo con `OLLAMA_NO_CLOUD=1`.

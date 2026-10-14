@@ -1181,6 +1181,11 @@ def ensure_gowitness(explicit):
 
 def serve_portal(args):
     ensure_gowitness(args.gowitness)
+    if args.arrancar_ollama:
+        # Antes que el portal: así su primera consulta de modelos ya encuentra a Ollama.
+        _, message = modelo.ensure_running(args.ollama)
+        if message:
+            print(message, flush=True)
     store = PortalStore(args.datos, args.gowitness, args.chrome, model=args.modelo, ollama=args.ollama)
     try:
         server = PortalServer(("127.0.0.1", args.puerto), store)

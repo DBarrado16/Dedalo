@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
+from pathlib import Path
 import re
+import shutil
+import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -85,6 +90,56 @@ def list_models(host: str = OLLAMA, timeout: int = 5) -> list[dict]:
         if not remote and answers and not _cloud(entry["name"]):
             models.append({"nombre": entry["name"], "tamano": str(details.get("parameter_size") or "")})
     return sorted(models, key=lambda model: model["nombre"].lower())
+
+
+def answers(host: str = OLLAMA, timeout: int = 2) -> bool:
+    """Si el Ollama de este equipo responde."""
+    try:
+        list_models(host, timeout)
+        return True
+    except ValueError:
+        return False
+
+
+def find_ollama() -> str | None:
+    """El ejecutable de Ollama: en el PATH o donde lo deja su instalador de Windows."""
+    found = shutil.which("ollama")
+    if found:
+        return found
+    local = os.environ.get("LOCALAPPDATA")
+    installed = Path(local) / "Programs" / "Ollama" / "ollama.exe" if local else None
+    return str(installed) if installed and installed.is_file() else None
+
+
+def ensure_running(host: str = OLLAMA, wait: float = 20) -> tuple[bool, str]:
+    """Si Ollama no responde en este equipo y está instalado, lo arranca en segundo plano.
+
+    Devuelve si lo ha arrancado y un aviso para la terminal. Lo arranca sin modelos de la nube
+    (OLLAMA_NO_CLOUD): así ni un alias local de uno de ellos saca los datos del equipo. Sigue en
+    marcha al cerrar el portal, como cuando lo abre el usuario: pararlo a la fuerza podría dejar
+    colgado el proceso del modelo ocupando la memoria de la GPU.
+    """
+    parts = urllib.parse.urlsplit(check_local(host))
+    if answers(host):
+        return False, ""
+    binary = find_ollama()
+    if binary is None:
+        return False, ("Ollama no está instalado: el portal funciona, pero la priorización con IA no estará "
+                       "disponible hasta que lo instales (https://ollama.com).")
+    address = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    env = {**os.environ, "OLLAMA_HOST": f"{address}:{parts.port or 11434}", "OLLAMA_NO_CLOUD": "1"}
+    # Sin shell y sin ventana; su salida no hace falta: si falla, se ve en que no responde.
+    process = subprocess.Popen([binary, "serve"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline and process.poll() is None:
+        if answers(host):
+            return True, f"Ollama no estaba en marcha: arrancado en segundo plano en {host}, sin modelos de la nube."
+        time.sleep(0.5)
+    if answers(host):
+        return False, ""  # ya estaba en marcha y tardó en contestar; el lanzado no pudo usar el puerto
+    return False, (f"No se pudo arrancar Ollama ({binary}): el portal funciona, pero la priorización con IA "
+                   "no estará disponible hasta que lo arranques.")
 
 
 def generate(prompt: str, model: str, host: str = OLLAMA, timeout: int = 120, schema: dict | None = None) -> str:

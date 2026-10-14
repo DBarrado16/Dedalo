@@ -87,6 +87,8 @@ def build_parser() -> argparse.ArgumentParser:
                              f"elegir otro (DEDALO_MODELO o {modelo.DEFAULT_MODEL})")
     portal.add_argument("--ollama", type=model_option(modelo.check_local), default=modelo.OLLAMA,
                         help=f"Servidor de Ollama en este equipo ({modelo.OLLAMA})")
+    portal.add_argument("--arrancar-ollama", action="store_true",
+                        help="Si Ollama está instalado y no responde, arrancarlo en segundo plano (lo usa iniciar_portal.cmd)")
 
     show = subcommands.add_parser("ver", help="Abrir el visor de una subred, un rango o todo")
     show.add_argument("salida", help="Carpeta de una ejecución")

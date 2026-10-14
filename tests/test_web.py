@@ -1,5 +1,5 @@
 import argparse
-from contextlib import closing, redirect_stderr
+from contextlib import closing, redirect_stderr, redirect_stdout
 import csv
 import hashlib
 import io
@@ -1559,7 +1559,7 @@ class PortTests(unittest.TestCase):
             try:
                 args = argparse.Namespace(datos=second_data, gowitness="indicado", chrome=None,
                                           puerto=server.server_address[1], abrir=False,
-                                          modelo=web.modelo.DEFAULT_MODEL, ollama=web.modelo.OLLAMA)
+                                          modelo=web.modelo.DEFAULT_MODEL, ollama=web.modelo.OLLAMA, arrancar_ollama=False)
                 with self.assertRaisesRegex(ValueError, "ya está en uso"):
                     web.serve_portal(args)
             finally:
@@ -1603,6 +1603,24 @@ class ModelOptionTests(unittest.TestCase):
         with redirect_stderr(errors), self.assertRaises(SystemExit):
             cli.build_parser().parse_args(["web", "--modelo", "gpt-oss:120b-cloud"])
         self.assertIn("nube", errors.getvalue())
+
+    def test_the_one_click_launcher_starts_ollama_and_the_command_does_not_by_default(self):
+        self.assertFalse(cli.build_parser().parse_args(["web"]).arrancar_ollama)
+        self.assertIn(b"--arrancar-ollama", (ROOT / "iniciar_portal.cmd").read_bytes())
+
+    def test_the_portal_starts_ollama_only_when_asked(self):
+        class Stop(Exception):
+            pass
+
+        for flags, calls in (([], 0), (["--arrancar-ollama"], 1)):
+            args = cli.build_parser().parse_args(["web", "--datos", "datos", *flags])
+            with self.subTest(flags=flags), patch("dedalo.web.ensure_gowitness"), \
+                    patch("dedalo.web.PortalStore", side_effect=Stop), redirect_stdout(io.StringIO()) as output, \
+                    patch("dedalo.web.modelo.ensure_running", return_value=(True, "Ollama arrancado.")) as ensure:
+                with self.assertRaises(Stop):
+                    web.serve_portal(args)
+            self.assertEqual(ensure.call_count, calls)
+            self.assertEqual("Ollama arrancado." in output.getvalue(), bool(calls))
 
     def test_the_chosen_model_reaches_the_portal(self):
         args = cli.build_parser().parse_args(["web", "--datos", "datos", "--modelo", "qwen2.5:7b",
