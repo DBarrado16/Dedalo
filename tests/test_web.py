@@ -342,6 +342,45 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.request("/api/jobs/" + job["id"] + "/probar-credenciales", {})[0], 409)
         self.store.jobs[job["id"]]["estado"] = "preparada"
 
+    def test_a_broken_catalog_does_not_stop_the_portal(self):
+        with patch("dedalo.web.catalogo.cargar", side_effect=ValueError("catálogo roto")), redirect_stderr(io.StringIO()):
+            self.reopen()  # _load vuelve a correr al reabrir el portal
+        self.assertEqual(self.request("/api/jobs")[0], 200)  # el portal sigue en pie
+
+    def test_credentials_need_the_scope_defined(self):
+        audit = self.store.create_audit({"nombre": "Sin alcance", "incluir": ""})
+        job = json.loads(self.request("/api/jobs", payload() | {"auditoria": audit["id"]})[1])
+        self.assertEqual(self.request("/api/jobs/" + job["id"] + "/probar-credenciales", {})[0], 409)
+
+    FTP_DOS = ("<?xml version='1.0'?><nmaprun>"
+               "<host><status state='up'/><address addr='10.10.1.1' addrtype='ipv4'/><ports>"
+               "<port protocol='tcp' portid='21'><state state='open'/><service name='ftp' product='vsftpd'/></port></ports></host>"
+               "<host><status state='up'/><address addr='10.10.1.2' addrtype='ipv4'/><ports>"
+               "<port protocol='tcp' portid='21'><state state='open'/><service name='ftp' product='vsftpd'/></port></ports></host>"
+               "</nmaprun>")
+
+    def test_a_host_excluded_mid_run_is_not_connected_to(self):
+        contenido = [{"nombre": "dos.xml", "contenido": self.FTP_DOS}]
+        job = json.loads(self.request("/api/jobs", {"nombre": "Dos FTP", "archivos": contenido,
+                                                    "opciones": {}, "auditoria": self.audit["id"]})[1])
+        conectados, started, release = [], threading.Event(), threading.Event()
+
+        def probar(ip, objetivo):
+            conectados.append(ip)
+            if len(conectados) == 1:
+                started.set(); release.wait(10)
+            return False
+
+        with patch("dedalo.web.probador.probar", side_effect=probar):
+            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/probar-credenciales", {})[0], 202)
+            started.wait(10)  # está conectando al primer host
+            self.store.update_audit(self.audit["id"], {"nombre": "Cliente de prueba", "incluir": "10.10.0.0/17", "excluir": "10.10.1.2"})
+            release.set()
+            self.settled_credentials(job["id"])
+        # El segundo host, excluido a mitad, no se llega a conectar: el alcance se recomprueba en vivo.
+        self.assertNotIn("10.10.1.2", conectados)
+        self.assertIn("10.10.1.1", conectados)
+
     def test_progress_counts_the_hosts_already_answered(self):
         job, release = self.create(), threading.Event()
         model = model_waiting_at(2, release)

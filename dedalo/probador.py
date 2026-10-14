@@ -27,11 +27,11 @@ class _SinRedireccion(urllib.request.HTTPRedirectHandler):
         return None
 
 
-# Un opener por modo, reutilizado (como en modelo.py): sin proxy y sin verificar el certificado.
-# El de formulario, además, no sigue los 3xx (una redirección tras el login ya es señal de éxito).
+# Un opener reutilizado (como en modelo.py): sin proxy, sin verificar el certificado y SIN seguir
+# los 3xx. Seguir una redirección iría a otro host (posible fuera de alcance) y en Basic arrastraría
+# las credenciales; además, una redirección tras un login ya es señal de qué pasó.
 _HTTPS = urllib.request.HTTPSHandler(context=_SIN_VERIFICAR)
-_OPENER = urllib.request.build_opener(_SIN_PROXY, _HTTPS)
-_OPENER_SIN_REDIR = urllib.request.build_opener(_SIN_PROXY, _HTTPS, _SinRedireccion())
+_OPENER = urllib.request.build_opener(_SIN_PROXY, _HTTPS, _SinRedireccion())
 
 
 def _url(ip: str, objetivo: dict, ruta: str = "/") -> str:
@@ -49,6 +49,8 @@ def _http_basic(ip, objetivo, timeout) -> bool:
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
             return False
+        if 300 <= exc.code < 400:
+            return True  # pasó la autenticación y redirige; no seguimos el 3xx (alcance)
         raise
 
 
@@ -60,18 +62,23 @@ def _http_form(ip, objetivo, timeout) -> bool:
               **(receta.get("campos_fijos") or {})}
     datos = urllib.parse.urlencode(campos).encode()
     request = urllib.request.Request(_url(ip, objetivo, receta.get("ruta", "/")), data=datos)
+    # La señal de éxito la dice la receta, sin ambigüedad: un código, o que redirige, o un texto que
+    # solo sale al fallar. No se trata una redirección como éxito salvo que la receta lo pida: muchos
+    # paneles redirigen precisamente al FALLAR (302 a /login?error).
     exito = receta.get("exito") or {}
     try:
-        with _OPENER_SIN_REDIR.open(request, timeout=timeout) as respuesta:
+        with _OPENER.open(request, timeout=timeout) as respuesta:
             codigo, cuerpo = respuesta.status, respuesta.read(65536).decode("utf-8", "replace").lower()
     except urllib.error.HTTPError as exc:
         codigo, cuerpo = exc.code, exc.read(65536).decode("utf-8", "replace").lower()
+    redirigido = 300 <= codigo < 400
     if exito.get("codigo"):
         return codigo == exito["codigo"]
-    redirigido = 300 <= codigo < 400
+    if exito.get("redirige"):
+        return redirigido
     if exito.get("texto_falla"):
-        return redirigido or exito["texto_falla"].lower() not in cuerpo
-    return redirigido or codigo < 400  # sin señal en la receta: entró si redirige o no hubo error
+        return not redirigido and exito["texto_falla"].lower() not in cuerpo
+    return not redirigido and codigo < 400  # sin señal: entró si contestó bien y no redirigió
 
 
 def _ftp(ip, objetivo, timeout) -> bool:

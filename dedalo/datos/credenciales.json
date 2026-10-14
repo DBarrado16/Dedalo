@@ -4,7 +4,7 @@
   "entradas": [
     {"fabricante": "Genérico", "producto": "Panel de administración", "servicio": "http-form",
      "credenciales": [{"usuario": "admin", "clave": "admin"}, {"usuario": "admin", "clave": "password"}],
-     "receta": {"ruta": "/login", "campo_usuario": "usuario", "campo_clave": "clave", "exito": {"texto_falla": "incorrect"}},
+     "receta": {"ruta": "/login", "campo_usuario": "usuario", "campo_clave": "clave", "exito": {"redirige": true}},
      "fuente": "curado a mano", "licencia": "propio"},
     {"fabricante": "Genérico", "producto": "lighttpd", "servicio": "http-basic",
      "credenciales": [{"usuario": "admin", "clave": "admin"}],

@@ -80,10 +80,35 @@ class ProbadorTests(unittest.TestCase):
             self.assertFalse(probador.probar("127.0.0.1", self.objetivo("http-basic", puerto, "admin", "malo")))
 
     def test_http_form_reads_the_recipe_success_signal(self):
-        receta = {"ruta": "/login", "campo_usuario": "usuario", "campo_clave": "clave", "exito": {"texto_falla": "incorrect"}}
+        # El Panel redirige al entrar: la señal de éxito es la redirección.
+        receta = {"ruta": "/login", "campo_usuario": "usuario", "campo_clave": "clave", "exito": {"redirige": True}}
         with sirviendo(Panel) as puerto:
             self.assertTrue(probador.probar("127.0.0.1", self.objetivo("http-form", puerto, "admin", "admin", receta)))
             self.assertFalse(probador.probar("127.0.0.1", self.objetivo("http-form", puerto, "admin", "malo", receta)))
+
+    def test_http_form_a_failure_redirect_is_not_a_success(self):
+        # Panel que redirige al FALLAR (lo habitual: 302 a /login?error): no debe contarse como entrada.
+        class RedirFallo(BaseHTTPRequestHandler):
+            def do_POST(self):
+                cuerpo = self.rfile.read(int(self.headers["Content-Length"])).decode()
+                if "clave=admin" in cuerpo:
+                    self.send_response(200); self.end_headers(); self.wfile.write(b"bienvenido")
+                else:
+                    self.send_response(302); self.send_header("Location", "/login?error=1"); self.end_headers()
+            def log_message(self, *a):
+                pass
+        receta = {"ruta": "/login", "campo_usuario": "usuario", "campo_clave": "clave", "exito": {"texto_falla": "error"}}
+        with sirviendo(RedirFallo) as puerto:
+            self.assertTrue(probador.probar("127.0.0.1", self.objetivo("http-form", puerto, "admin", "admin", receta)))
+            self.assertFalse(probador.probar("127.0.0.1", self.objetivo("http-form", puerto, "admin", "malo", receta)))
+
+    def test_http_basic_does_not_follow_a_redirect(self):
+        # Si siguiera el 3xx, iría a un host inalcanzable y fallaría; al no seguirlo, el 3xx = entró.
+        class Redir(Panel):
+            def do_GET(self):
+                self.send_response(302); self.send_header("Location", "http://127.0.0.1:1/fuera"); self.end_headers()
+        with sirviendo(Redir) as puerto:
+            self.assertTrue(probador.probar("127.0.0.1", self.objetivo("http-basic", puerto, "admin", "admin")))
 
     def test_an_unreachable_service_raises(self):
         with self.assertRaises(OSError):

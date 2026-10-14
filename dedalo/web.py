@@ -245,7 +245,12 @@ class PortalStore:
         """Carga el historial desde la base y cierra lo que quedó a medias."""
         with closing(self.database()) as con:
             auditoria.close_interrupted_analyses(con)
-            catalogo.cargar(con)  # vuelca el catálogo de credenciales al abrir, si su fichero cambió
+            try:
+                catalogo.cargar(con)  # vuelca el catálogo de credenciales al abrir, si su fichero cambió
+            except (OSError, ValueError) as exc:
+                # Un catálogo roto no tumba el portal: solo deja sin probar credenciales.
+                print(f"Aviso: no se pudo cargar el catálogo de credenciales: {exc}. El resto del portal "
+                      "funciona; probar credenciales no estará disponible hasta arreglarlo.", file=sys.stderr)
             for row in auditoria.portal_jobs(con):
                 if not (self.root / row["id"]).is_dir():
                     continue  # importación sin carpeta del portal
@@ -777,6 +782,8 @@ class PortalStore:
                 estado = auditoria.credential_status(con, job_id)
                 if estado and estado["estado"] in ACTIVE:
                     raise Conflict("Ya hay una prueba de credenciales de esta ejecución en marcha.")
+                if not auditoria.scope(con, auditoria.audit_of(con, job_id)).include:
+                    raise Conflict("Define el alcance de la ficha antes de probar credenciales.")
                 test_id = auditoria.start_credential_test(con, job_id, {})
             self.pending.put(("credenciales", (job_id, test_id)))
         return self.detail(job_id)
@@ -805,7 +812,8 @@ class PortalStore:
         with closing(self.database()) as con:
             if not auditoria.begin_credential_test(con, test_id):
                 return  # se canceló en la cola, o otra la sustituyó
-            current = auditoria.scope(con, auditoria.audit_of(con, job_id))
+            audit_id = auditoria.audit_of(con, job_id)
+            current = auditoria.scope(con, audit_id)
             observed = auditoria.observed_hosts(con, job_id)
             entradas = catalogo.entradas(con)
 
@@ -821,8 +829,10 @@ class PortalStore:
                 self.credential_progress[job_id] = {"hechos": hechos, "total": total}
 
         def probar(ip, objetivo):
-            # El alcance se recomprueba justo antes de conectar: la exclusión gana.
-            if current.status(ip) != current.IN:
+            # El alcance se recomprueba EN VIVO justo antes de conectar: una exclusión a mitad gana.
+            with closing(self.database()) as con:
+                vigente = auditoria.scope(con, audit_id)
+            if vigente.status(ip) != vigente.IN:
                 raise ValueError("fuera de alcance")
             return probador.probar(ip, objetivo)
 
