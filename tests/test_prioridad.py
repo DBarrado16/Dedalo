@@ -81,7 +81,10 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(prioridad.parse_result(answer("alta", role="Controlador de dominio"))["rol"], "Controlador de dominio")
 
     def test_rejects_what_does_not_fit_the_schema(self):
-        for text in ("sin json", "{roto", "[1, 2]", answer("urgente"), '{"rol": "x"}'):
+        missing = json.dumps({"nivel": "alta"})
+        not_text = json.dumps({"rol": "x", "nivel": "alta", "motivo": None, "siguiente": "s"})
+        nested = json.dumps({"rol": {"x": 1}, "nivel": "alta", "motivo": "m", "siguiente": "s"})
+        for text in ("sin json", "{roto", "[1, 2]", answer("urgente"), '{"rol": "x"}', missing, not_text, nested):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 prioridad.parse_result(text)
 

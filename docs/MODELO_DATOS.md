@@ -138,7 +138,7 @@ CREATE TABLE prioridad (
 );
 ```
 
-La migración 1 añade índices para las búsquedas habituales: ejecuciones por auditoría, observaciones por servicio y por activo, y capturas por servicio. La migración 2 reconstruye `ejecucion` para admitir el tipo `descubrimiento` y para que borrar una importación borre también las capturas que salieron de ella; añade el índice por `origen_id`. La migración 3 la reconstruye otra vez para admitir el tipo `analisis` y crea la tabla `prioridad` con su índice por ejecución. El esquema exacto está en `dedalo/db.py`.
+La migración 1 añade índices para las búsquedas habituales: ejecuciones por auditoría, observaciones por servicio y por activo, y capturas por servicio. La migración 2 reconstruye `ejecucion` para admitir el tipo `descubrimiento` y para que borrar una importación borre también las capturas que salieron de ella; añade el índice por `origen_id`. La migración 3 la reconstruye otra vez para admitir el tipo `analisis` y crea la tabla `prioridad` con un índice por activo (el de ejecución ya lo da su `UNIQUE`). El esquema exacto está en `dedalo/db.py`.
 
 La situación de alcance de un activo (en alcance, excluido o fuera) **no se guarda**: se calcula con las reglas vigentes. Así, cambiar el alcance nunca deja datos desactualizados.
 

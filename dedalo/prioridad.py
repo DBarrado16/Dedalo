@@ -65,14 +65,16 @@ def parse_result(text: str) -> dict:
         data = json.loads(match.group(0))
     except json.JSONDecodeError as exc:
         raise ValueError(f"la respuesta no es JSON válido ({exc.msg})") from exc
-    nivel = str(data.get("nivel", "")).strip().lower()
+    faltan = [clave for clave in ESQUEMA["required"] if not isinstance(data.get(clave), str)]
+    if faltan:
+        raise ValueError("falta o no es texto: " + ", ".join(faltan))
+    nivel = data["nivel"].strip().lower()
     if nivel not in NIVELES:
         raise ValueError("el nivel no es alta, media ni baja")
-    rol = str(data.get("rol", "")).strip()
+    rol = data["rol"].strip()
     if rol.lower() in NIVELES:
         rol = ""  # el modelo puso el nivel donde iba el rol: mejor «sin determinar» que «alta»
-    return {"rol": rol, "nivel": nivel,
-            "motivo": str(data.get("motivo", "")).strip(), "siguiente": str(data.get("siguiente", "")).strip()}
+    return {"rol": rol, "nivel": nivel, "motivo": data["motivo"].strip(), "siguiente": data["siguiente"].strip()}
 
 
 def analizar(activos: list[dict], generate) -> list[dict]:

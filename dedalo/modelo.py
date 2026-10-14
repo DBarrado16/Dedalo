@@ -1,14 +1,35 @@
-"""Llamada a un modelo local (Ollama) por HTTP, solo con librería estándar."""
+"""Llamada a un modelo local (Ollama) por HTTP, solo con librería estándar.
+
+Los metadatos del cliente solo van a un Ollama de este mismo equipo (docs/CONTRATOS.md 0.4):
+nunca a otra máquina ni a través del proxy del sistema.
+"""
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 OLLAMA = "http://127.0.0.1:11434"
 # Modelo pequeño por defecto, que corra en equipos modestos; el portal lo cambia con --modelo.
 DEFAULT_MODEL = "llama3.2:3b"
+# Sin ProxyHandler, urllib usaría HTTP_PROXY o el proxy de Windows también para 127.0.0.1.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def check_local(host: str) -> str:
+    """Devuelve la URL si apunta a este equipo (http o https en loopback); si no, ValueError."""
+    parts = urllib.parse.urlsplit(host)
+    name = parts.hostname or ""
+    try:
+        local = name == "localhost" or ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        local = False
+    if parts.scheme not in ("http", "https") or not local:
+        raise ValueError(f"El servidor del modelo tiene que estar en este equipo (127.0.0.1, ::1 o localhost): {host}")
+    return host
 
 
 def generate(prompt: str, model: str, host: str = OLLAMA, timeout: int = 120, schema: dict | None = None) -> str:
@@ -18,13 +39,14 @@ def generate(prompt: str, model: str, host: str = OLLAMA, timeout: int = 120, sc
     razonamiento en voz alta: un modelo de razonamiento tardaba 142 s por pregunta pensando
     antes de contestar, y así tarda 35 s.
     """
+    check_local(host)
     # Temperatura 0: la misma pregunta da siempre la misma respuesta (traza de auditoría reproducible).
     data = json.dumps({"model": model, "prompt": prompt, "stream": False, "format": schema or "json", "think": False,
                        "options": {"temperature": 0}})
     request = urllib.request.Request(host.rstrip("/") + "/api/generate", data=data.encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _OPENER.open(request, timeout=timeout) as response:
             text = json.loads(response.read()).get("response")
     except (OSError, ValueError, AttributeError) as exc:  # URLError es OSError; JSON roto es ValueError
         if isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):

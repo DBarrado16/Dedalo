@@ -36,6 +36,13 @@ def port_number(value: str) -> int:
     return number
 
 
+def model_server(value: str) -> str:
+    try:
+        return modelo.check_local(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def build_parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(prog="dedalo", description="Capturas web desde resultados nmap, agrupadas por rango y subred.")
     command.add_argument("--version", action="version", version=__version__)
@@ -70,7 +77,8 @@ def build_parser() -> argparse.ArgumentParser:
     portal.add_argument("--abrir", action="store_true", help="Abrir el portal en el navegador")
     portal.add_argument("--modelo", default=modelo.DEFAULT_MODEL,
                         help=f"Modelo local de Ollama para priorizar con IA ({modelo.DEFAULT_MODEL})")
-    portal.add_argument("--ollama", default=modelo.OLLAMA, help=f"Servidor de Ollama ({modelo.OLLAMA})")
+    portal.add_argument("--ollama", type=model_server, default=modelo.OLLAMA,
+                        help=f"Servidor de Ollama en este equipo ({modelo.OLLAMA})")
 
     show = subcommands.add_parser("ver", help="Abrir el visor de una subred, un rango o todo")
     show.add_argument("salida", help="Carpeta de una ejecución")

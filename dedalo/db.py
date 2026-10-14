@@ -171,7 +171,7 @@ CREATE TABLE prioridad (
   siguiente    TEXT NOT NULL DEFAULT '',
   UNIQUE (ejecucion_id, activo_id)
 );
-CREATE INDEX prioridad_ejecucion ON prioridad (ejecucion_id);
+CREATE INDEX prioridad_activo ON prioridad (activo_id);
 """,
 }
 

@@ -162,6 +162,10 @@ ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
         with self.con:
             self.con.execute("DELETE FROM ejecucion WHERE id = 'e1'")
         self.assertEqual(self.con.execute("SELECT COUNT(*) FROM prioridad").fetchone()[0], 0)
+        # Borrar un activo en cascada no recorre toda la tabla; UNIQUE ya indexa por ejecución.
+        indexes = {row[0] for row in self.con.execute("SELECT name FROM sqlite_master WHERE type = 'index' "
+                                                      "AND tbl_name = 'prioridad' AND sql IS NOT NULL")}
+        self.assertEqual(indexes, {"prioridad_activo"})
 
     def test_refuses_database_from_newer_version(self):
         self.con.execute("PRAGMA user_version = 99")

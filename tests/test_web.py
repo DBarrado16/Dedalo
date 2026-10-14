@@ -1347,6 +1347,12 @@ class ModelOptionTests(unittest.TestCase):
         args = cli.build_parser().parse_args(["web"])
         self.assertEqual((args.modelo, args.ollama), (web.modelo.DEFAULT_MODEL, web.modelo.OLLAMA))
 
+    def test_the_model_server_must_be_on_this_machine(self):
+        errors = io.StringIO()
+        with redirect_stderr(errors), self.assertRaises(SystemExit):
+            cli.build_parser().parse_args(["web", "--ollama", "http://10.0.0.5:11434"])
+        self.assertIn("este equipo", errors.getvalue())
+
     def test_the_chosen_model_reaches_the_portal(self):
         args = cli.build_parser().parse_args(["web", "--datos", "datos", "--modelo", "qwen2.5:7b",
                                               "--ollama", "http://127.0.0.1:9999"])
