@@ -118,6 +118,13 @@ class ImportTests(unittest.TestCase):
         self.assertEqual([p["rol"] for p in auditoria.priorities(self.con, "lunes")], ["Después"])
         self.assertEqual(self.analyses(), 1)
 
+    def test_the_newest_attempt_wins_even_if_the_clock_went_back(self):
+        self.load_in_scope("lunes")
+        first = auditoria.start_analysis(self.con, "lunes", {}, created="2026-10-14T10:00:00+00:00")
+        auditoria.finish_analysis(self.con, first, [self.priority("192.0.2.10", 0)])
+        auditoria.start_analysis(self.con, "lunes", {}, created="2026-10-14T09:00:00+00:00")  # reloj atrasado
+        self.assertEqual(auditoria.analysis_status(self.con, "lunes")["estado"], "en_cola")
+
     def test_a_failed_reanalysis_keeps_the_previous_result(self):
         self.load_in_scope("lunes")
         first = auditoria.start_analysis(self.con, "lunes", {})

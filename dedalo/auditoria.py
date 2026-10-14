@@ -180,9 +180,13 @@ def _service_id(con: sqlite3.Connection, audit_id: str, ip: str, port: int) -> i
 
 
 def _derived(con: sqlite3.Connection, import_id: str, kind: str) -> sqlite3.Row | None:
-    """La última ejecución de un tipo (captura, análisis) que salió de una importación, si la hay."""
+    """La última ejecución de un tipo (captura, análisis) que salió de una importación, si la hay.
+
+    «Última» por orden de inserción (rowid), no por `creada`: si el reloj del equipo retrocede,
+    un análisis recién pedido no puede quedar por detrás del anterior.
+    """
     return con.execute("SELECT id, estado, error FROM ejecucion WHERE origen_id = ? AND tipo = ? "
-                       "ORDER BY creada DESC, rowid DESC LIMIT 1", (import_id, kind)).fetchone()
+                       "ORDER BY rowid DESC LIMIT 1", (import_id, kind)).fetchone()
 
 
 def capture_of(con: sqlite3.Connection, import_id: str) -> str | None:
@@ -261,7 +265,7 @@ def finish_analysis(con: sqlite3.Connection, analysis_id: str, rows: list[dict])
                         "SELECT e.id, a.id, ?, ?, ?, ?, ? FROM ejecucion e "
                         "JOIN activo a ON a.auditoria_id = e.auditoria_id AND a.ip = ? WHERE e.id = ?",
                         (row["orden"], row["rol"], row["nivel"], row["motivo"], row["siguiente"], row["ip"], analysis_id))
-        con.execute("UPDATE ejecucion SET estado = 'completa', error = '', terminada = ? WHERE id = ?", (now(), analysis_id))
+        _set_state(con, analysis_id, "completa")
         con.execute("DELETE FROM ejecucion WHERE tipo = 'analisis' AND id <> ? "
                     "AND origen_id = (SELECT origen_id FROM ejecucion WHERE id = ?)", (analysis_id, analysis_id))
 
@@ -281,14 +285,19 @@ def priorities(con: sqlite3.Connection, import_id: str) -> list[dict]:
     return [row for row in rows if current.status(row["ip"]) == current.IN]
 
 
+def _set_state(con: sqlite3.Connection, execution_id: str, state: str, error: str = "") -> None:
+    """Como set_state, dentro de la transacción de quien la llama."""
+    stamp = now()
+    con.execute("UPDATE ejecucion SET estado = ?, error = ?, "
+                "iniciada = CASE WHEN ? = 'en_curso' THEN COALESCE(iniciada, ?) ELSE iniciada END, "
+                "terminada = CASE WHEN ? THEN ? ELSE terminada END WHERE id = ?",
+                (state, error, state, stamp, state in FINAL, stamp, execution_id))
+
+
 def set_state(con: sqlite3.Connection, execution_id: str, state: str, error: str = "") -> None:
     """Cambia el estado de una ejecución y anota cuándo empezó y terminó."""
-    stamp = now()
     with con:
-        con.execute("UPDATE ejecucion SET estado = ?, error = ?, "
-                    "iniciada = CASE WHEN ? = 'en_curso' THEN COALESCE(iniciada, ?) ELSE iniciada END, "
-                    "terminada = CASE WHEN ? THEN ? ELSE terminada END WHERE id = ?",
-                    (state, error, state, stamp, state in FINAL, stamp, execution_id))
+        _set_state(con, execution_id, state, error)
 
 
 def _evidence(con, execution_id: str, kind: str, path: Path, root: Path, stamp: str) -> int:

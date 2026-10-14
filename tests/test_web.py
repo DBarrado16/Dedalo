@@ -338,6 +338,14 @@ class PortalTests(unittest.TestCase):
         self.assertEqual((detail["analisis"]["estado"], detail["analisis"]["error"]), ("error", "¿Está arrancado Ollama?"))
         self.assertEqual(detail["prioridades"], before)
 
+    def test_an_interrupted_reanalysis_keeps_showing_the_previous_result(self):
+        job = self.create()
+        before = self.analyse(job["id"], model_answering())["prioridades"]
+        self.pending_analysis(job["id"], "en_curso")  # el portal se cerró a mitad del segundo análisis
+        self.reopen()
+        detail = self.store.detail(job["id"])
+        self.assertEqual((detail["analisis"]["estado"], detail["prioridades"]), ("interrumpida", before))
+
     def test_a_run_being_captured_is_not_analysed(self):
         job = self.create()
         self.store.jobs[job["id"]]["estado"] = "en_curso"
