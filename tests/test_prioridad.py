@@ -36,6 +36,12 @@ class PromptTests(unittest.TestCase):
         block = re.search(r"```json\n(.*)\n```", text, re.DOTALL).group(1)
         self.assertEqual(json.loads(block), {"ip": "10.0.0.5", "nombres": [], "servicios": host["servicios"]})
 
+    def test_the_question_defines_each_level_and_judges_one_host_alone(self):
+        text = prioridad.build_prompt(DC)
+        for level in prioridad.NIVELES:
+            self.assertIn(f"- {level}:", text)
+        self.assertIn("solo ves este host", text.lower())
+
     def test_only_metadata_reaches_the_model(self):
         host = dict(DC, scripts=[{"id": "x", "output": "volcado"}], alcance="en_alcance")
         host["servicios"] = [dict(DC["servicios"][0], scripts=[{"id": "y", "output": "otro volcado"}], cpe=["cpe:/a"])]
@@ -51,6 +57,10 @@ class ParseTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(prioridad.parse_result(text),
                                  {"rol": "DC", "nivel": "alta", "motivo": "Por sus servicios.", "siguiente": "Revisar primero."})
+
+    def test_the_level_is_read_whatever_its_case_or_spaces(self):
+        self.assertEqual(prioridad.parse_result(answer(" Alta "))["nivel"], "alta")
+        self.assertEqual(prioridad.parse_result(answer("MEDIA"))["nivel"], "media")
 
     def test_rejects_what_does_not_fit_the_schema(self):
         for text in ("sin json", "{roto", "[1, 2]", answer("urgente"), '{"rol": "x"}'):

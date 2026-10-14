@@ -17,7 +17,9 @@ def generate(prompt: str, model: str, host: str = OLLAMA, timeout: int = 120) ->
     La respuesta se pide en JSON y sin razonamiento en voz alta: un modelo de razonamiento
     tardaba 142 s por pregunta pensando antes de contestar, y así tarda 35 s.
     """
-    data = json.dumps({"model": model, "prompt": prompt, "stream": False, "format": "json", "think": False})
+    # Temperatura 0: la misma pregunta da siempre la misma respuesta (traza de auditoría reproducible).
+    data = json.dumps({"model": model, "prompt": prompt, "stream": False, "format": "json", "think": False,
+                       "options": {"temperature": 0}})
     request = urllib.request.Request(host.rstrip("/") + "/api/generate", data=data.encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
     try:
