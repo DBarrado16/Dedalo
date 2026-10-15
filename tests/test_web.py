@@ -1193,6 +1193,13 @@ class PortalTests(unittest.TestCase):
         self.assertIn(b'action("detener-descubrimiento")', script)
         self.assertIn(b"escapeHtml(item.nombre)", script)  # lo que devuelve el objetivo nunca entra como HTML
 
+    def test_page_has_the_detect_networks_buttons(self):
+        page, script = self.request("/")[1], self.request("/app.js")[1]
+        self.assertIn(b'id="detect-networks"', page)          # en el formulario de ficha
+        self.assertIn(b'id="detect-networks-scope"', page)    # en la pestaña Descubrimiento
+        self.assertIn(b'request("/api/redes")', script)
+        self.assertIn(b'"audit-include"', script)             # rellena los rangos autorizados
+
     def store_options(self, job_id, value):
         """Deja en la base las opciones de una ejecución tal cual: texto, o un valor que se guarda como JSON."""
         with closing(self.store.database()) as con, con:

@@ -660,6 +660,21 @@ $("test-credentials").addEventListener("click", () => {
 $("stop-credentials").addEventListener("click", () => action("detener-credenciales"));
 $("discover-job").addEventListener("click", () => action("descubrir", {modo: $("discovery-mode").value}));
 $("stop-discovery").addEventListener("click", () => action("detener-descubrimiento"));
+async function detectNetworks(fill) {
+  // Lee las interfaces del equipo (solo sugiere); el alcance lo revisa y edita el usuario.
+  try {
+    const data = await request("/api/redes");
+    if (!data.redes.length) { notice("No se detectaron redes en este equipo; escríbelas a mano."); return; }
+    fill(data.redes);
+  } catch (error) { notice("No se pudieron detectar las redes: " + error.message); }
+}
+$("detect-networks").addEventListener("click", () => detectNetworks(redes => {
+  // Añade las que falten a los rangos autorizados, sin pisar lo escrito.
+  const actuales = $("audit-include").value.split("\n").map(s => s.trim()).filter(Boolean);
+  $("audit-include").value = [...new Set([...actuales, ...redes])].join("\n");
+}));
+$("detect-networks-scope").addEventListener("click", () => detectNetworks(redes =>
+  notice("Redes de este equipo: " + redes.join(", ") + ". Añádelas al alcance de la ficha para descubrir en ellas.")));
 $("export-hosts").addEventListener("click", () => exportHosts(false));
 $("export-web").addEventListener("click", () => exportHosts(true));
 $("cancel-job").addEventListener("click", () => action("cancel"));
