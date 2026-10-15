@@ -316,6 +316,11 @@ class PortalTests(unittest.TestCase):
         self.until(lambda: self.store.detail(job_id)["credenciales"]["estado"] not in ("en_cola", "en_curso", "deteniendo"))
         return self.store.detail(job_id)
 
+    def settled_discovery(self, job_id):
+        """Espera a que el descubrimiento deje de estar en marcha y devuelve el detalle."""
+        self.until(lambda: self.store.detail(job_id)["descubrimiento"]["estado"] not in ("en_cola", "en_curso", "deteniendo"))
+        return self.store.detail(job_id)
+
     def test_credential_test_needs_the_token_and_same_origin(self):
         job = self.create()
         with patch("dedalo.web.probador.probar") as probar:
@@ -380,6 +385,65 @@ class PortalTests(unittest.TestCase):
         # El segundo host, excluido a mitad, no se llega a conectar: el alcance se recomprueba en vivo.
         self.assertNotIn("10.10.1.2", conectados)
         self.assertIn("10.10.1.1", conectados)
+
+    def test_discovery_needs_the_token_and_same_origin(self):
+        job = self.create()
+        with patch("dedalo.web.descubrimiento.sweep") as sweep:
+            for route in ("descubrir", "detener-descubrimiento"):
+                for headers in ({"X-Dedalo-Token": "wrong"}, {"Origin": "https://example.org"}):
+                    self.assertEqual(self.request("/api/jobs/" + job["id"] + "/" + route, {}, headers)[0], 403)
+            self.assertIsNone(self.store.detail(job["id"])["descubrimiento"])
+        sweep.assert_not_called()
+
+    def test_discovery_needs_the_scope_defined(self):
+        audit = self.store.create_audit({"nombre": "Sin alcance", "incluir": ""})
+        job = json.loads(self.request("/api/jobs", payload() | {"auditoria": audit["id"]})[1])
+        self.assertEqual(self.request("/api/jobs/" + job["id"] + "/descubrir", {"modo": "nombres"})[0], 409)
+
+    def test_names_discovery_stores_results(self):
+        job = self.create()
+        def sweep(addresses, mode, domain="", *, scope=None, timeout=2.0, delay=0.0, workers=4, stop=None, progress=None):
+            return [{"ip": a, "encontrado": True, "nombre": "host-" + a.split(".")[-1], "detalle": "", "error": ""} for a in addresses[:1]]
+        with patch("dedalo.web.descubrimiento.sweep", side_effect=sweep):
+            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/descubrir", {"modo": "nombres"})[0], 202)
+            detail = self.settled_discovery(job["id"])
+        self.assertEqual(detail["descubrimiento"]["estado"], "completa")
+        self.assertTrue(detail["descubrimiento_resultados"])
+        self.assertTrue(all(r["modo"] == "nombres" for r in detail["descubrimiento_resultados"]))
+
+    def test_a_host_excluded_mid_sweep_is_not_queried(self):
+        job = self.create()  # ficha con incluir 10.10.0.0/17
+        consultados, started, release = [], threading.Event(), threading.Event()
+        def sweep(addresses, mode, domain="", *, scope=None, timeout=2.0, delay=0.0, workers=4, stop=None, progress=None):
+            for ip in addresses:
+                if scope.status(ip) != web.targets.Scope.IN:  # el portal pasa un alcance VIVO
+                    continue
+                consultados.append(ip)
+                if len(consultados) == 1:
+                    started.set(); release.wait(10)
+            return [{"ip": ip, "encontrado": False, "nombre": "", "detalle": "", "error": ""} for ip in consultados]
+        with patch("dedalo.web.descubrimiento.sweep", side_effect=sweep), \
+                patch("dedalo.web.descubrimiento.expand", return_value=["10.10.0.1", "10.10.0.2"]):
+            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/descubrir", {"modo": "servidores"})[0], 202)
+            started.wait(10)
+            self.store.update_audit(self.audit["id"], {"nombre": "Cliente de prueba", "incluir": "10.10.0.0/17", "excluir": "10.10.0.2"})
+            release.set()
+            self.settled_discovery(job["id"])
+        self.assertNotIn("10.10.0.2", consultados)
+
+    def test_networks_route_lists_detected_subnets(self):
+        with patch("dedalo.web.redes.detectar", return_value=["10.30.4.0/24"]):
+            status, content = self.request("/api/redes")
+        self.assertEqual((status, json.loads(content)), (200, {"redes": ["10.30.4.0/24"]}))
+
+    def test_a_sweep_error_ends_the_discovery_in_error(self):
+        job = self.create()
+        with patch("dedalo.web.descubrimiento.sweep", side_effect=ValueError("Dominio inválido: 'x y'")), \
+                redirect_stderr(io.StringIO()):
+            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/descubrir", {"modo": "servidores"})[0], 202)
+            detail = self.settled_discovery(job["id"])
+        self.assertEqual(detail["descubrimiento"]["estado"], "error")
+        self.assertIn("Dominio", detail["descubrimiento"]["error"])  # el mensaje de sweep, no un genérico
 
     def test_progress_counts_the_hosts_already_answered(self):
         job, release = self.create(), threading.Event()
@@ -1120,6 +1184,22 @@ class PortalTests(unittest.TestCase):
         self.assertIn(b"escapeHtml(item.usuario)", script)  # lo que devuelve el objetivo nunca entra como HTML
         self.assertIn(b"confirm(", script)  # la prueba activa pide confirmación
 
+    def test_page_has_the_discovery_tab(self):
+        page, script = self.request("/")[1], self.request("/app.js")[1]
+        for needle in (b'data-tab="discovery"', b'id="discovery-tools"', b'id="discover-job"',
+                       b'id="stop-discovery"', b'id="discovery-mode"'):
+            self.assertIn(needle, page)
+        self.assertIn(b'action("descubrir", {modo: $("discovery-mode").value})', script)
+        self.assertIn(b'action("detener-descubrimiento")', script)
+        self.assertIn(b"escapeHtml(item.nombre)", script)  # lo que devuelve el objetivo nunca entra como HTML
+
+    def test_page_has_the_detect_networks_buttons(self):
+        page, script = self.request("/")[1], self.request("/app.js")[1]
+        self.assertIn(b'id="detect-networks"', page)          # en el formulario de ficha
+        self.assertIn(b'id="detect-networks-scope"', page)    # en la pestaña Descubrimiento
+        self.assertIn(b'request("/api/redes")', script)
+        self.assertIn(b'"audit-include"', script)             # rellena los rangos autorizados
+
     def store_options(self, job_id, value):
         """Deja en la base las opciones de una ejecución tal cual: texto, o un valor que se guarda como JSON."""
         with closing(self.store.database()) as con, con:
@@ -1642,7 +1722,8 @@ class PortTests(unittest.TestCase):
             try:
                 args = argparse.Namespace(datos=second_data, gowitness="indicado", chrome=None,
                                           puerto=server.server_address[1], abrir=False,
-                                          modelo=web.modelo.DEFAULT_MODEL, ollama=web.modelo.OLLAMA, arrancar_ollama=False)
+                                          modelo=web.modelo.DEFAULT_MODEL, ollama=web.modelo.OLLAMA, arrancar_ollama=False,
+                                          dns_dominio="example.com")
                 with self.assertRaisesRegex(ValueError, "ya está en uso"):
                     web.serve_portal(args)
             finally:

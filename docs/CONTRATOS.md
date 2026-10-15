@@ -14,8 +14,9 @@ Qué hace la primera versión, qué puede tocar cada módulo y qué estados usan
 - Instalación automática de gowitness verificada por SHA-256.
 - Priorización con IA (bloque 5, adelantado el 2026-10-14): un modelo local (Ollama) ordena los hosts en alcance de una importación por prioridad, con su rol probable, el motivo y un siguiente paso sugerido. Solo lee la base; no conecta con ningún objetivo y no ejecuta nada.
 - Credenciales por defecto (bloque 6, adelantado el 2026-10-14): a petición del operador, prueba contra los servicios en alcance las contraseñas de fábrica que les tocan según su fingerprint, a partir de un catálogo curado que viaja con la herramienta; conecta con límites y enseña dónde se entró.
+- Descubrimiento DNS (parte del bloque 2): desde el portal, sobre las IP en alcance de una importación, pregunta por sus nombres (DNS inverso, sin conectar con los objetivos) o por los servidores DNS que responden (UDP 53, conecta). Un botón «Detectar mis redes» propone como alcance las subredes del propio equipo.
 
-**Queda para después:** descubrimiento de red (bloque 2) y lanzar Nmap desde el portal (bloque 3).
+**Queda para después:** el escaneo con Nmap desde el portal (bloque 3) y el resto del descubrimiento de red (bloque 2) más allá del DNS.
 
 **No se hará:** uso multiusuario, publicar el portal en red, explotar vulnerabilidades ni iniciar sesión en los servicios capturados.
 
@@ -45,7 +46,7 @@ Una IP queda en una de estas situaciones:
 **Reglas que deben cumplir todos los módulos**
 
 1. Importar nunca filtra. Todo lo que trae el Nmap se guarda, marcado con su situación, para no perder información.
-2. **Solo se contacta lo que está en alcance.** Las capturas, y en el futuro el descubrimiento, los escaneos y las credenciales, comprueban el alcance justo antes de conectar, no solo al planificar.
+2. **Solo se contacta lo que está en alcance.** Las capturas, el descubrimiento DNS y las credenciales —y en el futuro los escaneos— comprueban el alcance justo antes de conectar, no solo al planificar.
 3. Una auditoría sin reglas `incluir` no tiene nada en alcance: se puede importar y consultar, pero no lanzar conexiones. El portal pide definir el alcance.
 4. Cambiar el alcance no borra datos; solo cambia qué se puede contactar a partir de ese momento.
 
@@ -61,12 +62,15 @@ Cada cosa que se hace es una **ejecución** de un tipo. En la primera versión h
 | `captura` | Hace capturas de los servicios web en alcance de una importación | Sí, HTTP/HTTPS | Un resultado por URL y las imágenes como evidencia |
 | `analisis` | Pide a un modelo local, host por host, el rol y la prioridad de los hosts en alcance con algún puerto abierto de una importación | No: solo habla con Ollama en este equipo (loopback, sin proxy ni redirecciones) y con modelos descargados, nunca los «-cloud» | Una prioridad por activo (rol, nivel, motivo y siguiente paso sugerido) |
 | `credenciales` | Prueba las contraseñas de fábrica que le tocan a cada servicio en alcance de una importación, según su fingerprint, solo cuando el operador lo pide y confirma | Sí, a los servicios en alcance (HTTP Basic/Digest, login por formulario, FTP), con conexión directa, tope de intentos por servicio y pausa | Por servicio probado: si entró (con qué usuario/clave), no entró o error |
+| `descubrimiento` | Sobre las IP en alcance de una importación, pregunta por sus nombres (DNS inverso) o por los servidores DNS que responden | El modo `nombres` no (habla con el resolvedor del sistema); el modo `servidores` sí, a cada IP en alcance por UDP 53 | Observaciones: los nombres en el activo y cada servidor DNS como servicio `udp/53` |
 
 Al modelo solo le llegan metadatos (IP, nombres, puerto, servicio, producto, versión, detalle y título web), como datos y no como instrucciones; su respuesta se valida contra un esquema fijo y lo que no encaja queda `sin_analisis`. Un análisis nuevo de la misma importación solo sustituye al anterior cuando termina bien; si falla, se cancela o se interrumpe, sigue valiendo el último completo. Para ofrecer en el portal los modelos descargados, el portal pregunta a ese mismo Ollama por su lista (`/api/tags`), con las mismas reglas; el modelo que llega del navegador se comprueba antes de usarlo (forma de nombre de Ollama y nunca de la nube). Con `--arrancar-ollama` (lo usa `iniciar_portal.cmd`), si ese Ollama no responde y está instalado, Dédalo lo arranca en este equipo (`ollama serve`, sin shell, en la dirección de `--ollama`) con `OLLAMA_NO_CLOUD=1`; no conecta con nada más.
 
 Las credenciales que prueba salen de un catálogo curado y versionado que viaja con la herramienta (`dedalo/datos/credenciales.json`, volcado a la base al arrancar), nunca de una IA en caliente. Solo se prueban las que pegan con lo que parece ser cada servicio (fabricante, producto, versión); si no se reconoce, no se prueba nada. La prueba se activa a propósito (botón y confirmación en el portal), recomprueba el alcance justo antes de cada conexión y respeta un tope de intentos por servicio para no bloquear cuentas. La contraseña encontrada es dato sensible: se guarda en la base local y no sale del equipo. Un análisis nuevo solo sustituye al anterior cuando termina bien.
 
-Tipos futuros: `descubrimiento` y `escaneo` (conectan, solo en alcance).
+El descubrimiento va por la misma cola, con el mismo ciclo de vida que el análisis (uno por importación; volver a descubrir sustituye al anterior solo al terminar bien; un activo excluido después deja de salir; a medias al cerrar el portal queda `interrumpida`). Recomprueba el alcance **en vivo** antes de cada consulta, así que una exclusión a mitad de un barrido gana; sin reglas `incluir`, no se lanza. Sus hallazgos se guardan como observaciones, sin tablas ni migración nuevas. El dominio que usa el modo `servidores` para sondear se fija al arrancar (`--dns-dominio`). El botón «Detectar mis redes» solo mira las interfaces del propio equipo (lee `ipconfig`/`ip addr`) y propone sus subredes como alcance; no conecta con nada y el operador revisa lo propuesto.
+
+Tipos futuros: `escaneo` (conecta, solo en alcance).
 
 **Estados de una ejecución**
 

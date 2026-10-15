@@ -22,6 +22,7 @@ auditoria ─┬─ alcance (reglas incluir/excluir)
 - **Evidencia** es un archivo que respalda algo: el Nmap original, una imagen o un registro.
 - **Prioridad** es lo que un análisis con IA dijo de un activo de su importación: rol probable, nivel (alta, media, baja, o `sin_analisis` si la respuesta del modelo no valía), motivo y siguiente paso sugerido. Es una opinión asesora: no cambia nada del inventario. Una importación guarda su último análisis completo y, como mucho, un intento posterior; el intento solo sustituye al completo, en la misma transacción en que guarda sus prioridades, si termina bien.
 - **Resultado de credenciales** es lo que una prueba de credenciales por defecto obtuvo de cada servicio en alcance: si entró (con qué usuario y clave), no entró o error. El catálogo de contraseñas de fábrica vive en `credencial_catalogo`, volcado desde un fichero versionado del repo. Como el análisis, una importación guarda su última prueba completa y, como mucho, un intento posterior; solo se sustituye al terminar bien.
+- **Resultado del descubrimiento** son las observaciones que deja una ejecución `descubrimiento`: los nombres hallados (DNS inverso) van al activo como `observacion_activo.nombres`, y cada IP que responde como servidor DNS se anota como un servicio `udp/53` con su `observacion`. No hay tablas ni migración nuevas: reutiliza las de observación, igual que una importación.
 
 ## Tablas
 

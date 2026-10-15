@@ -89,6 +89,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"Servidor de Ollama en este equipo ({modelo.OLLAMA})")
     portal.add_argument("--arrancar-ollama", action="store_true",
                         help="Si Ollama está instalado y no responde, arrancarlo en segundo plano (lo usa iniciar_portal.cmd)")
+    portal.add_argument("--dns-dominio", default="example.com",
+                        help="Dominio que el descubrimiento usa para sondear servidores DNS (modo servidores)")
 
     show = subcommands.add_parser("ver", help="Abrir el visor de una subred, un rango o todo")
     show.add_argument("salida", help="Carpeta de una ejecución")

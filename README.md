@@ -173,6 +173,17 @@ La pestaña **Credenciales** de una ejecución prueba, contra los servicios en a
 
 Para probarlo de verdad necesitas servicios reales en las IP en alcance (un laboratorio con un panel web y un FTP, por ejemplo); el `ejemplos/laboratorio.xml` sirve para ver qué credenciales se le propondrían a cada servicio, pero esas IP no responden solas.
 
+## Descubrimiento de red
+
+La pestaña **Descubrimiento** de una ejecución pregunta, sobre las IP en alcance de la ficha, en uno de dos modos (como `nslookup`):
+
+- **Nombres (DNS inverso):** le pide a cada IP su nombre al resolvedor del sistema. **No conecta** con los objetivos.
+- **Servidores DNS:** le pregunta a cada IP, por **UDP 53**, por un dominio de sondeo, para ver cuáles responden como servidor DNS. **Esto sí conecta**, así que solo toca IP en alcance (recomprobado en vivo antes de cada consulta). El dominio de sondeo se fija al arrancar con `--dns-dominio` (por defecto `example.com`).
+
+Lo encontrado se guarda como observaciones de esa ejecución: los nombres en el activo, y cada servidor DNS como un servicio `udp/53`. Va por la misma cola que las capturas y el análisis, con su progreso, y se puede parar.
+
+Para no teclear la subred a mano, el botón **Detectar mis redes** —en el formulario de la ficha y en esta pestaña— lee las interfaces de **tu propio equipo** (`ipconfig` en Windows, `ip addr` en Linux) y propone sus subredes como alcance. Solo mira las interfaces locales, no conecta con nada, y tú revisas lo que propone antes de guardarlo.
+
 ## Uso desde consola
 
 Crear `rangos.txt` con un CIDR por línea:

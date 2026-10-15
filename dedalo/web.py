@@ -29,8 +29,8 @@ import webbrowser
 from xml.etree.ElementTree import ParseError
 import zipfile
 
-from . import (auditoria, catalogo, cli, credenciales, db, gowitness, inventory, modelo, parser, prioridad,
-               probador, report, targets)
+from . import (auditoria, catalogo, cli, credenciales, db, descubrimiento, gowitness, inventory, modelo, parser,
+               prioridad, probador, redes, report, targets)
 
 STATIC = Path(__file__).parent / "static"
 STATIC_FILES = {
@@ -96,9 +96,31 @@ def options_from(raw):
     return result
 
 
+class _AlcanceVivo:
+    """status(ip) con el alcance VIGENTE de la ficha; relee solo cuando cambia store.scope_changes.
+
+    `sweep` lo consulta desde varios hilos; un cerrojo serializa la relectura, que solo ocurre
+    cuando el alcance cambió (el caso normal usa la copia cacheada).
+    """
+
+    def __init__(self, store, audit_id):
+        self._store, self._audit_id = store, audit_id
+        self._lock, self._contador, self._scope = threading.Lock(), None, None
+
+    def status(self, ip):
+        with self._lock:
+            if self._store.scope_changes != self._contador:
+                with closing(self._store.database()) as con:
+                    self._scope = auditoria.scope(con, self._audit_id)
+                self._contador = self._store.scope_changes
+            return self._scope.status(ip)
+
+
 class PortalStore:
-    def __init__(self, root, binary=None, chrome=None, model=modelo.DEFAULT_MODEL, ollama=modelo.OLLAMA):
+    def __init__(self, root, binary=None, chrome=None, model=modelo.DEFAULT_MODEL, ollama=modelo.OLLAMA,
+                 dns_dominio="example.com"):
         self.root = Path(root).resolve()
+        self.dns_dominio = dns_dominio
         self.root.mkdir(parents=True, exist_ok=True)
         self.binary_option, self.chrome_option = binary, chrome
         self.model_option, self.model_host = model, ollama
@@ -140,6 +162,8 @@ class PortalStore:
         self.analysis_progress = {}
         # Servicios ya probados de la prueba de credenciales en curso; solo en memoria, como el análisis.
         self.credential_progress = {}
+        # Direcciones ya consultadas del descubrimiento en curso; solo en memoria, como el análisis.
+        self.discovery_progress = {}
         # Carpetas antiguas que no se pudieron pasar a la base en este arranque; el
         # portal las muestra (/api/bootstrap) porque no aparecen en el historial.
         self.migration_failures = []
@@ -647,13 +671,18 @@ class PortalStore:
             response["prioridades"] = auditoria.priorities(con, job_id)
             response["credenciales"] = auditoria.credential_status(con, job_id)
             response["credenciales_resultados"] = auditoria.credential_results(con, job_id)
+            response["descubrimiento"] = auditoria.discovery_status(con, job_id)
+            response["descubrimiento_resultados"] = auditoria.discovery_results(con, job_id)
         with self.lock:
             progress = self.analysis_progress.get(job_id)
             progreso_c = self.credential_progress.get(job_id)
+            progreso_d = self.discovery_progress.get(job_id)
         if progress and response["analisis"] and response["analisis"]["estado"] in ACTIVE:
             response["analisis"]["progreso"] = progress
         if progreso_c and response["credenciales"] and response["credenciales"]["estado"] in ACTIVE:
             response["credenciales"]["progreso"] = progreso_c
+        if progreso_d and response["descubrimiento"] and response["descubrimiento"]["estado"] in ACTIVE:
+            response["descubrimiento"]["progreso"] = progreso_d
         return response
 
     def start(self, job_id):
@@ -857,6 +886,86 @@ class PortalStore:
             else:
                 auditoria.set_state(con, test_id, state, error)
 
+    def networks(self):
+        """Subredes de este equipo, para proponerlas como alcance. Solo mira las interfaces locales."""
+        return {"redes": redes.detectar()}
+
+    def discover(self, job_id, payload=None):
+        """Encola el descubrimiento DNS de los hosts en alcance; solo lee la base al encolar."""
+        modo = payload.get("modo", "nombres") if isinstance(payload, dict) else "nombres"
+        if modo not in descubrimiento.MODES:
+            raise ValueError(f"Modo de descubrimiento desconocido: {modo}")
+        with self.lock:
+            meta = self._meta(job_id)
+            if self.closing or meta["estado"] in ACTIVE:
+                raise Conflict("Espera a que termine la captura antes de descubrir.")
+            with closing(self.database()) as con:
+                estado = auditoria.discovery_status(con, job_id)
+                if estado and estado["estado"] in ACTIVE:
+                    raise Conflict("Ya hay un descubrimiento de esta ejecución en marcha.")
+                if not auditoria.scope(con, auditoria.audit_of(con, job_id)).include:
+                    raise Conflict("Define el alcance de la ficha antes de descubrir.")
+                disc_id = auditoria.start_discovery(con, job_id, {"modo": modo})
+            self.pending.put(("descubrimiento", (job_id, disc_id, modo)))
+        return self.detail(job_id)
+
+    def stop_discovery(self, job_id):
+        with self.lock:
+            self._meta(job_id)
+            with closing(self.database()) as con:
+                if auditoria.stop_discovery(con, job_id) is None:
+                    raise Conflict("Esta ejecución no tiene un descubrimiento en marcha.")
+        return self.detail(job_id)
+
+    def _run_discovery(self, job_id, disc_id, modo):
+        try:
+            self._discover(job_id, disc_id, modo)
+        except Exception as exc:
+            print(f"Error del portal: no se pudo completar el descubrimiento de {job_id}: {exc}", file=sys.stderr)
+            try:
+                with closing(self.database()) as con:
+                    auditoria.set_state(con, disc_id, "error",
+                                        "No se pudo completar el descubrimiento. Consulta la terminal del portal.")
+            except Exception as again:
+                print(f"Error del portal: no se pudo cerrar el descubrimiento de {job_id}: {again}", file=sys.stderr)
+
+    def _discover(self, job_id, disc_id, modo):
+        with closing(self.database()) as con:
+            if not auditoria.begin_discovery(con, disc_id):
+                return  # se canceló en la cola, o otro lo sustituyó
+            audit_id = auditoria.audit_of(con, job_id)
+            alcance = auditoria.scope(con, audit_id)
+        vivo = _AlcanceVivo(self, audit_id)
+
+        def parar():
+            if self.closing:
+                return True
+            with closing(self.database()) as con:
+                estado = auditoria.discovery_status(con, job_id)
+            return estado is None or estado["estado"] == "deteniendo"
+
+        def avance(hechas, total):
+            with self.lock:
+                self.discovery_progress[job_id] = {"hechas": hechas, "total": total}
+
+        try:
+            direcciones = descubrimiento.expand([str(n) for n in alcance.include])
+            filas = descubrimiento.sweep(direcciones, modo, self.dns_dominio, scope=vivo, stop=parar, progress=avance)
+            rows = [fila | {"modo": modo} for fila in filas]
+            state, error = "completa", ""
+        except Exception as exc:
+            print(f"Error del portal: no se pudo descubrir en {job_id}: {exc}", file=sys.stderr)
+            rows, state = [], "error"
+            error = str(exc) if isinstance(exc, ValueError) else "No se pudo completar el descubrimiento. Consulta la terminal del portal."
+        finally:
+            with self.lock:
+                self.discovery_progress.pop(job_id, None)
+        with closing(self.database()) as con:
+            if state == "completa":
+                auditoria.finish_discovery(con, disc_id, rows)
+            else:
+                auditoria.set_state(con, disc_id, state, error)
+
     def cancel(self, job_id):
         with self.lock:
             meta = self._meta(job_id)
@@ -896,6 +1005,9 @@ class PortalStore:
                 continue
             if kind == "credenciales":
                 self._run_credentials(*payload)
+                continue
+            if kind == "descubrimiento":
+                self._run_discovery(*payload)
                 continue
             job_id, binary, chrome = payload
             with self.lock:
@@ -1204,6 +1316,12 @@ class PortalHandler(BaseHTTPRequestHandler):
                     if parts[3] == "detener-credenciales":
                         self.json(store.stop_credentials(parts[2]))
                         return
+                    if parts[3] == "descubrir":
+                        self.json(store.discover(parts[2], payload), 202)
+                        return
+                    if parts[3] == "detener-descubrimiento":
+                        self.json(store.stop_discovery(parts[2]))
+                        return
                     if parts[3] == "delete":
                         self.json(store.delete(parts[2]))
                         return
@@ -1223,6 +1341,9 @@ class PortalHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/modelos":
                 self.json(store.models())
+                return
+            if path == "/api/redes":
+                self.json(store.networks())
                 return
             if len(parts) >= 3 and parts[:2] == ["api", "jobs"]:
                 job_id = parts[2]
@@ -1294,7 +1415,8 @@ def serve_portal(args):
         _, message = modelo.ensure_running(args.ollama)
         if message:
             print(message, flush=True)
-    store = PortalStore(args.datos, args.gowitness, args.chrome, model=args.modelo, ollama=args.ollama)
+    store = PortalStore(args.datos, args.gowitness, args.chrome, model=args.modelo, ollama=args.ollama,
+                        dns_dominio=args.dns_dominio)
     try:
         server = PortalServer(("127.0.0.1", args.puerto), store)
     except Exception as exc:
