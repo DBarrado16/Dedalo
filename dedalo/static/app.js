@@ -242,13 +242,14 @@ function render() {
   $("run-description").textContent = description;
   updateFilters();
   document.querySelectorAll("[data-tab]").forEach(button => button.setAttribute("aria-selected", String(button.dataset.tab === activeTab)));
-  $("filters").hidden = activeTab === "logs" || activeTab === "priority" || activeTab === "credentials";
+  $("filters").hidden = activeTab === "logs" || activeTab === "priority" || activeTab === "credentials" || activeTab === "discovery";
   $("results").hidden = activeTab === "logs";
   $("logs").hidden = activeTab !== "logs";
   $("inventory-tools").hidden = activeTab !== "inventory";
   $("priority-tools").hidden = activeTab !== "priority";
   $("credential-tools").hidden = activeTab !== "credentials";
-  document.querySelector(".tab-actions").hidden = activeTab === "logs" || activeTab === "priority" || activeTab === "credentials";
+  $("discovery-tools").hidden = activeTab !== "discovery";
+  document.querySelector(".tab-actions").hidden = activeTab === "logs" || activeTab === "priority" || activeTab === "credentials" || activeTab === "discovery";
   const analysis = current.analisis, analysing = activeStates.has(analysis?.estado), progress = analysis?.progreso;
   const chosenModel = $("model-select").value;
   $("analyze-job").disabled = mutating || running || analysing || !chosenModel;
@@ -268,6 +269,15 @@ function render() {
   $("stop-credentials").hidden = !testing;
   $("stop-credentials").disabled = mutating || prueba?.estado === "deteniendo";
   $("stop-credentials").textContent = prueba?.estado === "en_cola" ? "Cancelar prueba" : prueba?.estado === "deteniendo" ? "Parada solicitada…" : "Detener tras este servicio";
+  const disc = current.descubrimiento, discovering = activeStates.has(disc?.estado), discProgress = disc?.progreso;
+  $("discover-job").disabled = mutating || running || discovering;
+  $("discover-job").textContent = discovering ? (discProgress ? `Descubriendo ${discProgress.hechas} de ${discProgress.total}…` : "Descubriendo…")
+    : disc ? "Volver a descubrir" : "Descubrir";
+  $("discover-job").title = running ? "Espera a que termine la captura" : "";
+  $("discovery-mode").disabled = mutating || discovering;
+  $("stop-discovery").hidden = !discovering;
+  $("stop-discovery").disabled = mutating || disc?.estado === "deteniendo";
+  $("stop-discovery").textContent = disc?.estado === "en_cola" ? "Cancelar descubrimiento" : disc?.estado === "deteniendo" ? "Parada solicitada…" : "Detener";
   $("status-filter-label").hidden = activeTab === "inventory";
   $("service-filter-label").hidden = activeTab !== "inventory";
   $("search").placeholder = activeTab === "inventory" ? "IP, nombre, puerto o producto" : "IP, URL o título";
@@ -389,11 +399,36 @@ function renderCredentials() {
     ${item.estado === "entrada" ? `<p class="priority-reason"><strong>Entró con</strong> ${escapeHtml(item.usuario)} / ${escapeHtml(item.clave)}</p>` : item.detalle ? `<p class="priority-reason">${escapeHtml(item.detalle)}</p>` : ""}
   </li>`).join("") + "</ol>";
 }
+function renderDiscovery() {
+  // Lo que anuncia el equipo (nombre, detalle del servidor DNS) puede venir influido por él: todo pasa por escapeHtml.
+  const disc = current.descubrimiento, items = current.descubrimiento_resultados || [];
+  $("more").hidden = true;
+  $("result-count").textContent = items.length ? `${items.length} resultado(s)` : "";
+  const key = JSON.stringify(["discovery", currentId, disc, items]);
+  if (key === renderKey) return;
+  renderKey = key;
+  let message = "";
+  if (!disc) message = "Esta ejecución no se ha descubierto todavía. Elige un modo y pulsa «Descubrir» para preguntar por los nombres o los servidores DNS de las IP en alcance.";
+  else if (disc.estado === "en_cola") message = "El descubrimiento empezará cuando termine el trabajo anterior.";
+  else if (disc.estado === "deteniendo") message = "Deteniendo: no se consultan más direcciones.";
+  else if (disc.estado === "en_curso") message = "Consultando las IP en alcance" +
+    (disc.progreso ? ` (${disc.progreso.hechas} de ${disc.progreso.total})` : "") + ". Puedes seguir usando el portal.";
+  else if (disc.estado !== "completa") message = (labels[disc.estado] || disc.estado) + ": " + (disc.error || "el descubrimiento no terminó.");
+  else if (!items.length) message = "No se encontró ningún nombre ni servidor DNS en las IP en alcance.";
+  if (message && !items.length) { $("results").innerHTML = `<div class="empty-results">${escapeHtml(message)}</div>`; return; }
+  const previous = message ? `<div class="notice">${escapeHtml(message + " Se muestra el último descubrimiento completo.")}</div>` : "";
+  $("results").innerHTML = previous + '<ol class="priority-list">' + items.map((item, index) => `<li>
+    <span class="priority-rank">${index + 1}</span>
+    <div class="priority-head"><span class="priority-ip">${escapeHtml(item.ip)}</span><span class="priority-role">${item.modo === "nombres" ? "Nombre (DNS inverso)" : "Servidor DNS"}</span></div>
+    <p class="priority-reason">${item.modo === "nombres" ? escapeHtml(item.nombre) : escapeHtml(item.detalle)}</p>
+  </li>`).join("") + "</ol>";
+}
 function renderResults() {
   if (!current || activeTab === "logs") { $("more").hidden = true; return; }
   if (activeTab === "inventory") { renderInventory(); return; }
   if (activeTab === "priority") { renderPriority(); return; }
   if (activeTab === "credentials") { renderCredentials(); return; }
+  if (activeTab === "discovery") { renderDiscovery(); return; }
   const filtered = rows(), visible = filtered.slice(0, shown);
   $("result-count").textContent = filtered.length + " objetivo(s)";
   $("more").hidden = filtered.length <= shown;
@@ -623,6 +658,8 @@ $("test-credentials").addEventListener("click", () => {
   if (confirm("Esto intentará entrar en los servicios en alcance de esta ejecución con sus contraseñas de fábrica. ¿Seguir?")) action("probar-credenciales");
 });
 $("stop-credentials").addEventListener("click", () => action("detener-credenciales"));
+$("discover-job").addEventListener("click", () => action("descubrir", {modo: $("discovery-mode").value}));
+$("stop-discovery").addEventListener("click", () => action("detener-descubrimiento"));
 $("export-hosts").addEventListener("click", () => exportHosts(false));
 $("export-web").addEventListener("click", () => exportHosts(true));
 $("cancel-job").addEventListener("click", () => action("cancel"));

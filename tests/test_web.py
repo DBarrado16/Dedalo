@@ -1184,6 +1184,15 @@ class PortalTests(unittest.TestCase):
         self.assertIn(b"escapeHtml(item.usuario)", script)  # lo que devuelve el objetivo nunca entra como HTML
         self.assertIn(b"confirm(", script)  # la prueba activa pide confirmación
 
+    def test_page_has_the_discovery_tab(self):
+        page, script = self.request("/")[1], self.request("/app.js")[1]
+        for needle in (b'data-tab="discovery"', b'id="discovery-tools"', b'id="discover-job"',
+                       b'id="stop-discovery"', b'id="discovery-mode"'):
+            self.assertIn(needle, page)
+        self.assertIn(b'action("descubrir", {modo: $("discovery-mode").value})', script)
+        self.assertIn(b'action("detener-descubrimiento")', script)
+        self.assertIn(b"escapeHtml(item.nombre)", script)  # lo que devuelve el objetivo nunca entra como HTML
+
     def store_options(self, job_id, value):
         """Deja en la base las opciones de una ejecución tal cual: texto, o un valor que se guarda como JSON."""
         with closing(self.store.database()) as con, con:
