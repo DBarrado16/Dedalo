@@ -444,7 +444,7 @@ def discovery_results(con, import_id: str) -> list[dict]:
                           "JOIN activo a ON a.id = o.activo_id WHERE o.ejecucion_id = ?", (disc["id"],)).fetchall()
     servidores = con.execute("SELECT a.ip, o.detalle FROM observacion o JOIN servicio s ON s.id = o.servicio_id "
                              "JOIN activo a ON a.id = s.activo_id WHERE o.ejecucion_id = ?", (disc["id"],)).fetchall()
-    filas = [{"ip": r["ip"], "modo": "nombres", "nombre": json.loads(r["dato"])[0] if json.loads(r["dato"]) else "", "detalle": ""}
+    filas = [{"ip": r["ip"], "modo": "nombres", "nombre": (nn[0] if (nn := json.loads(r["dato"])) else ""), "detalle": ""}
              for r in nombres]
     filas += [{"ip": r["ip"], "modo": "servidores", "nombre": "", "detalle": r["detalle"]} for r in servidores]
     current = scope(con, audit_of(con, import_id))
