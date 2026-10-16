@@ -490,7 +490,7 @@ function renderInventory() {
     const capture = port?.protocolo === "tcp" ? captures.get(asset.ip + ":" + port.puerto) : null;
     const scripts = [...asset.scripts, ...(port?.scripts || [])];
     const details = [port?.detalle, ...(port?.cpe || []), ...scripts.map(s => s.id + ": " + s.output)].filter(Boolean).join("\n\n");
-    return `<tr><td>${escapeHtml(asset.ip)}${scopeTag(asset.alcance)}${asset.nombres.length ? `<small>${escapeHtml(asset.nombres.join(", "))}</small>` : ""}</td><td>${port ? port.puerto + "/" + escapeHtml(port.protocolo.toUpperCase()) : "—"}</td><td>${port ? escapeHtml((port.tunel ? port.tunel + "/" : "") + (port.servicio || "Sin identificar")) : "Sin puertos abiertos"}</td><td class="service-data">${escapeHtml([port?.producto, port?.version].filter(Boolean).join(" ") || "—")}${details ? `<details><summary>Datos Nmap</summary><pre>${escapeHtml(details)}</pre></details>` : ""}</td><td>${capture?.imagen ? `<button class="secondary" data-image="${capture.key}">Ver captura</button>` : capture ? escapeHtml(labels[capture.estado] || capture.estado) : "—"}</td></tr>`;
+    return `<tr><td>${escapeHtml(asset.ip)}${scopeTag(asset.alcance)}${asset.nombres.length ? `<small>${escapeHtml(asset.nombres.join(", "))}</small>` : ""}</td><td>${port ? port.puerto + "/" + escapeHtml(port.protocolo.toUpperCase()) : "—"}</td><td>${port ? escapeHtml((port.tunel ? port.tunel + "/" : "") + (port.servicio || "Sin identificar")) : "Sin puertos abiertos"}</td><td class="service-data">${escapeHtml([port?.producto, port?.version].filter(Boolean).join(" ") || "—")}${details ? `<details><summary>Datos Nmap</summary><pre>${escapeHtml(details)}</pre></details>` : ""}${port ? `<button class="link-button" data-add-catalog data-producto="${escapeHtml(port.producto||"")}" data-version="${escapeHtml(port.version||"")}" data-servicio="${escapeHtml(port.servicio||"")}">+ catálogo</button>` : ""}</td><td>${capture?.imagen ? `<button class="secondary" data-image="${capture.key}">Ver captura</button>` : capture ? escapeHtml(labels[capture.estado] || capture.estado) : "—"}</td></tr>`;
   }).join("")}</tbody></table></div></section>`).join("");
 }
 async function loadLogs() {
@@ -595,6 +595,40 @@ $("audit-select").addEventListener("change", () => { setAudit($("audit-select").
 $("new-audit").addEventListener("click", () => { resumeUpload = false; openAudit(null); });
 $("edit-audit").addEventListener("click", () => { resumeUpload = false; openAudit(auditById(currentAudit)); });
 document.querySelector(".close-audit").addEventListener("click", () => $("audit-dialog").close());
+function toggleCatalogRecipe() { $("catalog-recipe").hidden = $("catalog-servicio").value !== "http-form"; }
+function openCatalog(data) {
+  $("catalog-fabricante").value = "";
+  $("catalog-producto").value = data.producto || "";
+  $("catalog-version").value = data.version || "";
+  $("catalog-servicio").value = (data.servicio || "").toLowerCase() === "ftp" ? "ftp" : "http-form";  // adivina; el operador lo ajusta
+  for (const id of ["catalog-usuario", "catalog-clave", "catalog-fuente", "catalog-texto-falla"]) $(id).value = "";
+  $("catalog-factory").checked = false;
+  $("catalog-error").hidden = true;
+  toggleCatalogRecipe();
+  $("catalog-dialog").showModal();
+}
+$("catalog-servicio").addEventListener("change", toggleCatalogRecipe);
+document.querySelector(".close-catalog").addEventListener("click", () => $("catalog-dialog").close());
+$("catalog-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const button = $("save-catalog");
+  button.disabled = true; $("catalog-error").hidden = true;
+  try {
+    const servicio = $("catalog-servicio").value;
+    const body = {fabricante: $("catalog-fabricante").value, producto: $("catalog-producto").value,
+      version: $("catalog-version").value, servicio, fuente: $("catalog-fuente").value,
+      credenciales: [{usuario: $("catalog-usuario").value, clave: $("catalog-clave").value}]};
+    if (servicio === "http-form") {
+      const exito = $("catalog-texto-falla").value ? {texto_falla: $("catalog-texto-falla").value} : {redirige: $("catalog-redirige").checked};
+      body.receta = {ruta: $("catalog-ruta").value || "/login", campo_usuario: $("catalog-campo-usuario").value || "usuario", campo_clave: $("catalog-campo-clave").value || "clave", exito};
+    }
+    await request("/api/catalogo", body);
+    $("catalog-dialog").close();
+    notice("Añadida al catálogo. Compártela con el equipo subiendo el cambio del repo.");
+    if (currentId) await loadInventory(currentId, viewVersion);
+  } catch (error) { $("catalog-error").hidden = false; $("catalog-error").textContent = error.message; }
+  finally { button.disabled = false; }
+});
 $("audit-include-file").addEventListener("change", async (event) => {
   try { const file = event.target.files[0]; if (file) { if (file.size > 256000) throw new Error("El fichero de rangos es demasiado grande"); $("audit-include").value = await file.text(); } }
   catch (error) { $("audit-error").hidden = false; $("audit-error").textContent = error.message; }
@@ -721,6 +755,8 @@ $("confirm-delete").addEventListener("click", async () => {
 });
 $("results").addEventListener("click", event => {
   if (event.target.closest("[data-retry-inventory]")) { loadInventory(currentId, viewVersion); return; }
+  const addCat = event.target.closest("[data-add-catalog]");
+  if (addCat) { openCatalog(addCat.dataset); return; }
   const onenote = event.target.closest("[data-onenote]");
   if (onenote) { copyForOneNote(Number(onenote.dataset.onenote), onenote); return; }
   const button = event.target.closest("[data-image]");

@@ -470,6 +470,14 @@ class PortalTests(unittest.TestCase):
         body = {"producto": "x", "servicio": "ssh", "credenciales": [{"usuario": "a", "clave": "b"}]}
         self.assertEqual(self.request("/api/catalogo", body)[0], 400)
 
+    def test_page_has_the_add_to_catalog_dialog(self):
+        page, script = self.request("/")[1], self.request("/app.js")[1]
+        for needle in (b'id="catalog-dialog"', b'id="catalog-form"', b'id="catalog-factory"'):
+            self.assertIn(needle, page)
+        self.assertIn("de fábrica".encode(), page)          # aviso de gobernanza
+        self.assertIn(b"data-add-catalog", script)          # botón por servicio del inventario
+        self.assertIn(b'request("/api/catalogo"', script)
+
     def test_progress_counts_the_hosts_already_answered(self):
         job, release = self.create(), threading.Event()
         model = model_waiting_at(2, release)
