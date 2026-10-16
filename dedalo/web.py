@@ -118,9 +118,12 @@ class _AlcanceVivo:
 
 class PortalStore:
     def __init__(self, root, binary=None, chrome=None, model=modelo.DEFAULT_MODEL, ollama=modelo.OLLAMA,
-                 dns_dominio="example.com"):
+                 dns_dominio="example.com", catalogo_ruta=catalogo.RUTA):
         self.root = Path(root).resolve()
         self.dns_dominio = dns_dominio
+        # Fichero del catálogo de credenciales (compartido por el repo); configurable para apuntar
+        # al del equipo. Se vuelca a la base al arrancar y cada vez que se amplía desde el portal.
+        self.catalogo_ruta = Path(catalogo_ruta)
         self.root.mkdir(parents=True, exist_ok=True)
         self.binary_option, self.chrome_option = binary, chrome
         self.model_option, self.model_host = model, ollama
@@ -270,7 +273,7 @@ class PortalStore:
         with closing(self.database()) as con:
             auditoria.close_interrupted_analyses(con)
             try:
-                catalogo.cargar(con)  # vuelca el catálogo de credenciales al abrir, si su fichero cambió
+                catalogo.cargar(con, self.catalogo_ruta)  # vuelca el catálogo al abrir, si su fichero cambió
             except (OSError, ValueError) as exc:
                 # Un catálogo roto no tumba el portal: solo deja sin probar credenciales.
                 print(f"Aviso: no se pudo cargar el catálogo de credenciales: {exc}. El resto del portal "
@@ -890,6 +893,21 @@ class PortalStore:
         """Subredes de este equipo, para proponerlas como alcance. Solo mira las interfaces locales."""
         return {"redes": redes.detectar()}
 
+    def add_credential(self, payload):
+        """Añade una credencial de fábrica al catálogo compartido y lo recarga. Solo lee del payload."""
+        if not isinstance(payload, dict):
+            raise ValueError("Carga inválida")
+        entrada = {"fabricante": payload.get("fabricante", ""), "producto": payload.get("producto", ""),
+                   "version": payload.get("version", ""), "servicio": payload.get("servicio", ""),
+                   "credenciales": payload.get("credenciales", []),
+                   "fuente": payload.get("fuente", ""), "licencia": payload.get("licencia", "")}
+        if isinstance(payload.get("receta"), dict):
+            entrada["receta"] = payload["receta"]
+        catalogo.agregar(self.catalogo_ruta, entrada)  # valida; ValueError -> 400
+        with closing(self.database()) as con:
+            catalogo.cargar(con, self.catalogo_ruta)
+        return {"anadida": True}
+
     def discover(self, job_id, payload=None):
         """Encola el descubrimiento DNS de los hosts en alcance; solo lee la base al encolar."""
         modo = payload.get("modo", "nombres") if isinstance(payload, dict) else "nombres"
@@ -1294,6 +1312,9 @@ class PortalHandler(BaseHTTPRequestHandler):
                 if path == "/api/audits":
                     self.json(store.create_audit(payload), 201)
                     return
+                if path == "/api/catalogo":
+                    self.json(store.add_credential(payload))
+                    return
                 if len(parts) == 3 and parts[:2] == ["api", "audits"] and re.fullmatch(r"[a-f0-9]{32}", parts[2]):
                     self.json(store.update_audit(parts[2], payload))
                     return
@@ -1416,7 +1437,7 @@ def serve_portal(args):
         if message:
             print(message, flush=True)
     store = PortalStore(args.datos, args.gowitness, args.chrome, model=args.modelo, ollama=args.ollama,
-                        dns_dominio=args.dns_dominio)
+                        dns_dominio=args.dns_dominio, catalogo_ruta=args.catalogo or catalogo.RUTA)
     try:
         server = PortalServer(("127.0.0.1", args.puerto), store)
     except Exception as exc:

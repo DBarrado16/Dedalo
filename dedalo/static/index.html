@@ -108,6 +108,38 @@
     <div class="dialog-bottom"><p>Las capturas ya lanzadas no cambian; las preparadas se recalculan con el alcance nuevo.</p><button id="save-audit" class="primary" type="submit">Guardar ficha</button></div>
   </form>
 </dialog>
+<dialog id="catalog-dialog" aria-labelledby="catalog-title">
+  <form id="catalog-form">
+    <div class="dialog-heading"><div><h2 id="catalog-title">Añadir al catálogo</h2><p>Credenciales de fábrica que se comparten con el equipo. Solo de fábrica: nunca un secreto real de un cliente.</p></div><button type="button" class="icon-button close-catalog" aria-label="Cerrar">×</button></div>
+    <div class="form-columns">
+      <section>
+        <label class="field">Fabricante <small>Opcional</small><input id="catalog-fabricante" maxlength="120"></label>
+        <label class="field">Producto<input id="catalog-producto" maxlength="120" required></label>
+        <label class="field">Versión <small>Opcional</small><input id="catalog-version" maxlength="120" placeholder="vacío = cualquiera"></label>
+        <label class="field">Servicio<select id="catalog-servicio"><option value="http-basic">HTTP Basic/Digest</option><option value="http-form">Login por formulario</option><option value="ftp">FTP</option></select></label>
+      </section>
+      <section>
+        <label class="field">Usuario<input id="catalog-usuario" maxlength="200" required></label>
+        <label class="field">Clave<input id="catalog-clave" maxlength="200" required></label>
+        <label class="field">De dónde salió <small>manual, enlace…</small><input id="catalog-fuente" maxlength="300"></label>
+      </section>
+    </div>
+    <div id="catalog-recipe" class="form-columns" hidden>
+      <section>
+        <label class="field">Ruta del login<input id="catalog-ruta" maxlength="200" placeholder="/login"></label>
+        <label class="field">Campo usuario<input id="catalog-campo-usuario" maxlength="80" placeholder="usuario"></label>
+        <label class="field">Campo clave<input id="catalog-campo-clave" maxlength="80" placeholder="clave"></label>
+      </section>
+      <section>
+        <label class="field">Al entrar, el panel redirige<input id="catalog-redirige" type="checkbox" checked></label>
+        <label class="field">Texto que aparece al fallar <small>Opcional</small><input id="catalog-texto-falla" maxlength="120"></label>
+      </section>
+    </div>
+    <label class="field">Confirmo que es una credencial <strong>de fábrica</strong>, no un secreto de un cliente<input id="catalog-factory" type="checkbox" required></label>
+    <p id="catalog-error" class="form-error" role="alert" hidden></p>
+    <div class="dialog-bottom"><p>Se añade a <code>credenciales.json</code> y se comparte por el repo del equipo.</p><button id="save-catalog" class="primary" type="submit">Añadir al catálogo</button></div>
+  </form>
+</dialog>
 <dialog id="image-dialog" aria-label="Detalle de captura"><div class="image-heading"><div><strong id="image-title"></strong><p id="image-url"></p></div><button id="close-image" class="icon-button" aria-label="Cerrar captura">×</button></div><img id="full-image" alt="Captura ampliada"><div class="image-bottom"><span id="image-meta"></span><a id="image-download" class="secondary" download>Descargar imagen</a></div></dialog>
 <dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description">
   <h2 id="delete-title">Borrar ejecución</h2>
