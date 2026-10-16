@@ -445,6 +445,31 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(detail["descubrimiento"]["estado"], "error")
         self.assertIn("Dominio", detail["descubrimiento"]["error"])  # el mensaje de sweep, no un genérico
 
+    def catalogo_temporal(self):
+        tmp = Path(self.temp.name) / "credenciales.json"
+        tmp.write_bytes(web.catalogo.RUTA.read_bytes())  # copia de la semilla: los tests NO tocan el real
+        self.store.catalogo_ruta = tmp
+        return tmp
+
+    def test_catalogo_needs_the_token_and_same_origin(self):
+        body = {"producto": "x", "servicio": "ftp", "credenciales": [{"usuario": "a", "clave": "b"}]}
+        for headers in ({"X-Dedalo-Token": "wrong"}, {"Origin": "https://example.org"}):
+            self.assertEqual(self.request("/api/catalogo", body, headers)[0], 403)
+
+    def test_catalogo_adds_a_factory_credential_and_reloads(self):
+        tmp = self.catalogo_temporal()
+        body = {"fabricante": "ACME", "producto": "RouterOS", "version": "", "servicio": "ftp",
+                "fuente": "manual del fabricante", "credenciales": [{"usuario": "admin", "clave": "admin"}]}
+        self.assertEqual(self.request("/api/catalogo", body)[0], 200)
+        self.assertIn("RouterOS", tmp.read_text("utf-8"))               # escrito en el fichero
+        with closing(self.store.database()) as con:
+            self.assertTrue(any(e["producto"] == "RouterOS" for e in web.catalogo.entradas(con)))  # recargado
+
+    def test_catalogo_rejects_an_invalid_entry(self):
+        self.catalogo_temporal()
+        body = {"producto": "x", "servicio": "ssh", "credenciales": [{"usuario": "a", "clave": "b"}]}
+        self.assertEqual(self.request("/api/catalogo", body)[0], 400)
+
     def test_progress_counts_the_hosts_already_answered(self):
         job, release = self.create(), threading.Event()
         model = model_waiting_at(2, release)
@@ -1723,7 +1748,7 @@ class PortTests(unittest.TestCase):
                 args = argparse.Namespace(datos=second_data, gowitness="indicado", chrome=None,
                                           puerto=server.server_address[1], abrir=False,
                                           modelo=web.modelo.DEFAULT_MODEL, ollama=web.modelo.OLLAMA, arrancar_ollama=False,
-                                          dns_dominio="example.com")
+                                          dns_dominio="example.com", catalogo=None)
                 with self.assertRaisesRegex(ValueError, "ya está en uso"):
                     web.serve_portal(args)
             finally:
