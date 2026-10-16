@@ -53,3 +53,36 @@ class CatalogoTests(unittest.TestCase):
 
     def test_the_shipped_catalog_loads(self):
         self.assertGreater(catalogo.cargar(self.con, catalogo.RUTA), 0)
+
+    def test_agregar_crea_una_entrada_nueva(self):
+        ruta = self.fichero([{"producto": "A", "servicio": "ftp", "credenciales": [{"usuario": "a", "clave": "b"}]}])
+        catalogo.agregar(ruta, {"fabricante": "ACME", "producto": "vsftpd", "version": "", "servicio": "ftp",
+                                "credenciales": [{"usuario": "ftp", "clave": "ftp"}], "fuente": "manual"})
+        datos = json.loads(ruta.read_text("utf-8"))
+        self.assertEqual(datos["entradas"][-1]["producto"], "vsftpd")
+        self.assertEqual(datos["entradas"][-1]["credenciales"], [{"usuario": "ftp", "clave": "ftp"}])
+
+    def test_agregar_fusiona_en_la_entrada_existente_sin_duplicar(self):
+        ruta = self.fichero([{"fabricante": "ACME", "producto": "vsftpd", "version": "", "servicio": "ftp",
+                              "credenciales": [{"usuario": "ftp", "clave": "ftp"}]}])
+        catalogo.agregar(ruta, {"fabricante": "ACME", "producto": "vsftpd", "version": "", "servicio": "ftp",
+                                "credenciales": [{"usuario": "ftp", "clave": "ftp"}, {"usuario": "admin", "clave": "admin"}]})
+        entradas = [e for e in json.loads(ruta.read_text("utf-8"))["entradas"] if e["producto"] == "vsftpd"]
+        self.assertEqual(len(entradas), 1)
+        self.assertEqual(entradas[0]["credenciales"], [{"usuario": "ftp", "clave": "ftp"}, {"usuario": "admin", "clave": "admin"}])
+
+    def test_agregar_conserva_la_estructura_del_fichero(self):
+        ruta = self.fichero([{"producto": "A", "servicio": "ftp", "credenciales": [{"usuario": "a", "clave": "b"}]}])
+        catalogo.agregar(ruta, {"producto": "B", "servicio": "ftp", "credenciales": [{"usuario": "c", "clave": "d"}]})
+        datos = json.loads(ruta.read_text("utf-8"))
+        self.assertEqual(datos["version"], "test")                 # version intacta
+        self.assertEqual(len(datos["entradas"]), 2)
+
+    def test_agregar_rechaza_lo_invalido_y_no_escribe(self):
+        ruta = self.fichero([{"producto": "A", "servicio": "ftp", "credenciales": [{"usuario": "a", "clave": "b"}]}])
+        antes = ruta.read_text("utf-8")
+        base = {"producto": "Z", "servicio": "ftp", "credenciales": [{"usuario": "x", "clave": "y"}]}
+        for mala in ({**base, "servicio": "ssh"}, {**base, "producto": ""}, {**base, "credenciales": [{"usuario": "x"}]}):
+            with self.assertRaises(ValueError):
+                catalogo.agregar(ruta, mala)
+        self.assertEqual(ruta.read_text("utf-8"), antes)           # el fichero no cambió
