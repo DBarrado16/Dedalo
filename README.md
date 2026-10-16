@@ -170,6 +170,7 @@ La pestaña **Credenciales** de una ejecución prueba, contra los servicios en a
 - Comprueba el **alcance justo antes** de cada conexión (la exclusión gana), con un **tope de intentos por servicio y una pausa** para no bloquear cuentas. Se puede ver el progreso, pararla y cancelarla, como el análisis.
 - Lo ves por servicio: **entró** (con qué usuario/clave, resaltado), no entró o error. La contraseña encontrada es dato sensible: se guarda en la base local y **no sale del equipo**.
 - Volver a probar sustituye el resultado anterior solo cuando el nuevo termina bien.
+- **Ampliar el catálogo desde el portal:** en cualquier servicio del inventario, el botón «Añadir al catálogo» mete una entrada nueva (producto y versión ya puestos; tú pones usuario, clave y de dónde salió). El catálogo es **compartido por el repo** (que pasará a privado en una organización), para que el equipo beba de él sin repetir la research; **solo credenciales de fábrica**, nunca un secreto real de un cliente (el portal pide confirmarlo). Con `--catalogo` se apunta a un fichero de catálogo compartido.
 
 Para probarlo de verdad necesitas servicios reales en las IP en alcance (un laboratorio con un panel web y un FTP, por ejemplo); el `ejemplos/laboratorio.xml` sirve para ver qué credenciales se le propondrían a cada servicio, pero esas IP no responden solas.
 
