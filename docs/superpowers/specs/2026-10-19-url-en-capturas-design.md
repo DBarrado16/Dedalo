@@ -65,7 +65,7 @@ La URL que va en la barra es la que Dédalo ya conoce del objetivo (esquema + ip
 - **Edge/Brave como Chrome:** mismo Chromium, debería ir; probar en la integración.
 - **Coste:** una pasada de Chrome por objetivo; si molesta, el interruptor lo apaga.
 
-## Preguntas abiertas (a cerrar en el plan)
+## Decidido
 
-- ¿La barra lleva **solo la URL**, o también el **título de la página** o el **código de estado** (200, 302…)? El spike va solo con la URL; se puede añadir. [menor, a gusto de Doro]
-- ¿Interruptor por **captura** (opciones) o también por **ficha** (recordado)? Propuesta: por captura, por defecto activado. [menor]
+- La barra lleva **solo la URL** (Doro, 2026-10-19). Nada de título ni código de estado.
+- Interruptor por **captura** (en las opciones), **activado por defecto**.
