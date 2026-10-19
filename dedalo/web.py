@@ -86,7 +86,7 @@ def options_from(raw):
     result["puertos"] = text_field(raw.get("puertos", ""), "Puertos", 2000)
     from .targets import parse_port_map
     parse_port_map(result["puertos"])
-    for key, default in (("por_servicio", False), ("pagina_completa", False), ("reintentar", True)):
+    for key, default in (("por_servicio", False), ("pagina_completa", False), ("reintentar", True), ("barra_url", True)):
         result[key] = raw.get(key, default)
         if type(result[key]) is not bool:
             raise ValueError(f"{key}: valor inválido")
@@ -1055,6 +1055,8 @@ class PortalStore:
                 command.append("--por-servicio")
             if options["pagina_completa"]:
                 command.append("--pagina-completa")
+            if not options.get("barra_url", True):
+                command.append("--sin-barra-url")
             error = ""
             try:
                 with (directory / "proceso.log").open("w", encoding="utf-8") as output:
