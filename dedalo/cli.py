@@ -13,7 +13,7 @@ import subprocess
 import sys
 from xml.etree.ElementTree import ParseError
 
-from . import __version__, gowitness, modelo, parser, report, targets, views
+from . import __version__, barra, gowitness, modelo, parser, report, targets, views
 
 
 def positive(value: str) -> int:
@@ -69,6 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help=f"Motor con el que gowitness maneja el navegador ({gowitness.DRIVERS[0]})")
     capture.add_argument("--sin-reintento", action="store_true",
                          help="No reintentar con el otro motor las páginas que cargan pero no dan imagen")
+    capture.add_argument("--sin-barra-url", action="store_true",
+                         help="No quemar la barra con la URL en las capturas (por defecto sí se quema)")
     capture.add_argument("--chrome", help="Ruta o nombre del ejecutable Chrome/Chromium/Edge")
     capture.add_argument("--gowitness", help="Ruta o nombre del ejecutable gowitness v3")
     capture.add_argument("--stop-file", help=argparse.SUPPRESS)
@@ -163,6 +165,9 @@ def capture(args) -> int:
     opts = {"threads": args.hilos, "timeout": args.timeout, "delay": args.delay,
             "format": args.formato, "chrome": chrome, "fullpage": args.pagina_completa,
             "driver": args.driver, "retry": not args.sin_reintento}
+    url_bar = not args.sin_barra_url
+    if url_bar:
+        opts["format"] = "png"  # la barra se compone como PNG; se fuerza para que sustituya a la captura
     root = Path(args.salida or ("salida/" + datetime.now().strftime("%Y%m%d-%H%M%S-%f"))).resolve()
     if root.exists() and (not root.is_dir() or any(root.iterdir())):
         raise ValueError(f"La salida no está vacía: {root}. Usa una carpeta nueva para no mezclar ejecuciones.")
@@ -208,6 +213,14 @@ def capture(args) -> int:
             error = "Captura interrumpida por el usuario"
         except (OSError, subprocess.CalledProcessError) as exc:
             error = f"gowitness no pudo completar esta subred: {exc}. Consulta gowitness.log"
+        if url_bar and chrome and not interrupted:
+            # Quemar la barra con la URL en cada imagen (una pasada de Chrome por captura).
+            for fila in gowitness.read_results(directory / gowitness.DB_NAME).values():
+                try:
+                    barra.componer(gowitness.screenshot_path(directory, fila["filename"]),
+                                   fila["final_url"] or fila["url"], chrome)
+                except ValueError as exc:
+                    print(f"  {exc}", file=sys.stderr)
         try:
             report.collect_group(root, group, error)
         except (OSError, sqlite3.Error, ValueError) as exc:
