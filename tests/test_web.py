@@ -1217,6 +1217,11 @@ class PortalTests(unittest.TestCase):
         self.assertIn(b"escapeHtml(item.usuario)", script)  # lo que devuelve el objetivo nunca entra como HTML
         self.assertIn(b"confirm(", script)  # la prueba activa pide confirmación
 
+    def test_scope_hint_says_how_to_authorize_all_ranges(self):
+        page = self.request("/")[1]
+        self.assertIn(b"0.0.0.0/0", page)
+        self.assertIn("todos los rangos".encode(), page)
+
     def test_page_has_the_discovery_tab(self):
         page, script = self.request("/")[1], self.request("/app.js")[1]
         for needle in (b'data-tab="discovery"', b'id="discovery-tools"', b'id="discover-job"',
