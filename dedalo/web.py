@@ -1416,17 +1416,23 @@ class PortalHandler(BaseHTTPRequestHandler):
 
 
 def ensure_gowitness(explicit):
-    """Sin ruta indicada, descarga el gowitness oficial si no hay ninguno."""
+    """Sin ruta indicada, se asegura del gowitness FIJADO: lo descarga si falta o si el que hay es de otra versión."""
     if explicit:
         return
     try:
-        gowitness.find_gowitness(None)
+        binario = gowitness.find_gowitness(None)
     except ValueError:
-        try:
-            gowitness.install_gowitness(log=lambda text: print(text, flush=True))
-        except ValueError as exc:
-            # El portal arranca igual; el aviso del motor explica cómo instalarlo.
-            print(f"Aviso: {exc}", flush=True)
+        binario = None
+    if binario and gowitness.installed_version(binario) == gowitness.VERSION:
+        return  # ya está la versión fijada
+    if binario:
+        # En WSL/Kali suele haber un gowitness del PATH de otra versión que no conoce los flags que usa Dédalo.
+        print(f"El gowitness disponible no es la versión {gowitness.VERSION} que Dédalo necesita; descargando el oficial…", flush=True)
+    try:
+        gowitness.install_gowitness(log=lambda text: print(text, flush=True))
+    except ValueError as exc:
+        # El portal arranca igual; el aviso del motor explica cómo instalarlo.
+        print(f"Aviso: {exc}", flush=True)
 
 
 def serve_portal(args):

@@ -70,6 +70,17 @@ def find_gowitness(explicit: str | None) -> str:
     raise ValueError("No encuentro gowitness v3. Ejecuta «python -m dedalo instalar», déjalo en bin/ o en el PATH, o usa --gowitness.")
 
 
+def installed_version(binary: str) -> str | None:
+    """La versión que dice `gowitness version` (p. ej. '3.2.0'), o None si no se puede leer."""
+    try:
+        resultado = subprocess.run([binary, "version"], capture_output=True, text=True, timeout=10,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    encontrado = re.search(r"\d+\.\d+\.\d+", (resultado.stdout or "") + (resultado.stderr or ""))
+    return encontrado.group(0) if encontrado else None
+
+
 def release_for_this_system() -> tuple[str, str]:
     system = platform.system().lower()
     machine = platform.machine().lower()
