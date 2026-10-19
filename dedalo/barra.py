@@ -11,6 +11,7 @@ import base64
 import html
 import os
 from pathlib import Path
+import struct
 import subprocess
 import tempfile
 
@@ -37,7 +38,7 @@ def dimensiones_png(ruta: Path) -> tuple[int, int]:
     datos = Path(ruta).read_bytes()
     if datos[:8] != b"\x89PNG\r\n\x1a\n" or datos[12:16] != b"IHDR":
         raise ValueError(f"No es un PNG: {ruta}")
-    ancho, alto = __import__("struct").unpack(">II", datos[16:24])
+    ancho, alto = struct.unpack(">II", datos[16:24])
     return ancho, alto
 
 

@@ -168,6 +168,8 @@ def capture(args) -> int:
     url_bar = not args.sin_barra_url
     if url_bar:
         opts["format"] = "png"  # la barra se compone como PNG; se fuerza para que sustituya a la captura
+    if url_bar and not chrome:
+        print("Aviso: no hay Chrome para componer la barra de URL en las capturas; irán sin ella.", file=sys.stderr)
     root = Path(args.salida or ("salida/" + datetime.now().strftime("%Y%m%d-%H%M%S-%f"))).resolve()
     if root.exists() and (not root.is_dir() or any(root.iterdir())):
         raise ValueError(f"La salida no está vacía: {root}. Usa una carpeta nueva para no mezclar ejecuciones.")
