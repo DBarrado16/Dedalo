@@ -82,7 +82,7 @@
         <label class="field">Motor del navegador<select id="driver"><option value="gorod">gorod</option><option value="chromedp">chromedp</option></select><small>Cómo gowitness maneja el navegador. gorod obtiene imagen en páginas donde chromedp se queda esperando.</small></label>
       </div>
       <label class="field">Puertos adicionales<input id="ports" placeholder="8080=http,8443=https"></label>
-      <div class="checks"><label><input id="by-service" type="checkbox"> Incluir otros servicios HTTP detectados</label><label><input id="fullpage" type="checkbox"> Página completa</label><label><input id="retry" type="checkbox" checked> Reintentar con el otro motor las páginas que cargan sin imagen</label></div>
+      <div class="checks"><label><input id="by-service" type="checkbox"> Incluir otros servicios HTTP detectados</label><label><input id="fullpage" type="checkbox"> Página completa</label><label><input id="retry" type="checkbox" checked> Reintentar con el otro motor las páginas que cargan sin imagen</label><label><input id="opt-url-bar" type="checkbox" checked> Barra de URL en las capturas (como un navegador)</label></div>
     </details>
     <p id="upload-error" class="form-error" role="alert" hidden></p>
     <div class="dialog-bottom"><p>La captura comienza después de revisar los objetivos y pulsar «Iniciar captura».</p><button id="prepare-job" class="primary" type="submit">Revisar objetivos</button></div>

@@ -1222,6 +1222,32 @@ class PortalTests(unittest.TestCase):
         self.assertIn(b"0.0.0.0/0", page)
         self.assertIn("todos los rangos".encode(), page)
 
+    def test_url_bar_option_defaults_to_on(self):
+        job = self.create()
+        self.assertIs(self.store.detail(job["id"])["opciones"]["barra_url"], True)
+
+    def test_capture_without_url_bar_passes_the_flag(self):
+        p = self.payload()
+        p["opciones"] = {**p["opciones"], "barra_url": False}
+        job = json.loads(self.request("/api/jobs", p)[1])
+        recibido = {}
+        def run(command, **kwargs):
+            recibido["cmd"] = command
+            class R:
+                returncode = 0
+            return R()
+        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), \
+             patch("dedalo.web.gowitness.find_chrome", return_value="fake"), \
+             patch("dedalo.web.subprocess.run", side_effect=run):
+            self.request("/api/jobs/" + job["id"] + "/start", {})
+            self.until(lambda: self.store.detail(job["id"])["estado"] not in ("en_cola", "en_curso"))
+        self.assertIn("--sin-barra-url", recibido["cmd"])
+
+    def test_page_has_the_url_bar_option(self):
+        page = self.request("/")[1]
+        self.assertIn(b'id="opt-url-bar"', page)
+        self.assertIn("Barra de URL".encode(), page)
+
     def test_page_has_the_discovery_tab(self):
         page, script = self.request("/")[1], self.request("/app.js")[1]
         for needle in (b'data-tab="discovery"', b'id="discovery-tools"', b'id="discover-job"',

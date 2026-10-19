@@ -238,8 +238,11 @@ Si la misma IP aparece en varios archivos, se unen sus puertos abiertos; no se i
 | `--pagina-completa` | Solicita captura de página completa a gowitness. |
 | `--driver gorod` | Motor con el que gowitness maneja el navegador: `gorod` (por defecto) o `chromedp`. |
 | `--sin-reintento` | No reintenta con el otro motor las páginas que cargan pero no dan imagen. |
+| `--sin-barra-url` | No quema la barra con la URL en las capturas (por defecto sí se quema). |
 | `--chrome RUTA` | Navegador que debe utilizar. |
 | `--gowitness RUTA` | Ejecutable de gowitness v3. |
+
+**Barra de URL (para informes).** Por defecto cada captura lleva quemada una **barra de direcciones** estilo navegador con su URL, para pegarla suelta en un informe y que se vea de qué objetivo es. La compone Chrome a partir de la imagen ya capturada (una pasada más por captura) y, con la barra activa, el formato de la imagen pasa a **PNG**. Se apaga con `--sin-barra-url` o con la casilla «Barra de URL en las capturas» del portal.
 
 Ejemplo en Windows:
 

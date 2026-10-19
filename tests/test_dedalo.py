@@ -134,6 +134,55 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn("4 URLs en 3 subredes", output)
             self.assertFalse(destination.exists())
 
+    def _patched_capture(self, componer, visto):
+        def scan(binary, directory, urls, opts, *a, **k):
+            visto["formato"] = opts["format"]
+        def collect(root, group, error):
+            group.update(capturas=1, sin_captura=0, resultados=[])
+        fake = {"u": {"url": "https://10.10.5.10/", "final_url": "https://10.10.5.10/x", "filename": "a.png"}}
+        return (patch("dedalo.cli.gowitness.find_gowitness", return_value="gw"),
+                patch("dedalo.cli.gowitness.find_chrome", return_value="chrome"),
+                patch("dedalo.cli.gowitness.scan_subnet", side_effect=scan),
+                patch("dedalo.cli.gowitness.retry_candidates", return_value=[]),
+                patch("dedalo.cli.gowitness.read_results", return_value=fake),
+                patch("dedalo.cli.gowitness.screenshot_path", side_effect=lambda d, f: Path(d) / f),
+                patch("dedalo.cli.report.collect_group", side_effect=collect),
+                patch("dedalo.cli.barra.componer", side_effect=componer))
+
+    def test_capture_burns_the_url_bar_and_forces_png(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "salida"
+            compuestas, visto = [], {}
+            parches = self._patched_capture(lambda img, url, chrome, **k: compuestas.append((img, url)), visto)
+            with parches[0], parches[1], parches[2], parches[3], parches[4], parches[5], parches[6], parches[7]:
+                self.call(self.arguments(destination))
+            self.assertEqual(visto["formato"], "png")                      # formato forzado a PNG
+            self.assertTrue(compuestas)                                     # compuso cada imagen
+            self.assertTrue(all(url == "https://10.10.5.10/x" for _, url in compuestas))  # con su final_url
+
+    def test_capture_warns_when_the_bar_is_on_but_there_is_no_chrome(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "salida"
+            visto = {}
+            componer = unittest.mock.Mock()
+            p = self._patched_capture(componer, visto)
+            with p[0], patch("dedalo.cli.gowitness.find_chrome", return_value=None), \
+                    p[2], p[3], p[4], p[5], p[6], p[7]:
+                _, output = self.call(self.arguments(destination))
+            componer.assert_not_called()
+            self.assertIn("Chrome", output)                    # avisa de que la barra se queda sin componer
+
+    def test_capture_without_the_bar_does_not_compose_nor_force_png(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "salida"
+            visto = {}
+            componer = unittest.mock.Mock()
+            parches = self._patched_capture(componer, visto)
+            with parches[0], parches[1], parches[2], parches[3], parches[4], parches[5], parches[6], parches[7]:
+                self.call(self.arguments(destination) + ["--sin-barra-url", "--formato", "jpeg"])
+            componer.assert_not_called()
+            self.assertEqual(visto["formato"], "jpeg")                     # sin forzar
+
     def test_existing_output_is_preserved(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary)
