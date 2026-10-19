@@ -97,7 +97,7 @@
         <textarea id="audit-include" rows="8" placeholder="172.31.0.0/16&#10;10.10.0.0/17"></textarea>
         <label class="file-link">Cargar desde un .txt<input id="audit-include-file" type="file" accept=".txt,.cidr" aria-label="Archivo de rangos autorizados"></label>
         <button id="detect-networks" class="link-button" type="button">Detectar mis redes</button>
-        <p class="hint">Un CIDR o una IP por línea. Solo se captura lo que esté aquí. Cada rango se organiza en /24.</p>
+        <p class="hint">Un CIDR o una IP por línea. Solo se captura lo que esté aquí. Cada rango se organiza en /24. Para autorizar <strong>todos los rangos</strong>, pon <code>0.0.0.0/0</code> (y <code>::/0</code> para IPv6): desactiva el filtro de alcance, úsalo con cuidado.</p>
       </section>
       <section><label class="field-label" for="audit-exclude">Excluir <small>Opcional</small></label>
         <textarea id="audit-exclude" rows="8" placeholder="172.31.253.241  # A10 producción"></textarea>
