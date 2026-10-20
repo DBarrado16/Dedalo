@@ -381,7 +381,7 @@ class PortalStore:
         result = self.directory(job_id) / "resultado"
         return [self.directory(job_id) / "proceso.log"] + [
             report.inside(result, g["carpeta"]) / name for g in manifest["grupos"]
-            for name in (gowitness.LOG_NAME, gowitness.RETRY_LOG)]
+            for name in (gowitness.LOG_NAME, gowitness.SCHEME_LOG, gowitness.RETRY_LOG)]
 
     def _capture_state(self, job_id, state, error="", record=False, strict=False):
         """Guarda en la base el estado de la captura de un trabajo y, si se pide, sus resultados.
@@ -1297,7 +1297,7 @@ class PortalStore:
         if manifest:
             paths += [report.inside(directory / "resultado", g["carpeta"]) / name
                       for g in manifest["grupos"] if g["estado"] in ("en_curso", "parcial", "error", "interrumpido")
-                      for name in (gowitness.LOG_NAME, gowitness.RETRY_LOG)]
+                      for name in (gowitness.LOG_NAME, gowitness.SCHEME_LOG, gowitness.RETRY_LOG)]
         lines = []
         # El registro del proceso y los siete últimos de gowitness que existan.
         for path in paths[:1] + [p for p in paths[1:] if p.is_file()][-7:]:

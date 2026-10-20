@@ -281,6 +281,34 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(rows["https://10.10.5.10/"]["error"],
                              "También sin imagen al reintentar con el otro motor: context deadline exceeded")
 
+    def test_capture_prueba_el_otro_esquema(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            calls = []
+            def scan(binary, directory, urls, opts, urls_file=gowitness.URLS_FILE, log_name=gowitness.LOG_NAME):
+                calls.append((list(urls), urls_file, log_name))
+                if log_name == gowitness.LOG_NAME and "http://10.10.6.20:8443/" in urls:
+                    # El log nombra también una IP que no es objetivo: no debe generar candidata.
+                    (Path(directory) / log_name).write_text(
+                        'ERRO failed to witness target target=http://10.10.6.20:8443/ err="page load error net::ERR_EMPTY_RESPONSE"\n'
+                        'ERRO failed to witness target target=http://10.9.9.9:8443/ err="page load error net::ERR_EMPTY_RESPONSE"\n',
+                        encoding="utf-8")
+            _, output = self.run_with(Path(temporary) / "salida", scan, ["--puertos", "8443=http"])
+            self.assertEqual(len(calls), 4, calls)       # 3 subredes y la pasada de esquema
+            self.assertEqual([c for c in calls if c[2] == gowitness.SCHEME_LOG],
+                             [(["https://10.10.6.20:8443/"], gowitness.SCHEME_URLS, gowitness.SCHEME_LOG)])
+            self.assertIn("1 sin respuesta; se prueban con el otro esquema (http/https)", output)
+
+    def test_capture_sin_reintento_no_prueba_esquema(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            calls = []
+            def scan(binary, directory, urls, opts, urls_file=gowitness.URLS_FILE, log_name=gowitness.LOG_NAME):
+                calls.append(log_name)
+                (Path(directory) / log_name).write_text(
+                    'ERRO failed to witness target target=http://10.10.6.20:8443/ err="page load error net::ERR_EMPTY_RESPONSE"\n',
+                    encoding="utf-8")
+            self.run_with(Path(temporary) / "salida", scan, ["--puertos", "8443=http", "--sin-reintento"])
+            self.assertEqual(calls, [gowitness.LOG_NAME] * 3)   # una sola pasada por subred
+
     def test_connection_errors_are_not_retried(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
