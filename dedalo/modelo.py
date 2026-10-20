@@ -26,6 +26,13 @@ OLLAMA = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "llama3.2:3b"
 _MODEL_NAME = re.compile(r"[\w.:/-]{1,200}")
 
+# Motor opcional por API de Claude (a conciencia; los datos salen del equipo). La clave va en
+# una variable de entorno, nunca en la base ni en el repo.
+CLAVE_ENV = "ANTHROPIC_API_KEY"
+CLAUDE_URL = "https://api.anthropic.com/v1/messages"
+CLAUDE_VERSION = "2023-06-01"
+CLAUDE_DEFAULT = "claude-sonnet-5-5"
+
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Una redirección llevaría la petición a otra dirección: se trata como un error."""
@@ -186,3 +193,40 @@ def generate(prompt: str, model: str, host: str = OLLAMA, timeout: int = 120, sc
     if not isinstance(text, str):
         raise ValueError(f"El modelo «{model}» no devolvió texto. ¿Está arrancado Ollama y descargado ese modelo?")
     return text
+
+
+def generate_claude(prompt: str, model: str, api_key: str | None = None, timeout: int = 120,
+                    schema: dict | None = None, url: str = CLAUDE_URL) -> str:
+    """Pide una respuesta a la API de Claude y devuelve su texto. A conciencia: los datos salen del equipo.
+
+    La clave sale de `api_key` o de la variable de entorno; nunca de la base ni del repo. `schema` se
+    acepta por paridad con generate (Ollama); aquí el JSON se pide en el propio prompt y lo valida
+    quien llama (fingerprint.parse_result). Errores de red/HTTP/JSON -> ValueError.
+    """
+    clave = api_key or os.environ.get(CLAVE_ENV)
+    if not clave:
+        raise ValueError(f"Falta la clave de la API de Claude: define la variable de entorno {CLAVE_ENV}.")
+    data = json.dumps({"model": model, "max_tokens": 1024,
+                       "messages": [{"role": "user", "content": prompt}]})
+    request = urllib.request.Request(url, data=data.encode("utf-8"), headers={
+        "Content-Type": "application/json", "x-api-key": clave, "anthropic-version": CLAUDE_VERSION})
+    try:
+        with _OPENER.open(request, timeout=timeout) as response:
+            cuerpo = json.loads(response.read())
+        texto = next((b.get("text") for b in cuerpo.get("content", []) if b.get("type") == "text"), None)
+    except (OSError, ValueError, AttributeError, http.client.HTTPException) as exc:
+        if isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
+            raise ValueError(f"La API de Claude tardó más de {timeout} s en responder.") from exc
+        raise ValueError(f"No se pudo usar la API de Claude con «{model}»: {exc}.") from exc
+    if not isinstance(texto, str):
+        raise ValueError(f"La API de Claude no devolvió texto con «{model}».")
+    return texto
+
+
+def generador(engine: str, model: str, host: str, timeout: int = 120, schema: dict | None = None):
+    """Devuelve un generate(prompt)->texto según el motor elegido: Ollama en local o Claude por API."""
+    if engine == "ollama":
+        return lambda prompt: generate(prompt, model, host, timeout=timeout, schema=schema)
+    if engine == "claude":
+        return lambda prompt: generate_claude(prompt, model, timeout=timeout, schema=schema)
+    raise ValueError(f"Motor de IA desconocido: {engine!r}")
