@@ -72,7 +72,10 @@ def collect_group(root: Path, group: dict, error: str = "") -> None:
     errors = gowitness.read_errors(directory)
     rows, missing = [], []
     for target in group["objetivos"]:
-        result = found.get(gowitness.normalize_url(target["url"]))
+        url, other = target["url"], gowitness.other_scheme(target["url"])
+        result = found.get(gowitness.normalize_url(url))
+        if not result and (result := found.get(gowitness.normalize_url(other))):
+            url = other  # solo respondió con el otro esquema (pasada de esquema)
         shot = ""
         if result:
             shot = gowitness.screenshot_path(directory, result["filename"]).relative_to(root).as_posix()
@@ -80,12 +83,12 @@ def collect_group(root: Path, group: dict, error: str = "") -> None:
             missing.append(target["url"])
         rows.append({
             "rango": group["rango"], "subred": group["subred"],
-            "ip": target["ip"], "puerto": target["port"], "url": target["url"],
+            "ip": target["ip"], "puerto": target["port"], "url": url,
             "estado": "capturada" if result else "sin_captura",
             "codigo_http": result["response_code"] if result else "",
             "titulo": result["title"] if result else "",
             "url_final": result["final_url"] if result else "",
-            "captura": shot, "error": "" if result else (errors.get(gowitness.normalize_url(target["url"])) or error or "Consultar gowitness.log"),
+            "captura": shot, "error": "" if result else (errors.get(gowitness.normalize_url(other)) or errors.get(gowitness.normalize_url(target["url"])) or error or "Consultar gowitness.log"),
         })
     group["resultados"] = rows
     group["capturas"] = len(rows) - len(missing)

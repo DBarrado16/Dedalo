@@ -21,6 +21,12 @@ LOG_NAME = "gowitness.log"
 # Segunda pasada con el otro motor para las URL cuya página cargó pero no dio imagen.
 RETRY_URLS = "urls-reintento.txt"
 RETRY_LOG = "gowitness-reintento.log"
+# Pasada con el otro esquema (http<->https) para las URL que fallan como si el esquema
+# fuera el equivocado. Va antes del reintento con el otro motor.
+SCHEME_URLS = "urls-esquema.txt"
+SCHEME_LOG = "gowitness-esquema.log"
+SCHEME_ERRORS = ("ERR_EMPTY_RESPONSE", "ERR_INVALID_HTTP_RESPONSE", "ERR_CONNECTION_RESET",
+                 "ERR_CONNECTION_CLOSED", "ERR_SSL_PROTOCOL_ERROR", "ERR_SSL_VERSION_OR_CIPHER_MISMATCH")
 # Motores de gowitness para manejar el navegador. gorod va primero: chromedp se
 # queda sin imagen en páginas que gorod captura (probado con scanme.nmap.org y
 # una espera de 3 s o más).
@@ -202,9 +208,37 @@ def retry_candidates(directory: Path, urls: list[str]) -> list[str]:
     Solo ese fallo se reintenta con el otro motor: un error de conexión o de
     carga se repetiría igual y solo alargaría la subred.
     """
-    failed = {key for key, kind, _ in _log_errors(Path(directory) / LOG_NAME) if kind == GRAB_FAILED}
+    failed = {key for name in (LOG_NAME, SCHEME_LOG)
+              for key, kind, _ in _log_errors(Path(directory) / name) if kind == GRAB_FAILED}
     captured = read_results(Path(directory) / DB_NAME)
     return [url for url in urls if normalize_url(url) in failed and normalize_url(url) not in captured]
+
+
+def other_scheme(url: str) -> str:
+    """La misma IP:puerto con el otro esquema (http<->https).
+
+    El puerto estándar del esquema original pasa a explícito: http://ip/ es el
+    puerto 80, y https://ip/ sería el 443, otro puerto distinto.
+    """
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    port = parts.port or {"http": 80, "https": 443}[parts.scheme]
+    scheme = "https" if parts.scheme == "http" else "http"
+    return urlunsplit((scheme, f"{host}:{port}", parts.path or "/", parts.query, ""))
+
+
+def scheme_candidates(directory: Path, urls: list[str]) -> list[str]:
+    """URL con el otro esquema para las que fallaron como si el esquema fuera el equivocado.
+
+    Solo parte de `urls` (objetivos ya filtrados por alcance), nunca de lo que diga
+    el log: un error de una URL que no es objetivo no genera ninguna candidata.
+    """
+    wrong = {key for key, kind, message in _log_errors(Path(directory) / LOG_NAME)
+             if kind == "failed to witness target" and any(error in message for error in SCHEME_ERRORS)}
+    captured = read_results(Path(directory) / DB_NAME)
+    return [other_scheme(url) for url in urls if normalize_url(url) in wrong and normalize_url(url) not in captured]
 
 
 def explicit_port(url: str) -> str:
@@ -245,10 +279,12 @@ def _log_errors(path: Path):
 def read_errors(directory: Path) -> dict[str, str]:
     """Recuperar el error de cada URL, también para ejecuciones antiguas.
 
-    Si la URL se reintentó con el otro motor, prevalece el error del reintento.
+    Si la URL se reintentó, prevalece el error de la última pasada: la del otro
+    esquema, o la del otro motor.
     """
     errors = {}
-    for name, prefix in ((LOG_NAME, ""), (RETRY_LOG, "También sin imagen al reintentar con el otro motor: ")):
+    for name, prefix in ((LOG_NAME, ""), (SCHEME_LOG, "Ni http ni https respondieron: "),
+                         (RETRY_LOG, "También sin imagen al reintentar con el otro motor: ")):
         for key, _, message in _log_errors(Path(directory) / name):
             if "ERR_NETWORK_ACCESS_DENIED" in message:
                 message = "Acceso a la red denegado (ERR_NETWORK_ACCESS_DENIED). Comprueba que el portal se haya iniciado con acceso a la red/VPN."
