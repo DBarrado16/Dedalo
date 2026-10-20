@@ -273,7 +273,7 @@ def close_interrupted_analyses(con: sqlite3.Connection) -> None:
     with con:
         con.execute("UPDATE ejecucion SET estado = 'interrumpida', terminada = ?, "
                     "error = 'El portal se cerró antes de terminar el análisis.' "
-                    "WHERE tipo IN ('analisis', 'credenciales', 'descubrimiento') AND estado IN ('en_cola', 'en_curso', 'deteniendo')", (now(),))
+                    "WHERE tipo IN ('analisis', 'credenciales', 'descubrimiento', 'version') AND estado IN ('en_cola', 'en_curso', 'deteniendo')", (now(),))
 
 
 def finish_analysis(con: sqlite3.Connection, analysis_id: str, rows: list[dict]) -> None:
@@ -306,6 +306,93 @@ def priorities(con: sqlite3.Connection, import_id: str) -> list[dict]:
         return rows
     current = scope(con, audit_of(con, import_id))
     return [row for row in rows if current.status(row["ip"]) == current.IN]
+
+
+def start_version(con: sqlite3.Connection, import_id: str, options: dict, created: str | None = None) -> str:
+    """Crea en cola una detección de versión de una importación; la última completa se conserva hasta que esta termine bien."""
+    source = con.execute("SELECT auditoria_id, nombre FROM ejecucion WHERE id = ? AND tipo = 'importacion'",
+                         (import_id,)).fetchone()
+    if source is None:
+        raise FileNotFoundError("Importación no encontrada")
+    version_id = uuid.uuid4().hex
+    with con:
+        con.execute("DELETE FROM ejecucion WHERE origen_id = ? AND tipo = 'version' AND estado <> 'completa'",
+                    (import_id,))
+        con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada) "
+                    "VALUES (?, ?, 'version', ?, ?, 'en_cola', ?, ?)",
+                    (version_id, source["auditoria_id"], import_id, source["nombre"],
+                     json.dumps(options, ensure_ascii=False), created or now()))
+    return version_id
+
+
+def begin_version(con: sqlite3.Connection, version_id: str) -> bool:
+    """Pasa a en curso una detección que sigue en cola; False si entretanto se canceló o se sustituyó."""
+    with con:
+        return _set_state(con, version_id, "en_curso", only_from="en_cola")
+
+
+def stop_version(con: sqlite3.Connection, import_id: str) -> str | None:
+    """Cancela la detección en cola de una importación o pide que pare la que está en curso."""
+    row = _derived(con, import_id, "version")
+    if row is None:
+        return None
+    with con:
+        if _set_state(con, row["id"], "cancelada", "Se canceló antes de empezar.", only_from="en_cola"):
+            return "cancelada"
+        if _set_state(con, row["id"], "deteniendo", only_from="en_curso"):
+            return "deteniendo"
+    return None
+
+
+def version_status(con: sqlite3.Connection, import_id: str) -> dict | None:
+    """Estado y error de la última detección pedida de una importación, o None si no se pidió ninguna."""
+    row = _derived(con, import_id, "version")
+    return {"estado": row["estado"], "error": row["error"]} if row else None
+
+
+def captured_services(con: sqlite3.Connection, capture_id: str) -> list[dict]:
+    """Servicios capturados con éxito de una ejecución de captura: {servicio_id, url}."""
+    return [{"servicio_id": row["servicio_id"], "url": row["url"]} for row in con.execute(
+        "SELECT servicio_id, url FROM captura WHERE ejecucion_id = ? AND estado = 'capturada' ORDER BY id",
+        (capture_id,))]
+
+
+def finish_version(con: sqlite3.Connection, version_id: str, filas: list[dict]) -> None:
+    """Guarda las lecturas de cada servicio, la da por completa y solo entonces sustituye a la anterior.
+
+    Todo en una transacción: si algo falla, sigue valiendo la última detección completa. Un servicio
+    que no es de su auditoría se ignora (el JOIN no casa).
+    """
+    with con:
+        for fila in filas:
+            con.execute("INSERT INTO deteccion (ejecucion_id, servicio_id, origen, producto, version, confianza, detalle) "
+                        "SELECT e.id, s.id, ?, ?, ?, ?, ? FROM ejecucion e "
+                        "JOIN servicio s ON s.id = ? JOIN activo a ON a.id = s.activo_id AND a.auditoria_id = e.auditoria_id "
+                        "WHERE e.id = ?",
+                        (fila["origen"], fila["producto"], fila.get("version", ""), fila.get("confianza"),
+                         fila.get("detalle", ""), fila["servicio_id"], version_id))
+        _set_state(con, version_id, "completa")
+        con.execute("DELETE FROM ejecucion WHERE tipo = 'version' AND id <> ? "
+                    "AND origen_id = (SELECT origen_id FROM ejecucion WHERE id = ?)", (version_id, version_id))
+
+
+def detections(con: sqlite3.Connection, import_id: str) -> dict[int, list[dict]]:
+    """Las lecturas de producto/versión de una importación, por servicio; solo activos en alcance vigente."""
+    filas = [dict(row) for row in con.execute(
+        "SELECT d.servicio_id, a.ip, d.origen, d.producto, d.version, d.confianza FROM deteccion d "
+        "JOIN ejecucion e ON e.id = d.ejecucion_id JOIN servicio s ON s.id = d.servicio_id "
+        "JOIN activo a ON a.id = s.activo_id WHERE e.origen_id = ? AND e.tipo = 'version' ORDER BY d.id", (import_id,))]
+    if not filas:
+        return {}
+    current = scope(con, audit_of(con, import_id))
+    salida: dict[int, list[dict]] = {}
+    for fila in filas:
+        if current.status(fila["ip"]) != current.IN:
+            continue
+        salida.setdefault(fila["servicio_id"], []).append(
+            {"origen": fila["origen"], "producto": fila["producto"], "version": fila["version"],
+             "confianza": fila["confianza"]})
+    return salida
 
 
 def start_credential_test(con, import_id: str, options: dict, created: str | None = None) -> str:
