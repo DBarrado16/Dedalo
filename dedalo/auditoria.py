@@ -559,6 +559,19 @@ def set_state(con: sqlite3.Connection, execution_id: str, state: str, error: str
         _set_state(con, execution_id, state, error)
 
 
+def get_config(con: sqlite3.Connection, clave: str, defecto: str | None = None) -> str | None:
+    """Valor de un ajuste de la tabla config, o `defecto` si no está."""
+    row = con.execute("SELECT valor FROM config WHERE clave = ?", (clave,)).fetchone()
+    return row[0] if row else defecto
+
+
+def set_config(con: sqlite3.Connection, clave: str, valor: str) -> None:
+    """Guarda (o reemplaza) un ajuste en la tabla config."""
+    with con:
+        con.execute("INSERT INTO config (clave, valor) VALUES (?, ?) "
+                    "ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor", (clave, valor))
+
+
 def _evidence(con, execution_id: str, kind: str, path: Path, root: Path, stamp: str) -> int:
     data = path.read_bytes()
     route = path.resolve().relative_to(root.resolve()).as_posix()

@@ -29,8 +29,11 @@ import webbrowser
 from xml.etree.ElementTree import ParseError
 import zipfile
 
-from . import (auditoria, catalogo, cli, credenciales, db, descubrimiento, gowitness, inventory, modelo, parser,
-               prioridad, probador, redes, report, targets)
+from . import (auditoria, catalogo, cli, credenciales, db, descubrimiento, fingerprint, gowitness, inventory, modelo,
+               parser, prioridad, probador, redes, report, targets)
+
+VERSION_AVISO = ("Con la API de Claude, el HTML y las cabeceras de cada captura salen de tu equipo "
+                 "hacia la nube de Anthropic. La clave va en la variable de entorno ANTHROPIC_API_KEY.")
 
 STATIC = Path(__file__).parent / "static"
 STATIC_FILES = {
@@ -167,6 +170,8 @@ class PortalStore:
         self.credential_progress = {}
         # Direcciones ya consultadas del descubrimiento en curso; solo en memoria, como el análisis.
         self.discovery_progress = {}
+        # Servicios ya mirados de la detección de versión en curso; solo en memoria, como el análisis.
+        self.version_progress = {}
         # Carpetas antiguas que no se pudieron pasar a la base en este arranque; el
         # portal las muestra (/api/bootstrap) porque no aparecen en el historial.
         self.migration_failures = []
@@ -804,6 +809,107 @@ class PortalStore:
             else:
                 auditoria.set_state(con, analysis_id, state, error)
 
+    def version_config(self) -> dict:
+        """El ajuste de la detección de versión: si está activa, con qué motor y modelo (y el aviso si es Claude)."""
+        with closing(self.database()) as con:
+            enabled = auditoria.get_config(con, "version_enabled", "0") == "1"
+            engine = auditoria.get_config(con, "version_engine", "ollama")
+            model = auditoria.get_config(con, "version_model", "")
+        if not model:
+            model = modelo.CLAUDE_DEFAULT if engine == "claude" else self.model_option
+        cfg = {"enabled": enabled, "engine": engine, "model": model}
+        if engine == "claude":
+            cfg["aviso"] = VERSION_AVISO
+        return cfg
+
+    def set_version_config(self, payload) -> dict:
+        """Guarda el ajuste de la detección. Apagada de serie; la activa el operador a conciencia."""
+        if not isinstance(payload, dict):
+            raise ValueError("Se esperaba un objeto")
+        engine = payload.get("engine", "ollama")
+        if engine not in ("ollama", "claude"):
+            raise ValueError(f"Motor de IA no válido: {engine!r}")
+        with closing(self.database()) as con:
+            auditoria.set_config(con, "version_enabled", "1" if payload.get("enabled") else "0")
+            auditoria.set_config(con, "version_engine", engine)
+            auditoria.set_config(con, "version_model", str(payload.get("model", "") or ""))
+        return self.version_config()
+
+    def _maybe_queue_version(self, job_id):
+        """Tras una captura, si la detección está activada y hay servicios capturados, la encola por detrás."""
+        cfg = self.version_config()
+        if not cfg["enabled"]:
+            return
+        with closing(self.database()) as con:
+            capture_id = auditoria.capture_of(con, job_id)
+            if not capture_id or not auditoria.captured_services(con, capture_id):
+                return
+            version_id = auditoria.start_version(con, job_id, {"engine": cfg["engine"], "model": cfg["model"]})
+        self.pending.put(("version", (job_id, version_id, cfg["engine"], cfg["model"])))
+
+    def _run_version(self, job_id, version_id, engine, model):
+        """Nunca tumba el hilo de la cola: si falla, cierra la detección en error si puede."""
+        try:
+            self._detect(job_id, version_id, engine, model)
+        except Exception as exc:
+            print(f"Error del portal: no se pudo completar la detección de versión de {job_id}: {exc}", file=sys.stderr)
+            try:
+                with closing(self.database()) as con:
+                    auditoria.set_state(con, version_id, "error",
+                                        "No se pudo completar la detección. Consulta la terminal del portal.")
+            except Exception as again:
+                print(f"Error del portal: no se pudo cerrar la detección de {job_id}: {again}", file=sys.stderr)
+
+    def _detect(self, job_id, version_id, engine, model):
+        # Solo lee lo que la captura ya guardó en disco; no conecta con ningún objetivo.
+        with closing(self.database()) as con:
+            if not auditoria.begin_version(con, version_id):
+                return  # se canceló en la cola, o otra la sustituyó
+            capture_id = auditoria.capture_of(con, job_id)
+            servicios = auditoria.captured_services(con, capture_id) if capture_id else []
+        root = self.directory(job_id) / "resultado"
+        datos = {}
+        for base in root.rglob(gowitness.DB_NAME):
+            try:
+                datos.update(gowitness.read_fingerprint(base))
+            except (OSError, sqlite3.Error, ValueError):
+                continue
+        items = [{"servicio_id": s["servicio_id"], "url": s["url"], "datos": datos[key]}
+                 for s in servicios if (key := gowitness.normalize_url(s["url"])) in datos]
+
+        generate = modelo.generador(engine, model, self.model_host, schema=fingerprint.ESQUEMA)
+
+        def stopping():
+            if self.closing:
+                return True
+            with closing(self.database()) as con:
+                status = auditoria.version_status(con, job_id)
+            return status is None or status["estado"] == "deteniendo"
+
+        def progress(done, total):
+            with self.lock:
+                self.version_progress[job_id] = {"hechos": done, "total": total}
+
+        try:
+            filas = fingerprint.detectar(items, generate, parar=stopping, avance=progress)
+            state, error = "completa", ""
+        except fingerprint.Interrumpido:
+            state = "interrumpida"
+            error = "El portal se cerró antes de terminar la detección." if self.closing else "Detenida desde el portal antes de terminar."
+        except Exception as exc:
+            print(f"Error del portal: no se pudo detectar la versión de {job_id} con IA: {exc}", file=sys.stderr)
+            state = "error"
+            error = str(exc) if isinstance(exc, ValueError) else "No se pudo completar la detección. Consulta la terminal del portal."
+        finally:
+            with self.lock:
+                self.version_progress.pop(job_id, None)
+        # Solo una detección completa sustituye a la anterior: si esta falla, se sigue viendo la última buena.
+        with closing(self.database()) as con:
+            if state == "completa":
+                auditoria.finish_version(con, version_id, filas)
+            else:
+                auditoria.set_state(con, version_id, state, error)
+
     def test_credentials(self, job_id, payload=None):
         """Encola la prueba de credenciales por defecto de los hosts en alcance; solo lee la base al encolar."""
         with self.lock:
@@ -1027,6 +1133,9 @@ class PortalStore:
             if kind == "descubrimiento":
                 self._run_discovery(*payload)
                 continue
+            if kind == "version":
+                self._run_version(*payload)
+                continue
             job_id, binary, chrome = payload
             with self.lock:
                 meta = self.jobs.get(job_id)
@@ -1080,6 +1189,11 @@ class PortalStore:
             with self.lock:
                 meta.pop("terminando", None)
                 meta.update(estado=status, error=error, fin=now())
+            # Tras la captura, si la detección de versión está activada, se lanza por detrás (no la frena).
+            try:
+                self._maybe_queue_version(job_id)
+            except Exception as exc:
+                print(f"Error del portal: no se pudo encolar la detección de versión de {job_id}: {exc}", file=sys.stderr)
 
     def delete(self, job_id):
         with self.lock:
@@ -1317,6 +1431,9 @@ class PortalHandler(BaseHTTPRequestHandler):
                 if path == "/api/catalogo":
                     self.json(store.add_credential(payload))
                     return
+                if path == "/api/version-config":
+                    self.json(store.set_version_config(payload))
+                    return
                 if len(parts) == 3 and parts[:2] == ["api", "audits"] and re.fullmatch(r"[a-f0-9]{32}", parts[2]):
                     self.json(store.update_audit(parts[2], payload))
                     return
@@ -1364,6 +1481,9 @@ class PortalHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/modelos":
                 self.json(store.models())
+                return
+            if path == "/api/version-config":
+                self.json(store.version_config())
                 return
             if path == "/api/redes":
                 self.json(store.networks())
