@@ -53,6 +53,10 @@ class ParseTests(unittest.TestCase):
                 self.assertEqual(fingerprint.parse_result(text),
                                  {"producto": "RouterOS", "version": "6.49.7", "confianza": 90})
 
+    def test_acota_la_confianza_al_rango(self):
+        self.assertEqual(fingerprint.parse_result(answer(confianza=150))["confianza"], 100)
+        self.assertEqual(fingerprint.parse_result(answer(confianza=-5))["confianza"], 0)
+
     def test_recorta_producto_y_version_largos(self):
         out = fingerprint.parse_result(answer(producto="P" * 500, version="9" * 500))
         self.assertLessEqual(len(out["producto"]), fingerprint.MAX_TEXTO)

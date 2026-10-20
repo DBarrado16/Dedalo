@@ -63,7 +63,7 @@ def parse_result(text: str) -> dict:
         raise ValueError("version no es texto")
     return {"producto": data["producto"].strip()[:MAX_TEXTO],
             "version": version.strip()[:MAX_TEXTO],
-            "confianza": data["confianza"]}
+            "confianza": max(0, min(100, data["confianza"]))}  # el modelo podría salirse del 0-100
 
 
 def tech_lecturas(technologies: list[str]) -> list[dict]:
