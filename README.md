@@ -160,6 +160,16 @@ Pulsa **Analizar con IA**. El análisis va por la misma cola que las capturas, a
 
 `ejemplos/laboratorio.xml` es un laboratorio inventado para probarlo: un controlador de dominio, un panel web de administración, un servidor de ficheros y un puesto de usuario en `10.30.0.0/16`. Crea una ficha con ese rango, sube el archivo y pulsa **Analizar con IA**.
 
+## Detección de producto y versión
+
+Tras cada captura, Dédalo puede estimar el **producto y la versión** de cada servicio web a partir de lo que gowitness ya guardó —las **cabeceras de respuesta**, las **tecnologías** que detecta y el **HTML** del front—, sin volver a conectar con nada. Mejora el fingerprint que se ve en el inventario y, de rebote, qué credenciales por defecto se le prueban a cada servicio.
+
+- **Apagada de serie.** Se enciende en la pestaña **Priorización**, con «Detectar producto y versión tras cada captura». Cuando está activa, al terminar una captura la detección se lanza **por detrás**, sin frenar la galería: las imágenes se ven al momento y la versión se va rellenando sola.
+- **gowitness primero, la IA solo afina.** Las tecnologías que gowitness reconoce se muestran tal cual; la IA entra únicamente a completar y afinar lo que no reconoce (routers, paneles, firmware). Cada lectura se etiqueta con su origen (**gowitness** o **IA**, con su confianza). Si la IA falla o está apagada, queda al menos lo de gowitness.
+- **Motor elegible.** Por defecto, **Ollama en local** (mismas reglas que la priorización: solo loopback, sin modelos de la nube). Como opción, la **API de Claude**: al elegirla, el portal avisa de que el HTML y las cabeceras de la captura **salen del equipo** hacia la nube de Anthropic; la clave va en la variable de entorno `ANTHROPIC_API_KEY`, nunca en la base ni en el repo.
+- **Contenido no confiable.** El HTML y las cabeceras van al modelo como datos acotados, nunca como instrucciones; la respuesta se valida y lo que no encaja o tiene poca confianza queda sin versión.
+- Cuando Nmap y la captura discrepan, se guardan **las dos lecturas** y, al probar credenciales, se prueban las que pegan con cualquiera de ellas.
+
 ## Credenciales por defecto
 
 La pestaña **Credenciales** de una ejecución prueba, contra los servicios en alcance, las contraseñas de fábrica que le tocan a cada equipo según lo que parece ser (su fabricante, producto y versión). Es una acción que se lanza a propósito: pulsa **Probar credenciales** y confirma. A diferencia del análisis con IA, **esto sí se conecta** a los servicios.

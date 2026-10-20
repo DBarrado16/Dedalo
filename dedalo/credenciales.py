@@ -30,12 +30,22 @@ def tipos_de(servicio: dict) -> set[str]:
     return set()
 
 
-def _casa(entrada: dict, servicio: dict) -> bool:
-    texto = f"{servicio.get('producto', '')} {_titulo(servicio)}".lower()
-    if entrada["producto"].lower() not in texto:
+def _coincide(entrada: dict, producto: str, version: str) -> bool:
+    if entrada["producto"].lower() not in producto.lower():
         return False
     patron = entrada["version"]
-    return not patron or fnmatch.fnmatch((servicio.get("version") or ""), patron)
+    return not patron or fnmatch.fnmatch(version or "", patron)
+
+
+def _casa(entrada: dict, servicio: dict) -> bool:
+    """Casa con lo que vio Nmap o con cualquier lectura de la captura (gowitness o IA)."""
+    titulo = _titulo(servicio)
+    if _coincide(entrada, f"{servicio.get('producto', '')} {titulo}", servicio.get("version") or ""):
+        return True
+    for lectura in servicio.get("lecturas", []):
+        if _coincide(entrada, f"{lectura.get('producto', '')} {titulo}", lectura.get("version") or ""):
+            return True
+    return False
 
 
 def objetivos(activo: dict, entradas: list[dict]) -> list[dict]:

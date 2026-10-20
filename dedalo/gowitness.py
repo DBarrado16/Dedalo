@@ -292,6 +292,44 @@ def read_results(db_path: str | Path) -> dict[str, dict]:
     return results
 
 
+def read_fingerprint(db_path: str | Path) -> dict[str, dict]:
+    """URL original normalizada -> datos para estimar producto/versión: cabeceras, tecnologías y HTML.
+
+    Lee lo que gowitness ya guarda (tablas results/headers/technologies). Solo lectura; si la base
+    no existe o no tiene resultados, devuelve {}. No conecta con nada: trabaja sobre lo capturado.
+    """
+    path = Path(db_path).resolve()
+    if not path.is_file():
+        return {}
+    con = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        results = con.execute(
+            "SELECT id, url, final_url, response_code, title, html FROM results ORDER BY id"
+        ).fetchall()
+        headers = con.execute("SELECT result_id, key, value FROM headers").fetchall()
+        techs = con.execute("SELECT result_id, value FROM technologies").fetchall()
+    finally:
+        con.close()
+    by_result_headers: dict[int, dict[str, str]] = {}
+    for row in headers:
+        by_result_headers.setdefault(row["result_id"], {})[row["key"]] = row["value"]
+    by_result_techs: dict[int, list[str]] = {}
+    for row in techs:
+        by_result_techs.setdefault(row["result_id"], []).append(row["value"])
+    out = {}
+    for row in results:
+        out[normalize_url(row["url"])] = {
+            "final_url": row["final_url"] or "",
+            "response_code": row["response_code"],
+            "title": row["title"] or "",
+            "headers": by_result_headers.get(row["id"], {}),
+            "technologies": by_result_techs.get(row["id"], []),
+            "html": row["html"] or "",
+        }
+    return out
+
+
 def merge(binary: str, sources: list[str | Path], output: str | Path) -> None:
     path = Path(output).resolve()
     if path.exists():

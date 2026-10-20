@@ -90,3 +90,28 @@ class LoopTests(unittest.TestCase):
     def test_parar_before_a_service_raises_interrumpido(self):
         with self.assertRaises(credenciales.Interrumpido):
             credenciales.probar_activos([self.activo()], CATALOGO, lambda ip, o: False, parar=lambda: True)
+
+
+class FingerprintTests(unittest.TestCase):
+    ROUTER = {"producto": "RouterOS", "version": "6.*", "servicio": "http-basic",
+              "usuario": "admin", "clave": "", "receta": None}
+
+    def test_una_lectura_de_la_captura_hace_casar_lo_que_nmap_no_veia(self):
+        # Nmap solo ve "nginx"; la captura afina a RouterOS 6.49.7.
+        svc = servicio(443, "https", producto="nginx", tunel="ssl")
+        svc["lecturas"] = [{"origen": "ia", "producto": "RouterOS", "version": "6.49.7", "confianza": 90}]
+        objetivos = credenciales.objetivos({"ip": "x", "servicios": [svc]}, [self.ROUTER])
+        self.assertEqual([o["usuario"] for o in objetivos], ["admin"])
+
+    def test_se_prueban_las_de_nmap_y_las_de_la_captura(self):
+        # Nmap dice lighttpd; la captura dice RouterOS: se prueban las credenciales de ambos.
+        svc = servicio(443, "https", producto="lighttpd 1.4.59", version="1.4.59", tunel="ssl")
+        svc["lecturas"] = [{"origen": "ia", "producto": "RouterOS", "version": "6.49.7", "confianza": 90}]
+        lighttpd = {"producto": "lighttpd", "version": "1.*", "servicio": "http-basic",
+                    "usuario": "root", "clave": "root", "receta": None}
+        objetivos = credenciales.objetivos({"ip": "x", "servicios": [svc]}, [lighttpd, self.ROUTER])
+        self.assertEqual({o["usuario"] for o in objetivos}, {"root", "admin"})
+
+    def test_sin_lecturas_se_comporta_igual_que_antes(self):
+        svc = servicio(443, "https", producto="nginx", tunel="ssl")
+        self.assertEqual(credenciales.objetivos({"ip": "x", "servicios": [svc]}, [self.ROUTER]), [])

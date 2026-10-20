@@ -292,4 +292,11 @@ input[type=checkbox] { accent-color: var(--action); width: 16px; height: 16px; }
   .dialog-bottom, .image-bottom { flex-wrap: wrap; gap: 14px; }
   .page-footer { flex-wrap: wrap; }
 }
+.version-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.version-chip { display: inline-flex; align-items: baseline; gap: 6px; font-size: 12px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--inset); color: var(--ink); }
+.version-chip small { color: var(--muted); font-size: 11px; font-family: var(--font-data); }
+.version-chip.version-ia { border-color: var(--action); }
+.version-chip.version-ia small { color: var(--action); }
+.version-setting { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
+.version-setting .model-choice { margin: 0; }
 @media (prefers-reduced-motion:reduce) { *, *::before, *::after { transition: none !important; } }

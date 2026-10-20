@@ -423,6 +423,18 @@ function renderDiscovery() {
     <p class="priority-reason">${item.modo === "nombres" ? escapeHtml(item.nombre) : escapeHtml(item.detalle)}</p>
   </li>`).join("") + "</ol>";
 }
+const ORIGEN_LABEL = {gowitness: "gowitness", ia: "IA", nmap: "Nmap"};
+function versionTags(ip, puerto) {
+  // Lo que la detección estimó para este servicio (gowitness tal cual + lo que afinó la IA).
+  const lecturas = puerto != null ? (current.versiones || {})[ip + ":" + puerto] || [] : [];
+  if (!lecturas.length) return "";
+  const chips = lecturas.map(l => {
+    const texto = [l.producto, l.version].filter(Boolean).join(" ") || "—";
+    const conf = l.confianza != null ? ` ${l.confianza}%` : "";
+    return `<span class="version-chip version-${l.origen}">${escapeHtml(texto)}<small>${ORIGEN_LABEL[l.origen] || escapeHtml(l.origen)}${conf}</small></span>`;
+  }).join("");
+  return `<div class="version-tags" aria-label="Producto y versión estimados">${chips}</div>`;
+}
 function renderResults() {
   if (!current || activeTab === "logs") { $("more").hidden = true; return; }
   if (activeTab === "inventory") { renderInventory(); return; }
@@ -454,7 +466,7 @@ function renderResults() {
   $("results").innerHTML = [...grouped.values()].map(items => `<section class="network-section"><header class="network-heading"><div><h3>Subred <span>${escapeHtml(items[0].subnet)}</span></h3><p>${items[0].range === "fuera_de_rango" ? "Sin rango asignado" : "Rango " + escapeHtml(items[0].range)}</p></div>${networkActions(items)}</header><div class="card-grid">${items.map(row => `<article class="capture-card">
     <div class="card-top"><strong>${escapeHtml(row.ip)}</strong><span class="protocol">${row.url.startsWith("https:") ? "HTTPS" : "HTTP"} :${row.puerto}</span></div>
     ${row.imagen ? `<button class="shot-button" data-image="${row.key}" aria-label="Ampliar captura de ${escapeHtml(row.ip)} puerto ${row.puerto}"><img src="${row.imagen}" alt="Captura de ${escapeHtml(row.url)}" loading="lazy"><span class="shot-hint">Ampliar captura</span></button>` : `<div class="shot-placeholder"><span>${labels[row.estado] || row.estado}</span>${row.error ? `<p class="capture-error">${escapeHtml(row.error)}</p>` : ""}</div>`}
-    <div class="card-info"><p class="card-title" title="${escapeHtml(row.titulo)}">${escapeHtml(row.titulo || (row.imagen ? "Página sin título" : row.estado === "sin_captura" ? "No se pudo obtener la imagen" : "Pendiente de captura"))}</p><div class="card-bottom"><p class="card-url">${escapeHtml(row.url)}</p>${row.codigo ? `<span class="response-code">HTTP ${row.codigo}</span>` : ""}</div></div>
+    <div class="card-info"><p class="card-title" title="${escapeHtml(row.titulo)}">${escapeHtml(row.titulo || (row.imagen ? "Página sin título" : row.estado === "sin_captura" ? "No se pudo obtener la imagen" : "Pendiente de captura"))}</p><div class="card-bottom"><p class="card-url">${escapeHtml(row.url)}</p>${row.codigo ? `<span class="response-code">HTTP ${row.codigo}</span>` : ""}</div>${versionTags(row.ip, row.puerto)}</div>
     </article>`).join("")}</div></section>`).join("");
 }
 function renderInventory() {
@@ -490,7 +502,7 @@ function renderInventory() {
     const capture = port?.protocolo === "tcp" ? captures.get(asset.ip + ":" + port.puerto) : null;
     const scripts = [...asset.scripts, ...(port?.scripts || [])];
     const details = [port?.detalle, ...(port?.cpe || []), ...scripts.map(s => s.id + ": " + s.output)].filter(Boolean).join("\n\n");
-    return `<tr><td>${escapeHtml(asset.ip)}${scopeTag(asset.alcance)}${asset.nombres.length ? `<small>${escapeHtml(asset.nombres.join(", "))}</small>` : ""}</td><td>${port ? port.puerto + "/" + escapeHtml(port.protocolo.toUpperCase()) : "—"}</td><td>${port ? escapeHtml((port.tunel ? port.tunel + "/" : "") + (port.servicio || "Sin identificar")) : "Sin puertos abiertos"}</td><td class="service-data">${escapeHtml([port?.producto, port?.version].filter(Boolean).join(" ") || "—")}${details ? `<details><summary>Datos Nmap</summary><pre>${escapeHtml(details)}</pre></details>` : ""}${port ? `<button class="link-button" data-add-catalog data-producto="${escapeHtml(port.producto||"")}" data-version="${escapeHtml(port.version||"")}" data-servicio="${escapeHtml(port.servicio||"")}">+ catálogo</button>` : ""}</td><td>${capture?.imagen ? `<button class="secondary" data-image="${capture.key}">Ver captura</button>` : capture ? escapeHtml(labels[capture.estado] || capture.estado) : "—"}</td></tr>`;
+    return `<tr><td>${escapeHtml(asset.ip)}${scopeTag(asset.alcance)}${asset.nombres.length ? `<small>${escapeHtml(asset.nombres.join(", "))}</small>` : ""}</td><td>${port ? port.puerto + "/" + escapeHtml(port.protocolo.toUpperCase()) : "—"}</td><td>${port ? escapeHtml((port.tunel ? port.tunel + "/" : "") + (port.servicio || "Sin identificar")) : "Sin puertos abiertos"}</td><td class="service-data">${escapeHtml([port?.producto, port?.version].filter(Boolean).join(" ") || "—")}${details ? `<details><summary>Datos Nmap</summary><pre>${escapeHtml(details)}</pre></details>` : ""}${port ? `<button class="link-button" data-add-catalog data-producto="${escapeHtml(port.producto||"")}" data-version="${escapeHtml(port.version||"")}" data-servicio="${escapeHtml(port.servicio||"")}">+ catálogo</button>` : ""}${port ? versionTags(asset.ip, port.puerto) : ""}</td><td>${capture?.imagen ? `<button class="secondary" data-image="${capture.key}">Ver captura</button>` : capture ? escapeHtml(labels[capture.estado] || capture.estado) : "—"}</td></tr>`;
   }).join("")}</tbody></table></div></section>`).join("");
 }
 async function loadLogs() {
@@ -685,6 +697,32 @@ async function action(type, body = {}) {
   catch (error) { notice(error.message); }
   finally { mutating=false; render(); }
 }
+// Ajuste de la detección de versión (global y persistente): apagada de serie, con motor elegible.
+let versionConfig = null;
+async function loadVersionConfig() {
+  try { versionConfig = await request("/api/version-config"); }
+  catch { versionConfig = {enabled: false, engine: "ollama"}; }
+  renderVersionSetting();
+}
+function renderVersionSetting() {
+  if (!versionConfig) return;
+  $("version-enabled").checked = !!versionConfig.enabled;
+  $("version-engine").value = versionConfig.engine || "ollama";
+  const avisar = versionConfig.engine === "claude" && versionConfig.aviso;
+  $("version-warning").hidden = !avisar;
+  $("version-warning").textContent = avisar ? versionConfig.aviso : "";
+}
+async function saveVersionConfig() {
+  const engine = $("version-engine").value;
+  // Con Ollama, la detección usa el modelo elegido arriba; con Claude, el del servidor.
+  const model = engine === "claude" ? "" : ($("model-select").value || "");
+  try {
+    versionConfig = await request("/api/version-config", {enabled: $("version-enabled").checked, engine, model});
+    renderVersionSetting();
+  } catch (error) { notice("No se pudo guardar el ajuste de detección: " + error.message); }
+}
+$("version-enabled").addEventListener("change", saveVersionConfig);
+$("version-engine").addEventListener("change", saveVersionConfig);
 $("start-job").addEventListener("click", () => action("start"));
 $("analyze-job").addEventListener("click", () => action("analizar", {modelo: $("model-select").value}));
 $("stop-analysis").addEventListener("click", () => action("detener-analisis"));
@@ -779,6 +817,7 @@ async function boot() {
     if (!engine.ready) notice(engine.error);
     showMigrationFailures(bootstrap.migration_failures || []);
     loadModels();
+    loadVersionConfig();
     await poll();
   } catch (error) { notice("No se pudo conectar: " + error.message); }
   setInterval(poll, 2000);
