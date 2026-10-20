@@ -395,6 +395,20 @@ def detections(con: sqlite3.Connection, import_id: str) -> dict[int, list[dict]]
     return salida
 
 
+def version_readings(con: sqlite3.Connection, import_id: str) -> dict[str, list[dict]]:
+    """Las lecturas de una importación, agrupadas por «ip:puerto»; solo activos en alcance vigente."""
+    por_servicio = detections(con, import_id)
+    if not por_servicio:
+        return {}
+    salida: dict[str, list[dict]] = {}
+    for servicio_id, lecturas in por_servicio.items():
+        row = con.execute("SELECT a.ip, s.puerto FROM servicio s JOIN activo a ON a.id = s.activo_id WHERE s.id = ?",
+                          (servicio_id,)).fetchone()
+        if row:
+            salida[f"{row['ip']}:{row['puerto']}"] = lecturas
+    return salida
+
+
 def start_credential_test(con, import_id: str, options: dict, created: str | None = None) -> str:
     """Crea en cola una prueba de credenciales; el último intento completo se conserva hasta que esta termine bien."""
     source = con.execute("SELECT auditoria_id, nombre FROM ejecucion WHERE id = ? AND tipo = 'importacion'",

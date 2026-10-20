@@ -681,16 +681,21 @@ class PortalStore:
             response["credenciales_resultados"] = auditoria.credential_results(con, job_id)
             response["descubrimiento"] = auditoria.discovery_status(con, job_id)
             response["descubrimiento_resultados"] = auditoria.discovery_results(con, job_id)
+            response["version"] = auditoria.version_status(con, job_id)
+            response["versiones"] = auditoria.version_readings(con, job_id)
         with self.lock:
             progress = self.analysis_progress.get(job_id)
             progreso_c = self.credential_progress.get(job_id)
             progreso_d = self.discovery_progress.get(job_id)
+            progreso_v = self.version_progress.get(job_id)
         if progress and response["analisis"] and response["analisis"]["estado"] in ACTIVE:
             response["analisis"]["progreso"] = progress
         if progreso_c and response["credenciales"] and response["credenciales"]["estado"] in ACTIVE:
             response["credenciales"]["progreso"] = progreso_c
         if progreso_d and response["descubrimiento"] and response["descubrimiento"]["estado"] in ACTIVE:
             response["descubrimiento"]["progreso"] = progreso_d
+        if progreso_v and response["version"] and response["version"]["estado"] in ACTIVE:
+            response["version"]["progreso"] = progreso_v
         return response
 
     def start(self, job_id):
@@ -954,6 +959,7 @@ class PortalStore:
             current = auditoria.scope(con, audit_id)
             observed = auditoria.observed_hosts(con, job_id)
             entradas = catalogo.entradas(con)
+            lecturas = auditoria.version_readings(con, job_id)  # fingerprint afinado desde la captura
 
         def parar():
             if self.closing:
@@ -977,6 +983,9 @@ class PortalStore:
         try:
             hosts = [a for a in inventory.build(observed, [])["activos"]
                      if a["servicios"] and current.status(a["ip"]) == current.IN]
+            for activo in hosts:  # añade a cada servicio lo que la detección afinó, para emparejar credenciales
+                for servicio in activo["servicios"]:
+                    servicio["lecturas"] = lecturas.get(f"{activo['ip']}:{servicio['puerto']}", [])
             rows = credenciales.probar_activos(hosts, entradas, probar, parar=parar, avance=avance, pausa=lambda: time.sleep(1))
             state, error = "completa", ""
         except credenciales.Interrumpido:

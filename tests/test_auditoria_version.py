@@ -78,6 +78,15 @@ class VersionTests(unittest.TestCase):
             self.con.execute("INSERT INTO alcance (auditoria_id, tipo, cidr) VALUES ('a1', 'excluir', '10.10.5.3/32')")
         self.assertEqual(auditoria.detections(self.con, "imp"), {})
 
+    def test_version_readings_agrupa_por_ip_puerto(self):
+        v = auditoria.start_version(self.con, "imp", {})
+        auditoria.begin_version(self.con, v)
+        auditoria.finish_version(self.con, v, [lectura(self.svc, "gowitness", "nginx", "1.18"),
+                                               lectura(self.svc, "ia", "RouterOS", "6.49.7", 90)])
+        lecturas = auditoria.version_readings(self.con, "imp")
+        self.assertEqual({(l["origen"], l["producto"]) for l in lecturas["10.10.5.3:443"]},
+                         {("gowitness", "nginx"), ("ia", "RouterOS")})
+
     def test_stop_version_en_cola_cancela(self):
         auditoria.start_version(self.con, "imp", {})
         self.assertEqual(auditoria.stop_version(self.con, "imp"), "cancelada")
