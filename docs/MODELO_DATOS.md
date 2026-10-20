@@ -46,7 +46,7 @@ CREATE TABLE alcance (
 CREATE TABLE ejecucion (
   id           TEXT PRIMARY KEY,       -- uuid hex; en importaciones coincide con la carpeta de portal_datos
   auditoria_id TEXT NOT NULL REFERENCES auditoria(id) ON DELETE CASCADE,
-  tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'descubrimiento', 'analisis')),
+  tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'descubrimiento', 'analisis', 'credenciales', 'version')),
   origen_id    TEXT REFERENCES ejecucion(id) ON DELETE CASCADE,  -- captura o análisis -> importación de la que salen
   nombre       TEXT NOT NULL,
   estado       TEXT NOT NULL CHECK (estado IN (...)),  -- los nueve estados de CONTRATOS.md 0.4
@@ -139,6 +139,20 @@ CREATE TABLE prioridad (
   UNIQUE (ejecucion_id, activo_id)
 );
 
+-- Lo que una detección de versión (ejecución 'version') leyó de cada servicio web desde la captura.
+-- Varias lecturas por servicio: gowitness aporta sus tecnologías y la IA afina; de ahí el origen y
+-- la ausencia de UNIQUE. confianza solo la da la IA (0-100); NULL en las de gowitness.
+CREATE TABLE deteccion (
+  id           INTEGER PRIMARY KEY,
+  ejecucion_id TEXT NOT NULL REFERENCES ejecucion(id) ON DELETE CASCADE,
+  servicio_id  INTEGER NOT NULL REFERENCES servicio(id) ON DELETE CASCADE,
+  origen       TEXT NOT NULL CHECK (origen IN ('gowitness', 'ia')),
+  producto     TEXT NOT NULL DEFAULT '',
+  version      TEXT NOT NULL DEFAULT '',
+  confianza    INTEGER,                  -- 0-100, solo la IA; NULL en gowitness
+  detalle      TEXT NOT NULL DEFAULT ''
+);
+
 -- Catálogo curado de credenciales por defecto, volcado del fichero dedalo/datos/credenciales.json
 -- al arrancar (se refresca cuando su huella cambia; la huella se guarda en config).
 CREATE TABLE credencial_catalogo (
@@ -176,7 +190,7 @@ CREATE TABLE config (
 );
 ```
 
-La migración 1 añade índices para las búsquedas habituales: ejecuciones por auditoría, observaciones por servicio y por activo, y capturas por servicio. La migración 2 reconstruye `ejecucion` para admitir el tipo `descubrimiento` y para que borrar una importación borre también las capturas que salieron de ella; añade el índice por `origen_id`. La migración 3 la reconstruye otra vez para admitir el tipo `analisis` y crea la tabla `prioridad` con un índice por activo (el de ejecución ya lo da su `UNIQUE`). La migración 4 la reconstruye para admitir el tipo `credenciales` y crea `credencial_catalogo` (con índice por servicio), `credencial_resultado` (con índice por activo) y `config`. El esquema exacto está en `dedalo/db.py`.
+La migración 1 añade índices para las búsquedas habituales: ejecuciones por auditoría, observaciones por servicio y por activo, y capturas por servicio. La migración 2 reconstruye `ejecucion` para admitir el tipo `descubrimiento` y para que borrar una importación borre también las capturas que salieron de ella; añade el índice por `origen_id`. La migración 3 la reconstruye otra vez para admitir el tipo `analisis` y crea la tabla `prioridad` con un índice por activo (el de ejecución ya lo da su `UNIQUE`). La migración 4 la reconstruye para admitir el tipo `credenciales` y crea `credencial_catalogo` (con índice por servicio), `credencial_resultado` (con índice por activo) y `config`. La migración 5 la reconstruye para admitir el tipo `version` y crea `deteccion` (lecturas de producto/versión desde la captura, con índice por servicio). El esquema exacto está en `dedalo/db.py`.
 
 La situación de alcance de un activo (en alcance, excluido o fuera) **no se guarda**: se calcula con las reglas vigentes. Así, cambiar el alcance nunca deja datos desactualizados.
 

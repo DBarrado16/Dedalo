@@ -10,7 +10,7 @@ LATEST = max(db.MIGRATIONS)
 NEXT = LATEST + 1  # número para migraciones de prueba
 TABLES = {"auditoria", "alcance", "ejecucion", "activo", "servicio", "observacion_activo",
           "observacion", "evidencia", "captura", "prioridad",
-          "config", "credencial_catalogo", "credencial_resultado"}
+          "config", "credencial_catalogo", "credencial_resultado", "deteccion"}
 
 
 class DatabaseTests(unittest.TestCase):
@@ -170,7 +170,7 @@ ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
 
     def test_migration_4_adds_credential_tables_and_type(self):
         con = self.con
-        self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], 4)
+        self.assertGreaterEqual(con.execute("PRAGMA user_version").fetchone()[0], 4)
         tablas = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertLessEqual({"credencial_catalogo", "credencial_resultado", "config"}, tablas)
         indices = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='index'")}
@@ -181,6 +181,30 @@ ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
         with self.assertRaises(sqlite3.IntegrityError):
             con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, nombre, estado, creada) "
                         "VALUES ('c2', ?, 'inventado', 'x', 'en_cola', ?)", (audit, auditoria.now()))
+
+    def test_migration_5_adds_detection_table_and_type(self):
+        con = self.con
+        self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], 5)
+        tablas = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertIn("deteccion", tablas)
+        indices = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        self.assertIn("deteccion_servicio", indices)
+        _, service = self.audit()
+        with con:
+            con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, creada) "
+                        "VALUES ('v1', 'a1', 'version', 'e1', 'Nmap lunes', 'completa', '2026-10-19T00:00:00Z')")
+            con.execute("INSERT INTO deteccion (ejecucion_id, servicio_id, origen, producto, version, confianza) "
+                        "VALUES ('v1', ?, 'gowitness', 'nginx', '1.18', NULL)", (service,))
+            con.execute("INSERT INTO deteccion (ejecucion_id, servicio_id, origen, producto, version, confianza) "
+                        "VALUES ('v1', ?, 'ia', 'RouterOS', '6.49.7', 90)", (service,))
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM deteccion").fetchone()[0], 2)
+        with self.assertRaises(sqlite3.IntegrityError), con:
+            con.execute("INSERT INTO deteccion (ejecucion_id, servicio_id, origen, producto) "
+                        "VALUES ('v1', ?, 'otro', 'x')", (service,))
+        # Borrar la ejecución borra sus detecciones en cascada.
+        with con:
+            con.execute("DELETE FROM ejecucion WHERE id = 'v1'")
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM deteccion").fetchone()[0], 0)
 
     def test_refuses_database_from_newer_version(self):
         self.con.execute("PRAGMA user_version = 99")

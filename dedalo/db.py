@@ -227,6 +227,41 @@ CREATE TABLE credencial_resultado (
 );
 CREATE INDEX credencial_resultado_activo ON credencial_resultado (activo_id);
 """,
+    # Detección de producto/versión desde la captura (gowitness + IA): tipo de ejecución
+    # `version` y tabla `deteccion` (varias lecturas por servicio, con su origen).
+    5: """
+CREATE TABLE nueva_ejecucion (
+  id           TEXT PRIMARY KEY,
+  auditoria_id TEXT NOT NULL REFERENCES auditoria(id) ON DELETE CASCADE,
+  tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'descubrimiento', 'analisis', 'credenciales', 'version')),
+  origen_id    TEXT REFERENCES ejecucion(id) ON DELETE CASCADE,
+  nombre       TEXT NOT NULL,
+  estado       TEXT NOT NULL CHECK (estado IN ('preparada', 'en_cola', 'en_curso', 'deteniendo', 'completa',
+                                               'parcial', 'error', 'cancelada', 'interrumpida')),
+  opciones     TEXT NOT NULL DEFAULT '{}',
+  creada       TEXT NOT NULL,
+  iniciada     TEXT,
+  terminada    TEXT,
+  error        TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO nueva_ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada, iniciada, terminada, error)
+  SELECT id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada, iniciada, terminada, error FROM ejecucion;
+DROP TABLE ejecucion;
+ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
+CREATE INDEX ejecucion_auditoria ON ejecucion (auditoria_id);
+CREATE INDEX ejecucion_origen ON ejecucion (origen_id);
+CREATE TABLE deteccion (
+  id           INTEGER PRIMARY KEY,
+  ejecucion_id TEXT NOT NULL REFERENCES ejecucion(id) ON DELETE CASCADE,
+  servicio_id  INTEGER NOT NULL REFERENCES servicio(id) ON DELETE CASCADE,
+  origen       TEXT NOT NULL CHECK (origen IN ('gowitness', 'ia')),
+  producto     TEXT NOT NULL DEFAULT '',
+  version      TEXT NOT NULL DEFAULT '',
+  confianza    INTEGER,
+  detalle      TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX deteccion_servicio ON deteccion (servicio_id);
+""",
 }
 
 
