@@ -376,36 +376,22 @@ def finish_version(con: sqlite3.Connection, version_id: str, filas: list[dict]) 
                     "AND origen_id = (SELECT origen_id FROM ejecucion WHERE id = ?)", (version_id, version_id))
 
 
-def detections(con: sqlite3.Connection, import_id: str) -> dict[int, list[dict]]:
-    """Las lecturas de producto/versión de una importación, por servicio; solo activos en alcance vigente."""
+def version_readings(con: sqlite3.Connection, import_id: str) -> dict[str, list[dict]]:
+    """Las lecturas de producto/versión de una importación, agrupadas por «ip:puerto»; solo en alcance vigente."""
     filas = [dict(row) for row in con.execute(
-        "SELECT d.servicio_id, a.ip, d.origen, d.producto, d.version, d.confianza FROM deteccion d "
+        "SELECT a.ip, s.puerto, d.origen, d.producto, d.version, d.confianza FROM deteccion d "
         "JOIN ejecucion e ON e.id = d.ejecucion_id JOIN servicio s ON s.id = d.servicio_id "
         "JOIN activo a ON a.id = s.activo_id WHERE e.origen_id = ? AND e.tipo = 'version' ORDER BY d.id", (import_id,))]
     if not filas:
         return {}
     current = scope(con, audit_of(con, import_id))
-    salida: dict[int, list[dict]] = {}
+    salida: dict[str, list[dict]] = {}
     for fila in filas:
         if current.status(fila["ip"]) != current.IN:
             continue
-        salida.setdefault(fila["servicio_id"], []).append(
+        salida.setdefault(f"{fila['ip']}:{fila['puerto']}", []).append(
             {"origen": fila["origen"], "producto": fila["producto"], "version": fila["version"],
              "confianza": fila["confianza"]})
-    return salida
-
-
-def version_readings(con: sqlite3.Connection, import_id: str) -> dict[str, list[dict]]:
-    """Las lecturas de una importación, agrupadas por «ip:puerto»; solo activos en alcance vigente."""
-    por_servicio = detections(con, import_id)
-    if not por_servicio:
-        return {}
-    salida: dict[str, list[dict]] = {}
-    for servicio_id, lecturas in por_servicio.items():
-        row = con.execute("SELECT a.ip, s.puerto FROM servicio s JOIN activo a ON a.id = s.activo_id WHERE s.id = ?",
-                          (servicio_id,)).fetchone()
-        if row:
-            salida[f"{row['ip']}:{row['puerto']}"] = lecturas
     return salida
 
 

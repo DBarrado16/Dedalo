@@ -9,7 +9,8 @@ valida contra un esquema fijo antes de usarse.
 from __future__ import annotations
 
 import json
-import re
+
+from . import modelo
 
 MAX_HTML = 4000      # tope de HTML que viaja al modelo (bytes); el resto no afina y encarece
 MAX_TITULO = 120     # el título es texto del objetivo: va recortado, como dato
@@ -52,13 +53,7 @@ def build_prompt(datos: dict) -> str:
 
 
 def parse_result(text: str) -> dict:
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        raise ValueError("la respuesta no trae un objeto JSON")
-    try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"la respuesta no es JSON válido ({exc.msg})") from exc
+    data = modelo.extraer_objeto_json(text)
     if not isinstance(data.get("producto"), str):
         raise ValueError("falta o no es texto: producto")
     if not isinstance(data.get("confianza"), int) or isinstance(data.get("confianza"), bool):
@@ -102,8 +97,6 @@ def detectar(items: list[dict], generate, parar=lambda: False, avance=lambda hec
         if datos.get("headers") or datos.get("html") or datos.get("title"):
             lectura = parse_result(generate(build_prompt(datos)))
             if lectura["producto"] and lectura["confianza"] >= MIN_CONFIANZA:
-                filas.append({"servicio_id": item["servicio_id"], "origen": "ia",
-                              "producto": lectura["producto"], "version": lectura["version"],
-                              "confianza": lectura["confianza"], "detalle": ""})
+                filas.append({"servicio_id": item["servicio_id"], "origen": "ia", "detalle": "", **lectura})
         avance(hechos + 1, len(items))
     return filas

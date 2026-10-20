@@ -38,15 +38,15 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(auditoria.captured_services(self.con, "cap"),
                          [{"servicio_id": self.svc, "url": "https://10.10.5.3/"}])
 
-    def test_ciclo_start_begin_finish_y_detections(self):
+    def test_ciclo_start_begin_finish_y_lecturas(self):
         vid = auditoria.start_version(self.con, "imp", {})
         self.assertEqual(auditoria.version_status(self.con, "imp")["estado"], "en_cola")
         self.assertTrue(auditoria.begin_version(self.con, vid))
         auditoria.finish_version(self.con, vid, [lectura(self.svc, "gowitness", "nginx", "1.18"),
                                                  lectura(self.svc, "ia", "RouterOS", "6.49.7", 90)])
         self.assertEqual(auditoria.version_status(self.con, "imp")["estado"], "completa")
-        det = auditoria.detections(self.con, "imp")
-        self.assertEqual({(l["origen"], l["producto"]) for l in det[self.svc]},
+        det = auditoria.version_readings(self.con, "imp")
+        self.assertEqual({(l["origen"], l["producto"]) for l in det["10.10.5.3:443"]},
                          {("gowitness", "nginx"), ("ia", "RouterOS")})
 
     def test_una_version_completa_sustituye_a_la_anterior(self):
@@ -56,8 +56,8 @@ class VersionTests(unittest.TestCase):
         v2 = auditoria.start_version(self.con, "imp", {})
         auditoria.begin_version(self.con, v2)
         auditoria.finish_version(self.con, v2, [lectura(self.svc, "ia", "Nuevo", "", 80)])
-        det = auditoria.detections(self.con, "imp")
-        self.assertEqual([l["producto"] for l in det[self.svc]], ["Nuevo"])
+        det = auditoria.version_readings(self.con, "imp")
+        self.assertEqual([l["producto"] for l in det["10.10.5.3:443"]], ["Nuevo"])
         self.assertEqual(self.con.execute("SELECT COUNT(*) FROM ejecucion WHERE tipo = 'version'").fetchone()[0], 1)
 
     def test_una_version_que_falla_no_sustituye(self):
@@ -67,8 +67,8 @@ class VersionTests(unittest.TestCase):
         v2 = auditoria.start_version(self.con, "imp", {})
         auditoria.begin_version(self.con, v2)
         auditoria.set_state(self.con, v2, "error", "falló")
-        det = auditoria.detections(self.con, "imp")
-        self.assertEqual([l["producto"] for l in det[self.svc]], ["Bueno"])
+        det = auditoria.version_readings(self.con, "imp")
+        self.assertEqual([l["producto"] for l in det["10.10.5.3:443"]], ["Bueno"])
 
     def test_fuera_de_alcance_no_sale(self):
         v = auditoria.start_version(self.con, "imp", {})
@@ -76,7 +76,7 @@ class VersionTests(unittest.TestCase):
         auditoria.finish_version(self.con, v, [lectura(self.svc, "ia", "X", "", 80)])
         with self.con:
             self.con.execute("INSERT INTO alcance (auditoria_id, tipo, cidr) VALUES ('a1', 'excluir', '10.10.5.3/32')")
-        self.assertEqual(auditoria.detections(self.con, "imp"), {})
+        self.assertEqual(auditoria.version_readings(self.con, "imp"), {})
 
     def test_version_readings_agrupa_por_ip_puerto(self):
         v = auditoria.start_version(self.con, "imp", {})

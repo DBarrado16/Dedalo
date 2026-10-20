@@ -45,6 +45,21 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
 
 
+def extraer_objeto_json(text: str) -> dict:
+    """El primer objeto JSON del texto de un modelo, que puede venir entre prosa o fences.
+
+    Lo comparten los `parse_result` de cada análisis (prioridad, fingerprint): la validación por
+    campos es de cada uno, pero sacar el objeto del texto del modelo es el mismo punto frágil.
+    """
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        raise ValueError("la respuesta no trae un objeto JSON")
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"la respuesta no es JSON válido ({exc.msg})") from exc
+
+
 def check_local(host: str) -> str:
     """Devuelve la URL si apunta a este equipo (http o https en loopback); si no, ValueError."""
     parts = urllib.parse.urlsplit(host)

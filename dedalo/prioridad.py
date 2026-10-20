@@ -8,7 +8,8 @@ respuesta se valida contra un esquema fijo antes de usarse.
 from __future__ import annotations
 
 import json
-import re
+
+from . import modelo
 
 NIVELES = ("alta", "media", "baja")
 _ORDEN = {"alta": 0, "media": 1, "baja": 2, "sin_analisis": 3}
@@ -58,13 +59,7 @@ def build_prompt(activo: dict) -> str:
 
 
 def parse_result(text: str) -> dict:
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        raise ValueError("la respuesta no trae un objeto JSON")
-    try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"la respuesta no es JSON válido ({exc.msg})") from exc
+    data = modelo.extraer_objeto_json(text)
     faltan = [clave for clave in ESQUEMA["required"] if not isinstance(data.get(clave), str)]
     if faltan:
         raise ValueError("falta o no es texto: " + ", ".join(faltan))
