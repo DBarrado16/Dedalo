@@ -55,6 +55,10 @@ def payload():
 
 class PortalTests(unittest.TestCase):
     def setUp(self):
+        # Sin red en los tests: la descarga de KEV y Exploit-DB se simula (se prueba aparte, en test_red_externa).
+        parche = patch("dedalo.web.exploits.actualizar_fuentes")
+        self.fuentes = parche.start()
+        self.addCleanup(parche.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.store = PortalStore(self.temp.name)
         self.server = PortalServer(("127.0.0.1", 0), self.store)
@@ -2125,6 +2129,31 @@ class PortalTests(unittest.TestCase):
         with patch("dedalo.web.cve.actualizar_base") as actualizar:
             self.assertIsNone(self.store.actualizar_nvd_en_segundo_plano())  # con el interruptor, ni se intenta
         actualizar.assert_not_called()
+
+    def test_the_exploit_sources_are_updated_with_the_nvd_in_the_same_background_thread(self):
+        with patch("dedalo.web.cve.actualizar_base"):
+            self.store.actualizar_nvd_en_segundo_plano().join(5)
+        self.fuentes.assert_called_once()
+        self.assertEqual(self.fuentes.call_args.args[0], Path(self.temp.name) / "vulnerabilidades")
+        self.assertFalse(self.fuentes.call_args.args[1])
+        self.fuentes.reset_mock()
+        self.store.sin_internet = True
+        self.store.actualizar_nvd()  # con el interruptor se pasa tal cual: actualizar_fuentes es el no-op
+        self.assertTrue(self.fuentes.call_args.args[1])
+
+    def test_a_failing_exploit_source_update_does_not_break_the_nvd_update_or_the_run(self):
+        self.fuentes.side_effect = RuntimeError("fallo inesperado")
+        with patch("dedalo.web.cve.actualizar_base") as actualizar:
+            self.store.actualizar_nvd()
+        self.assertEqual(actualizar.call_count, 1)
+
+    def test_every_vuln_run_refreshes_the_exploit_sources_before_reading_them(self):
+        job_id = self.vuln_job()
+        with patch("dedalo.web.cve.actualizar_base"), patch("dedalo.web.cve.consultar_online", return_value=[]), \
+                patch("dedalo.web.exploits.buscar_github", return_value=[]):
+            self.assertEqual(self.request("/api/jobs/" + job_id + "/cruzar-vulnerabilidades", {})[0], 202)
+            self.until(lambda: (self.store.detail(job_id)["vuln"] or {}).get("estado") not in (None, "en_cola", "en_curso", "deteniendo"))
+        self.fuentes.assert_called()
 
 
 class PortTests(unittest.TestCase):

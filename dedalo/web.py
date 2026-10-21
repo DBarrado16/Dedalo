@@ -973,9 +973,10 @@ class PortalStore:
         return timedelta(0) <= datetime.now(timezone.utc) - ultima < NVD_VIGENCIA
 
     def actualizar_nvd(self):
-        """Pone al día la base local de CVE (feeds de la NVD) si no es reciente; respeta `sin_internet`.
+        """Pone al día la base local de CVE (feeds de la NVD) y los ficheros de exploits (CISA KEV y Exploit-DB).
 
-        Un fallo no se propaga: el cruce sigue con la base que haya (y marca «sin datos» si está incompleta).
+        Cada una se salta si es reciente y las dos respetan `sin_internet`. Un fallo no se propaga: el cruce
+        sigue con lo que haya (la NVD incompleta se marca «sin datos»; sin KEV ni Exploit-DB no hay nivel «confirmado»).
         """
         with self.nvd_lock:
             try:
@@ -985,6 +986,10 @@ class PortalStore:
                                             log=lambda texto: print(texto, flush=True))
             except Exception as exc:
                 print(f"Error del portal: no se pudo actualizar la base de la NVD: {exc}", file=sys.stderr)
+            try:
+                exploits.actualizar_fuentes(self.root / CARPETA_VULNS, self.sin_internet, log=lambda texto: print(texto, flush=True))
+            except Exception as exc:
+                print(f"Error del portal: no se pudieron actualizar las fuentes de exploits: {exc}", file=sys.stderr)
 
     def actualizar_nvd_en_segundo_plano(self):
         """Lanza actualizar_nvd en un hilo aparte al arrancar el portal; con `sin_internet` ni se intenta (None)."""
