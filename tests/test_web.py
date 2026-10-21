@@ -2184,6 +2184,26 @@ class PortalTests(unittest.TestCase):
         self.assertNotIn(("10.10.5.10", "22"), filas)  # el puerto 22 no es un objetivo web
         self.assertEqual((root / "indice.csv").read_bytes(), antes)  # el archivo del disco no cambia
 
+    def test_a_host_excluded_after_the_crossing_has_its_vuln_columns_blank_in_the_index_but_keeps_its_capture_row(self):
+        job_id = self.crossed_job()
+        root = self.store.directory(job_id) / "resultado"
+        root.mkdir()
+        report.write_index(root, {"version": 1, "grupos": self.store.jobs[job_id]["grupos"]})
+        antes = (root / "indice.csv").read_bytes()
+        columnas = report.COLUMNS[-6:]
+        # 10.10.6.20:80 es objetivo web y salió «sin_vulnerabilidades»: antes de excluirlo, la columna tiene valor.
+        filas = {(r["ip"], r["puerto"]): r for r in csv.DictReader(io.StringIO(self.request("/api/jobs/" + job_id + "/download/csv")[1].decode("utf-8-sig")))}
+        self.assertEqual(filas[("10.10.6.20", "80")]["vuln_estado"], "sin_vulnerabilidades")
+        self.store.update_audit(self.audit["id"], {"nombre": "Cliente de prueba", "incluir": "10.10.0.0/17", "excluir": "10.10.6.20"})
+        status, content = self.request("/api/jobs/" + job_id + "/download/csv")
+        self.assertEqual(status, 200)
+        filas = {(r["ip"], r["puerto"]): r for r in csv.DictReader(io.StringIO(content.decode("utf-8-sig")))}
+        excluido = filas[("10.10.6.20", "80")]  # su fila de captura sigue, como siempre
+        self.assertEqual(excluido["url"], "http://10.10.6.20/")
+        self.assertEqual([excluido[c] for c in columnas], [""] * 6)  # pero sin nada del cruce
+        self.assertEqual(filas[("10.10.5.10", "80")]["vuln_estado"], "sin_datos")  # el resto no cambia
+        self.assertEqual((root / "indice.csv").read_bytes(), antes)  # y no se reescribe el fichero
+
     def test_the_capture_index_download_without_a_crossing_has_the_columns_empty(self):
         job = self.create()
         root = self.store.directory(job["id"]) / "resultado"
