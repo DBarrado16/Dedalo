@@ -1,6 +1,7 @@
 import argparse
 from contextlib import closing, redirect_stderr, redirect_stdout
 import csv
+from datetime import datetime, timezone
 import hashlib
 import io
 import json
@@ -13,12 +14,12 @@ import threading
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import urllib.error
 import urllib.request
 import zipfile
 
-from dedalo import auditoria, cli, favicones, gowitness, report, web
+from dedalo import auditoria, cli, cve, favicones, gowitness, report, web
 from dedalo.web import PortalStore, PortalServer
 from tests.test_dedalo import ROOT, fake_database
 from tests.test_gowitness_fingerprint import build_gowitness_db
@@ -1894,6 +1895,238 @@ class PortalTests(unittest.TestCase):
                 self.assertEqual(self.request("/api/jobs", data)[0], 400)
 
 
+    # --- Ejecución `vuln` (cruce de vulnerabilidades por CPE) ---
+
+    CPE_SSH = "cpe:/a:openbsd:openssh:9.6"
+    CPE_WEB = "cpe:/a:igor_sysoev:nginx:1.24.0"
+
+    def vuln_job(self):
+        """Un trabajo con un CPE de Nmap en 10.10.5.10:22 y otro en 10.10.6.20:80, ambos hosts en alcance."""
+        job = self.create()
+        with closing(self.store.database()) as con, con:
+            for ip, port, cpe in (("10.10.5.10", 22, self.CPE_SSH), ("10.10.6.20", 80, self.CPE_WEB)):
+                con.execute("UPDATE observacion SET cpe = ? WHERE ejecucion_id = ? AND servicio_id = "
+                            "(SELECT s.id FROM servicio s JOIN activo a ON a.id = s.activo_id "
+                            "WHERE a.ip = ? AND s.protocolo = 'tcp' AND s.puerto = ?)", (json.dumps([cpe]), job["id"], ip, port))
+        return job["id"]
+
+    def service_of(self, ip, port):
+        with closing(self.store.database()) as con:
+            return con.execute("SELECT s.id FROM servicio s JOIN activo a ON a.id = s.activo_id "
+                               "WHERE a.ip = ? AND s.protocolo = 'tcp' AND s.puerto = ?", (ip, port)).fetchone()[0]
+
+    def seed_nvd(self, *items):
+        """Una base NVD local completa (con su marca de actualización) con estas CVE de prueba."""
+        with closing(self.store.database()) as con:
+            cve.guardar_cves(con, list(items))
+            auditoria.set_config(con, "nvd_actualizada", "2026-10-20T00:00:00+00:00")
+
+    @staticmethod
+    def nvd_item(cve_id, producto, vendor, v_fin, severidad="HIGH"):
+        regla = {"parte": "a", "vendor": vendor, "producto": producto, "v_ini": None, "v_ini_incl": 1,
+                 "v_fin": v_fin, "v_fin_incl": 0}
+        return {"id": cve_id, "publicada": "2026-01-01T00:00:00Z", "severidad": severidad, "cvss": 7.5,
+                "resumen": cve_id, "cpes": [regla]}
+
+    def run_vuln(self, job_id):
+        """Encola y ejecuta un cruce a mano (sin pasar por la cola) y devuelve lo guardado."""
+        with closing(self.store.database()) as con:
+            vuln = auditoria.start_vuln(con, job_id, {})
+        self.store._cruzar_vulns(job_id, vuln)
+        with closing(self.store.database()) as con:
+            return auditoria.vuln_results(con, job_id)
+
+    def crossed_rows(self, ip):
+        with closing(self.store.database()) as con:
+            return con.execute("SELECT COUNT(*) FROM vulnerabilidad v JOIN servicio s ON s.id = v.servicio_id "
+                               "JOIN activo a ON a.id = s.activo_id WHERE a.ip = ?", (ip,)).fetchone()[0]
+
+    def test_vuln_run_does_not_cross_nor_send_the_cpe_of_a_host_excluded_before_the_run(self):
+        job_id = self.vuln_job()
+        # Se excluye DESPUÉS de importar: el cruce lo recomprueba en vivo y su CPE no sale a internet.
+        self.store.update_audit(self.audit["id"], {"nombre": "Cliente de prueba", "incluir": "10.10.0.0/17",
+                                                   "excluir": "10.10.5.10"})
+        online = {self.CPE_SSH: "CVE-2026-1111", self.CPE_WEB: "CVE-2026-2222"}
+        with patch("dedalo.web.cve.actualizar_base"), \
+                patch("dedalo.web.cve.consultar_online", side_effect=lambda cpe, sin: [{"id": online[cpe], "severidad": "HIGH"}]) as consultar, \
+                patch("dedalo.web.exploits.buscar_github", return_value=[]) as github:
+            self.run_vuln(job_id)
+        self.assertEqual([c.args[0] for c in consultar.call_args_list], [self.CPE_WEB])
+        self.assertEqual([c.args[0] for c in github.call_args_list], ["CVE-2026-2222"])
+        self.assertEqual(self.crossed_rows("10.10.5.10"), 0)
+        self.assertGreater(self.crossed_rows("10.10.6.20"), 0)
+
+    def test_vuln_run_rechecks_the_scope_live_for_every_service(self):
+        job_id = self.vuln_job()
+        excluded = []
+
+        def online(cpe, sin_internet):
+            if not excluded:  # a mitad del cruce se excluye el segundo host
+                excluded.append(self.store.update_audit(self.audit["id"], {
+                    "nombre": "Cliente de prueba", "incluir": "10.10.0.0/17", "excluir": "10.10.6.20"}))
+            return [{"id": "CVE-2026-1111", "severidad": "HIGH"}]
+        with patch("dedalo.web.cve.actualizar_base"), patch("dedalo.web.cve.consultar_online", side_effect=online) as consultar, \
+                patch("dedalo.web.exploits.buscar_github", return_value=[]):
+            self.run_vuln(job_id)
+        self.assertEqual([c.args[0] for c in consultar.call_args_list], [self.CPE_SSH])  # el CPE del excluido no salió
+        self.assertEqual(self.crossed_rows("10.10.6.20"), 0)
+
+    def test_vuln_run_stores_the_in_scope_services_with_exploit_level_and_marks_no_data(self):
+        job_id = self.vuln_job()
+        self.seed_nvd(self.nvd_item("CVE-2026-0001", "openssh", "openbsd", "9.7", "CRITICAL"))
+        kev = self.store.root / "vulnerabilidades" / "kev.json"
+        kev.parent.mkdir(exist_ok=True)
+        kev.write_text(json.dumps({"vulnerabilities": [{"cveID": "CVE-2026-0001"}]}), encoding="utf-8")
+        with patch("dedalo.web.cve.actualizar_base"), patch("dedalo.web.cve.consultar_online", return_value=None), \
+                patch("dedalo.web.exploits.buscar_github", return_value=[]):
+            results = {(r["ip"], r["puerto"], r["protocolo"]): r for r in self.run_vuln(job_id)}
+        ssh = results[("10.10.5.10", 22, "tcp")]
+        self.assertEqual(ssh["estado"], "ok")
+        self.assertEqual([(v["cve"], v["exploit_nivel"], v["fuente_cpe"], v["cpe"]) for v in ssh["vulns"]],
+                         [("CVE-2026-0001", "confirmado", "nmap", self.CPE_SSH)])
+        # Con CPE y la base completa, sin CVE: limpio (ok), no «sin datos».
+        self.assertEqual((results[("10.10.6.20", 80, "tcp")]["estado"], results[("10.10.6.20", 80, "tcp")]["vulns"]), ("ok", []))
+        # Sin ningún CPE no hay con qué cruzar: sin_datos, que no se lee como limpio.
+        self.assertEqual(results[("10.10.5.10", 80, "tcp")]["estado"], "sin_datos")
+        self.assertNotIn(("192.168.1.8", 443, "tcp"), results)  # fuera de alcance: ni se cruza ni se guarda
+
+    def test_vuln_run_without_a_local_base_and_without_internet_marks_every_service_no_data(self):
+        job_id = self.vuln_job()
+        self.store.sin_internet = True
+        with patch("dedalo.web.cve.actualizar_base") as actualizar, patch("dedalo.web.cve.consultar_online") as consultar, \
+                patch("dedalo.web.exploits.buscar_github") as github:
+            results = self.run_vuln(job_id)
+        self.assertTrue(results)
+        self.assertEqual({r["estado"] for r in results}, {"sin_datos"})
+        self.assertTrue(actualizar.call_args.args[2])  # el interruptor llega a la actualización de la base
+        consultar.assert_not_called()
+        github.assert_not_called()
+
+    def test_vuln_run_builds_a_cpe_from_a_high_confidence_detection_with_a_clean_version_token(self):
+        job_id = self.vuln_job()
+        web80 = self.service_of("10.10.5.10", 80)
+        with closing(self.store.database()) as con:
+            version = auditoria.start_version(con, job_id, {})
+            auditoria.begin_version(con, version)
+            auditoria.finish_version(con, version, [
+                {"servicio_id": web80, "origen": "ia", "producto": "nginx", "version": "1.24.0 (Ubuntu)", "confianza": 90, "detalle": ""},
+                {"servicio_id": web80, "origen": "ia", "producto": "apache", "version": "2.4.1", "confianza": 50, "detalle": ""}])
+        self.seed_nvd(self.nvd_item("CVE-2026-0003", "nginx", "f5", "1.25.0"),
+                      self.nvd_item("CVE-2026-0004", "apache", "apache", "2.5"))
+        with patch("dedalo.web.cve.actualizar_base"), patch("dedalo.web.cve.consultar_online", return_value=None), \
+                patch("dedalo.web.exploits.buscar_github", return_value=[]):
+            results = {(r["ip"], r["puerto"], r["protocolo"]): r for r in self.run_vuln(job_id)}
+        vulns = results[("10.10.5.10", 80, "tcp")]["vulns"]
+        self.assertEqual([(v["cve"], v["fuente_cpe"], v["cpe"]) for v in vulns],
+                         [("CVE-2026-0003", "deteccion", "cpe:/a:*:nginx:1.24.0")])  # la de confianza 50 no cuenta
+
+    def test_vuln_run_updates_the_nvd_base_before_crossing_unless_it_is_recent(self):
+        job_id = self.vuln_job()
+        order = []
+        with patch("dedalo.web.cve.actualizar_base", side_effect=lambda *a, **k: order.append("actualizar")) as actualizar, \
+                patch("dedalo.web.cve.consultar_online", side_effect=lambda *a: order.append("cruzar") or []), \
+                patch("dedalo.web.exploits.buscar_github", return_value=[]):
+            self.run_vuln(job_id)
+        self.assertEqual(order[0], "actualizar")
+        self.assertIn("cruzar", order)
+        self.assertEqual(actualizar.call_count, 1)
+        self.assertFalse(actualizar.call_args.args[2])
+        self.assertEqual(Path(actualizar.call_args.args[1]).parent, self.store.root / "vulnerabilidades")
+        # Con la base actualizada hace menos de un día, otro cruce no vuelve a descargar.
+        with closing(self.store.database()) as con:
+            auditoria.set_config(con, "nvd_actualizada", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        with patch("dedalo.web.cve.actualizar_base") as again, patch("dedalo.web.cve.consultar_online", return_value=[]), \
+                patch("dedalo.web.exploits.buscar_github", return_value=[]):
+            self.run_vuln(job_id)
+        again.assert_not_called()
+
+    def test_vuln_run_reuses_the_answer_for_services_with_the_same_cpe(self):
+        job_id = self.vuln_job()
+        with closing(self.store.database()) as con, con:  # el mismo CPE en dos servicios en alcance
+            con.execute("UPDATE observacion SET cpe = ? WHERE servicio_id = ?", (json.dumps([self.CPE_SSH]), self.service_of("10.10.6.20", 80)))
+        with patch("dedalo.web.cve.actualizar_base"), patch("dedalo.web.cve.consultar_online", return_value=[]) as consultar, \
+                patch("dedalo.web.exploits.buscar_github", return_value=[]):
+            results = self.run_vuln(job_id)
+        self.assertEqual(consultar.call_count, 1)
+        self.assertEqual({(r["ip"], r["puerto"]) for r in results if r["estado"] == "ok"}, {("10.10.5.10", 22), ("10.10.6.20", 80)})
+
+    def test_a_stopped_vuln_run_is_interrupted_and_keeps_the_previous_good_result(self):
+        job_id = self.vuln_job()
+        with patch("dedalo.web.cve.actualizar_base"), patch("dedalo.web.cve.consultar_online", return_value=[]), \
+                patch("dedalo.web.exploits.buscar_github", return_value=[]):
+            first = self.run_vuln(job_id)
+        self.assertTrue(first)
+
+        def stop(cpe, sin_internet):
+            with closing(self.store.database()) as con:
+                auditoria.stop_vuln(con, job_id)  # «Detener» pulsado a mitad del cruce
+            return []
+        with patch("dedalo.web.cve.actualizar_base"), patch("dedalo.web.cve.consultar_online", side_effect=stop) as consultar, \
+                patch("dedalo.web.exploits.buscar_github", return_value=[]):
+            self.run_vuln(job_id)
+        self.assertEqual(consultar.call_count, 1)  # no siguió con el segundo servicio
+        with closing(self.store.database()) as con:
+            self.assertEqual(auditoria.vuln_status(con, job_id)["estado"], "interrumpida")
+            self.assertEqual(auditoria.vuln_results(con, job_id), first)
+
+    def test_a_failing_vuln_run_ends_in_error_without_taking_the_queue_down(self):
+        job_id = self.vuln_job()
+        with closing(self.store.database()) as con:
+            vuln = auditoria.start_vuln(con, job_id, {})
+        with patch("dedalo.web.cve.actualizar_base"), \
+                patch("dedalo.web.vulnerabilidades.cruzar_servicio", side_effect=RuntimeError("roto")), redirect_stderr(io.StringIO()):
+            self.store._run_vulns(job_id, vuln)  # no propaga
+        with closing(self.store.database()) as con:
+            status = auditoria.vuln_status(con, job_id)
+        self.assertEqual(status["estado"], "error")
+        self.assertNotIn("roto", status["error"])
+
+    def test_vuln_endpoint_queues_the_run_and_the_detail_shows_its_result(self):
+        job_id = self.vuln_job()
+        with patch("dedalo.web.cve.actualizar_base"), \
+                patch("dedalo.web.cve.consultar_online", return_value=[{"id": "CVE-2026-1111", "severidad": "HIGH"}]), \
+                patch("dedalo.web.exploits.buscar_github", return_value=[]):
+            self.assertEqual(self.request("/api/jobs/" + job_id + "/cruzar-vulnerabilidades", {})[0], 202)
+            self.until(lambda: (self.store.detail(job_id)["vuln"] or {}).get("estado") not in (None, "en_cola", "en_curso", "deteniendo"))
+        detail = self.store.detail(job_id)
+        self.assertEqual(detail["vuln"]["estado"], "completa")
+        ssh = next(r for r in detail["vulnerabilidades"] if (r["ip"], r["puerto"]) == ("10.10.5.10", 22))
+        self.assertEqual([v["cve"] for v in ssh["vulns"]], ["CVE-2026-1111"])
+
+    def test_vuln_endpoints_need_the_token_and_same_origin(self):
+        job_id = self.vuln_job()
+        with patch("dedalo.web.cve.consultar_online") as consultar:
+            for route in ("cruzar-vulnerabilidades", "detener-vulnerabilidades"):
+                for headers in ({"X-Dedalo-Token": "wrong"}, {"Origin": "https://example.org"}):
+                    self.assertEqual(self.request("/api/jobs/" + job_id + "/" + route, {}, headers)[0], 403)
+        consultar.assert_not_called()
+        self.assertIsNone(self.store.detail(job_id)["vuln"])
+
+    def test_vuln_run_needs_the_scope_defined_and_no_capture_running(self):
+        audit = self.store.create_audit({"nombre": "Sin alcance", "incluir": ""})
+        job = json.loads(self.request("/api/jobs", payload() | {"auditoria": audit["id"]})[1])
+        self.assertEqual(self.request("/api/jobs/" + job["id"] + "/cruzar-vulnerabilidades", {})[0], 409)
+        other = self.create()
+        self.store.jobs[other["id"]]["estado"] = "en_curso"
+        self.assertEqual(self.request("/api/jobs/" + other["id"] + "/cruzar-vulnerabilidades", {})[0], 409)
+        self.store.jobs[other["id"]]["estado"] = "preparada"
+
+    def test_stopping_a_vuln_run_that_does_not_exist_is_a_conflict(self):
+        job = self.create()
+        self.assertEqual(self.request("/api/jobs/" + job["id"] + "/detener-vulnerabilidades", {})[0], 409)
+
+    def test_the_nvd_update_in_the_background_respects_the_switch_and_the_base_is_updated_once(self):
+        with patch("dedalo.web.cve.actualizar_base") as actualizar:
+            thread = self.store.actualizar_nvd_en_segundo_plano()
+            thread.join(5)
+        self.assertEqual(actualizar.call_count, 1)
+        self.assertFalse(actualizar.call_args.args[2])
+        self.store.sin_internet = True
+        with patch("dedalo.web.cve.actualizar_base") as actualizar:
+            self.assertIsNone(self.store.actualizar_nvd_en_segundo_plano())  # con el interruptor, ni se intenta
+        actualizar.assert_not_called()
+
+
 class PortTests(unittest.TestCase):
     def test_second_portal_cannot_share_the_port(self):
         with tempfile.TemporaryDirectory() as first_data, tempfile.TemporaryDirectory() as second_data:
@@ -2025,6 +2258,21 @@ class SinInternetTests(unittest.TestCase):
                 with self.assertRaises(Stop):
                     web.serve_portal(args)
             self.assertEqual(store.call_args.kwargs["sin_internet"], esperado)
+
+
+    def test_the_portal_updates_the_nvd_base_in_the_background_only_once_it_is_listening(self):
+        args = cli.build_parser().parse_args(["web", "--datos", "datos"])
+        with patch("dedalo.web.ensure_gowitness"), patch("dedalo.web.PortalStore") as store, \
+                patch("dedalo.web.PortalServer", side_effect=OSError(98, "en uso")), self.assertRaises(OSError):
+            web.serve_portal(args)
+        store.return_value.actualizar_nvd_en_segundo_plano.assert_not_called()  # sin puerto, no descarga nada
+        server = MagicMock()
+        server.server_address = ("127.0.0.1", 1234)
+        server.serve_forever.side_effect = KeyboardInterrupt
+        with patch("dedalo.web.ensure_gowitness"), patch("dedalo.web.PortalStore") as store, \
+                patch("dedalo.web.PortalServer", return_value=server), redirect_stdout(io.StringIO()):
+            web.serve_portal(args)
+        store.return_value.actualizar_nvd_en_segundo_plano.assert_called_once_with()
 
 
 class StopTests(unittest.TestCase):
