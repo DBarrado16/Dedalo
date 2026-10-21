@@ -49,6 +49,8 @@ def build_prompt(datos: dict) -> str:
         "tecnologias": datos.get("technologies", []),
         "html": (datos.get("html", "") or "")[:MAX_HTML],
     }
+    if datos.get("tls"):
+        enviado["tls"] = datos["tls"]
     return f"{_INSTRUCCIONES}\nServicio:\n```json\n{json.dumps(enviado, ensure_ascii=False)}\n```"
 
 

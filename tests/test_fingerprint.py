@@ -5,10 +5,10 @@ import unittest
 from dedalo import fingerprint
 
 
-def datos(headers=None, titulo="Panel", tecnologias=None, html="<html></html>"):
+def datos(headers=None, titulo="Panel", tecnologias=None, html="<html></html>", tls=None):
     return {"final_url": "", "response_code": 200, "title": titulo,
             "headers": headers or {"Server": "nginx/1.18.0"},
-            "technologies": tecnologias or [], "html": html}
+            "technologies": tecnologias or [], "html": html, "tls": tls if tls is not None else {}}
 
 
 def answer(producto="RouterOS", version="6.49.7", confianza=90):
@@ -37,6 +37,14 @@ class PromptTests(unittest.TestCase):
 
     def test_el_esquema_cuadra_con_lo_que_parse_acepta(self):
         self.assertEqual(set(fingerprint.ESQUEMA["required"]), {"producto", "version", "confianza"})
+
+    def test_el_tls_se_incluye_solo_si_no_esta_vacio(self):
+        con_tls = fingerprint.build_prompt(datos(tls={"subject": "FortiGate", "issuer": "Fortinet",
+                                                       "san": ["vpn.example.com"]}))
+        self.assertEqual(bloque(con_tls)["tls"], {"subject": "FortiGate", "issuer": "Fortinet",
+                                                    "san": ["vpn.example.com"]})
+        sin_tls = fingerprint.build_prompt(datos(tls={}))
+        self.assertNotIn("tls", bloque(sin_tls))
 
 
 class TechTests(unittest.TestCase):
