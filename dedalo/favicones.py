@@ -14,6 +14,7 @@ import hashlib
 from html.parser import HTMLParser
 import json
 from pathlib import Path
+import sys
 import urllib.error
 from urllib.parse import urljoin, urlsplit
 
@@ -73,11 +74,20 @@ def cargar(ruta: Path = RUTA) -> dict:
 
     Lee el JSON {"entradas": [{"mmh3": int, "sha256": str?, "producto": str, ...}]}. Una entrada
     sin "producto" (texto no vacío) se ignora, igual que catalogo._filas con las credenciales.
+    Si el fichero no se puede leer o no es JSON válido, avisa por stderr y devuelve el catálogo
+    vacío: un catálogo roto no debe tumbar la detección de versión.
     """
-    datos = json.loads(Path(ruta).read_text("utf-8"))
     por_mmh3: dict[int, dict] = {}
     por_sha256: dict[str, dict] = {}
-    for entrada in datos.get("entradas", []):
+    try:
+        datos = json.loads(Path(ruta).read_text("utf-8"))
+        entradas = datos.get("entradas", [])
+        if not isinstance(entradas, list):
+            raise ValueError("«entradas» no es una lista")
+    except (OSError, ValueError, AttributeError) as exc:  # JSONDecodeError y UnicodeDecodeError son ValueError
+        print(f"Error del portal: no se pudo cargar el catálogo de favicons {ruta}: {exc}", file=sys.stderr)
+        return {"mmh3": por_mmh3, "sha256": por_sha256}
+    for entrada in entradas:
         if not isinstance(entrada, dict):
             continue
         producto = entrada.get("producto")

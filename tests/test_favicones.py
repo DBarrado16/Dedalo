@@ -1,5 +1,6 @@
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import io
 import json
 import tempfile
 import threading
@@ -70,6 +71,17 @@ class CargarTests(unittest.TestCase):
         self.assertEqual(catalogo["sha256"]["abc"]["producto"], "RouterOS")
         self.assertNotIn("sin-producto-no-vale", catalogo["sha256"])
         self.assertEqual(len(catalogo["mmh3"]), 2)
+
+
+    def test_un_json_invalido_o_ilegible_devuelve_el_catalogo_vacio_y_avisa(self):
+        with tempfile.TemporaryDirectory() as carpeta:
+            roto = Path(carpeta) / "roto.json"
+            roto.write_text('{"entradas": [', encoding="utf-8")
+            ausente = Path(carpeta) / "no-existe.json"
+            for ruta in (roto, ausente):
+                with self.subTest(ruta=ruta.name), redirect_stderr(io.StringIO()) as aviso:
+                    self.assertEqual(favicones.cargar(ruta), {"mmh3": {}, "sha256": {}})
+                self.assertIn("Error del portal:", aviso.getvalue())
 
 
 class IdentificarTests(unittest.TestCase):
