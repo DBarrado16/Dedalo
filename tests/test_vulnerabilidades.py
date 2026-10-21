@@ -1,0 +1,148 @@
+import tempfile
+import unittest
+from unittest import mock
+
+from dedalo import cve, db, vulnerabilidades
+from dedalo.auditoria import set_config
+
+CPE_HTTPD = "cpe:/a:apache:http_server:2.4.49"
+CPE_SIN_VERSION = "cpe:/a:apache:http_server"
+
+
+def regla(producto, vendor="apache", v_ini=None, v_fin=None):
+    return {"parte": "a", "vendor": vendor, "producto": producto,
+            "v_ini": v_ini, "v_ini_incl": 1, "v_fin": v_fin, "v_fin_incl": 0}
+
+
+def item(cve_id, cpes, severidad="HIGH", cvss=7.5):
+    return {"id": cve_id, "publicada": "2026-01-01T00:00:00Z", "severidad": severidad, "cvss": cvss,
+            "resumen": cve_id, "cpes": cpes}
+
+
+def sin_github(cve_id, sin_internet, token=None):
+    return []
+
+
+class BaseTemporal(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.con = db.connect(self.temp.name)
+
+    def tearDown(self):
+        self.con.close()
+        self.temp.cleanup()
+
+
+class CruzarServicioTests(BaseTemporal):
+    def test_cve_critica_con_exploit_confirmado_pasa_por_delante_de_un_poc(self):
+        cve.guardar_cves(self.con, [item("CVE-2026-0001", [regla("http_server", v_fin="2.4.50")], "CRITICAL", 9.8),
+                                    item("CVE-2026-0002", [regla("nginx", vendor="f5", v_fin="2.0")], "MEDIUM", 5.0)])
+
+        def github(cve_id, sin_internet, token=None):
+            return ["https://github.com/x/poc"] if cve_id == "CVE-2026-0002" else []
+
+        # Dos servicios: Apache (CVE crítica en KEV) y nginx (CVE media con solo un PoC de GitHub).
+        apache = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], {"CVE-2026-0001"}, {}, False, github)
+        nginx = vulnerabilidades.cruzar_servicio(self.con, ["cpe:/a:f5:nginx:1.0"], {"CVE-2026-0001"}, {}, False, github)
+        self.assertEqual(apache["estado"], "ok")
+        self.assertEqual(apache["vulns"][0]["cve"], "CVE-2026-0001")
+        self.assertEqual(apache["vulns"][0]["exploit_nivel"], "confirmado")
+        self.assertEqual(apache["vulns"][0]["severidad"], "CRITICAL")
+        self.assertEqual(nginx["vulns"][0]["exploit_nivel"], "sin_verificar")
+        self.assertEqual(nginx["vulns"][0]["enlaces_exploit"], ["https://github.com/x/poc"])
+        self.assertLess(vulnerabilidades.orden(apache["vulns"]), vulnerabilidades.orden(nginx["vulns"]))
+
+    def test_forma_de_cada_vulnerabilidad(self):
+        cve.guardar_cves(self.con, [item("CVE-2026-0001", [regla("http_server")])])
+        res = vulnerabilidades.cruzar_servicio(self.con, [CPE_SIN_VERSION], set(), {"CVE-2026-0001": ["https://edb/1"]},
+                                               False, sin_github)
+        self.assertEqual(res["vulns"], [{
+            "cve": "CVE-2026-0001", "severidad": "HIGH", "enlace": "https://nvd.nist.gov/vuln/detail/CVE-2026-0001",
+            "exploit_nivel": "confirmado", "enlaces_exploit": ["https://edb/1"],
+            "origen_cpe": CPE_SIN_VERSION, "sin_version": True}])
+
+    def test_sin_base_local_y_sin_internet_es_sin_datos_no_ok_vacio(self):
+        with mock.patch.object(cve, "consultar_online") as online:
+            res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, True, sin_github)
+        self.assertEqual(res, {"estado": "sin_datos", "vulns": []})
+        online.assert_not_called()  # con el interruptor no se llama ni a la consulta
+
+    def test_sin_base_local_y_consulta_fallida_es_sin_datos(self):
+        with mock.patch.object(cve, "consultar_online", return_value=None):
+            res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, False, sin_github)
+        self.assertEqual(res["estado"], "sin_datos")
+
+    def test_consultado_con_cero_cve_es_ok_vacio(self):
+        with mock.patch.object(cve, "consultar_online", return_value=[]):
+            res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, False, sin_github)
+        self.assertEqual(res, {"estado": "ok", "vulns": []})
+
+    def test_base_local_completa_sin_cve_del_producto_es_ok_aunque_falle_la_consulta(self):
+        set_config(self.con, "nvd_actualizada", "2026-10-20T00:00:00+00:00")
+        with mock.patch.object(cve, "consultar_online", return_value=None):
+            res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, False, sin_github)
+        self.assertEqual(res, {"estado": "ok", "vulns": []})
+        res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, True, sin_github)
+        self.assertEqual(res, {"estado": "ok", "vulns": []})
+
+    def test_sin_cpes_no_hay_nada_que_cruzar(self):
+        res = vulnerabilidades.cruzar_servicio(self.con, [], set(), {}, False, sin_github)
+        self.assertEqual(res, {"estado": "sin_datos", "vulns": []})
+
+    def test_online_solo_si_local_vacio_para_ese_cpe(self):
+        cve.guardar_cves(self.con, [item("CVE-2026-0001", [regla("http_server")])])
+        online = mock.Mock(return_value=[item("CVE-2026-0009", [regla("openssh", vendor="openbsd")], "critical", 9.0)])
+        with mock.patch.object(cve, "consultar_online", online):
+            res = vulnerabilidades.cruzar_servicio(
+                self.con, [CPE_HTTPD, "cpe:/a:openbsd:openssh:7.4"], set(), {}, False, sin_github)
+        online.assert_called_once_with("cpe:/a:openbsd:openssh:7.4", False)
+        self.assertEqual({v["cve"]: v["origen_cpe"] for v in res["vulns"]},
+                         {"CVE-2026-0001": CPE_HTTPD, "CVE-2026-0009": "cpe:/a:openbsd:openssh:7.4"})
+        online_vuln = next(v for v in res["vulns"] if v["cve"] == "CVE-2026-0009")
+        self.assertEqual(online_vuln["severidad"], "CRITICAL")
+        self.assertFalse(online_vuln["sin_version"])
+
+    def test_online_con_cpe_sin_version_marca_sin_version(self):
+        online = mock.Mock(return_value=[item("CVE-2026-0009", [regla("openssh", vendor="openbsd")])])
+        with mock.patch.object(cve, "consultar_online", online):
+            res = vulnerabilidades.cruzar_servicio(self.con, ["cpe:/a:openbsd:openssh"], set(), {}, False, sin_github)
+        self.assertTrue(res["vulns"][0]["sin_version"])
+
+    def test_github_solo_para_no_confirmadas_y_con_internet(self):
+        cve.guardar_cves(self.con, [item("CVE-2026-0001", [regla("http_server")]),
+                                    item("CVE-2026-0002", [regla("http_server")])])
+        github = mock.Mock(return_value=["https://github.com/x/poc"])
+        vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], {"CVE-2026-0001"}, {}, False, github)
+        github.assert_called_once_with("CVE-2026-0002", False)
+        github.reset_mock()
+        res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, True, github)
+        github.assert_not_called()
+        self.assertEqual({v["exploit_nivel"] for v in res["vulns"]}, {"ninguno"})
+
+    def test_cve_repetida_en_dos_cpes_sale_una_vez(self):
+        cve.guardar_cves(self.con, [item("CVE-2026-0001", [regla("http_server")])])
+        res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD, CPE_SIN_VERSION], set(), {}, False, sin_github)
+        self.assertEqual([v["cve"] for v in res["vulns"]], ["CVE-2026-0001"])
+
+
+class OrdenTests(unittest.TestCase):
+    def vuln(self, severidad="HIGH", nivel="ninguno"):
+        return {"cve": "CVE-2026-0001", "severidad": severidad, "exploit_nivel": nivel}
+
+    def test_menor_es_mas_prioritario(self):
+        confirmado = vulnerabilidades.orden([self.vuln("MEDIUM", "confirmado")])
+        critica = vulnerabilidades.orden([self.vuln("CRITICAL")])
+        cualquiera = vulnerabilidades.orden([self.vuln("LOW")])
+        nada = vulnerabilidades.orden([])
+        self.assertLess(confirmado, critica)
+        self.assertLess(critica, cualquiera)
+        self.assertLess(cualquiera, nada)
+
+    def test_poc_sin_verificar_no_pasa_por_delante_de_una_cve(self):
+        poc = vulnerabilidades.orden([self.vuln("LOW", "sin_verificar")])
+        self.assertLessEqual(vulnerabilidades.orden([self.vuln("LOW")]), poc)
+        self.assertLess(poc, vulnerabilidades.orden([]))
+
+    def test_gana_la_mejor_de_la_lista(self):
+        mixto = [self.vuln("LOW"), self.vuln("LOW", "confirmado")]
+        self.assertEqual(vulnerabilidades.orden(mixto), vulnerabilidades.orden([self.vuln("LOW", "confirmado")]))
