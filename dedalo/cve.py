@@ -338,8 +338,13 @@ def actualizar_base(con, destino: str | Path, sin_internet: bool, log=print) -> 
     set_config(con, "nvd_actualizada", ahora.isoformat(timespec="seconds"))
 
 
-def consultar_online(cpe: str, sin_internet: bool) -> list[dict]:
-    """CVE del CPE según la API de la NVD, en el formato de `guardar_cves`; [] con `sin_internet` o si falla.
+def consultar_online(cpe: str, sin_internet: bool) -> list[dict] | None:
+    """CVE del CPE según la API de la NVD, en el formato de `guardar_cves`.
+
+    Devuelve `None` si NO se pudo consultar: CPE ilegible, error de red o HTTP (403/429/503 incluidos),
+    respuesta ilegible o mayor que el tope, o resultado truncado (más CVE de las que caben en la página).
+    Devuelve `[]` solo si la consulta fue correcta y la NVD no dio ninguna CVE, o si `sin_internet` está
+    activo (no se consulta nada: tampoco hay datos). Así quien llama distingue «sin datos» de «sin vulnerabilidades».
 
     Es el respaldo cuando la base local no tiene el producto. Consulta por `virtualMatchString`, que también
     casa con los rangos de versión. Quien llama decide el alcance antes: el CPE de un activo excluido no debe llegar aquí.
@@ -348,7 +353,7 @@ def consultar_online(cpe: str, sin_internet: bool) -> list[dict]:
         return []
     partes = _parsear_cpe(cpe)
     if partes is None:
-        return []
+        return None
     vendor, producto, version = partes
     parte = (re.match(r"cpe:(?:2\.3:|/)([aoh])\b", cpe.strip().lower()) or [None, "a"])[1]
     consulta = urllib.parse.urlencode({"virtualMatchString": f"cpe:2.3:{parte}:{vendor or '*'}:{producto}:{version or '*'}",
@@ -357,7 +362,14 @@ def consultar_online(cpe: str, sin_internet: bool) -> list[dict]:
         with internet.peticion(f"{NVD_API_URL}?{consulta}", timeout=30) as respuesta:
             crudo = respuesta.read(MAX_RESPUESTA_API + 1)
         if len(crudo) > MAX_RESPUESTA_API:
-            return []
-        return _items_de_json(crudo.decode("utf-8-sig"))
+            return None
+        datos = json.loads(crudo.decode("utf-8-sig"))
     except (OSError, ValueError, http.client.HTTPException):
-        return []
+        return None
+    vulnerabilidades = datos.get("vulnerabilities") if isinstance(datos, dict) else None
+    if not isinstance(vulnerabilidades, list):
+        return None
+    total = datos.get("totalResults")
+    if isinstance(total, int) and not isinstance(total, bool) and total > len(vulnerabilidades):
+        return None  # la NVD tiene más CVE de las que devolvió: un resultado truncado no vale como respuesta
+    return [item for item in map(item_desde_nvd, vulnerabilidades) if item]

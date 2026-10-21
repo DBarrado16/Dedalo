@@ -261,17 +261,39 @@ class ConsultarOnlineTests(unittest.TestCase):
             self.assertEqual(cve.consultar_online("cpe:/a:*:nginx:*", False), [])
             self.assertIn("virtualMatchString=cpe%3A2.3%3Aa%3A%2A%3Anginx%3A%2A", s.peticiones[0][0])
 
-    def test_cpe_ilegible_no_sale_a_la_red(self):
+    def test_cpe_ilegible_no_sale_a_la_red_y_da_none(self):
         with mock.patch.object(internet, "peticion", side_effect=AssertionError("tocó la red")):
-            self.assertEqual(cve.consultar_online("esto no es un cpe", False), [])
+            self.assertIsNone(cve.consultar_online("esto no es un cpe", False))
 
-    def test_errores_dan_lista_vacia(self):
-        with _Servidor({"/api": (403, b"")}) as s, mock.patch.object(cve, "NVD_API_URL", s.base + "/api"):
-            self.assertEqual(cve.consultar_online("cpe:/a:apache:http_server:2.4.49", False), [])
-        with _Servidor({"/api": (200, b"<html>")}) as s, mock.patch.object(cve, "NVD_API_URL", s.base + "/api"):
-            self.assertEqual(cve.consultar_online("cpe:/a:apache:http_server:2.4.49", False), [])
+    def test_sin_internet_sigue_dando_lista_vacia(self):
+        with mock.patch.object(internet, "peticion", side_effect=AssertionError("tocó la red")):
+            self.assertEqual(cve.consultar_online("cpe:/a:apache:http_server:2.4.49", True), [])
+
+    def test_consulta_correcta_sin_cve_da_lista_vacia_no_none(self):
+        cuerpo = b'{"resultsPerPage": 500, "totalResults": 0, "vulnerabilities": []}'
+        with _Servidor({"/api": (200, cuerpo)}) as s, mock.patch.object(cve, "NVD_API_URL", s.base + "/api"):
+            resultado = cve.consultar_online("cpe:/a:apache:http_server:2.4.49", False)
+        self.assertIsNotNone(resultado)
+        self.assertEqual(resultado, [])
+
+    def test_errores_de_red_y_http_dan_none(self):
+        for codigo in (403, 429, 503):
+            with _Servidor({"/api": (codigo, b"")}) as s, mock.patch.object(cve, "NVD_API_URL", s.base + "/api"):
+                self.assertIsNone(cve.consultar_online("cpe:/a:apache:http_server:2.4.49", False), codigo)
         with mock.patch.object(cve, "NVD_API_URL", "http://127.0.0.1:1/api"):  # puerto cerrado
-            self.assertEqual(cve.consultar_online("cpe:/a:apache:http_server:2.4.49", False), [])
+            self.assertIsNone(cve.consultar_online("cpe:/a:apache:http_server:2.4.49", False))
+
+    def test_respuesta_ilegible_o_demasiado_grande_da_none(self):
+        for cuerpo in (b"<html>", b'{"sin": "vulnerabilities"}'):
+            with _Servidor({"/api": (200, cuerpo)}) as s, mock.patch.object(cve, "NVD_API_URL", s.base + "/api"):
+                self.assertIsNone(cve.consultar_online("cpe:/a:apache:http_server:2.4.49", False))
+        with _Servidor({"/api": (200, b'{"vulnerabilities": []}' + b" " * 100)}) as s,                 mock.patch.object(cve, "NVD_API_URL", s.base + "/api"), mock.patch.object(cve, "MAX_RESPUESTA_API", 50):
+            self.assertIsNone(cve.consultar_online("cpe:/a:apache:http_server:2.4.49", False))
+
+    def test_resultado_truncado_da_none(self):
+        cuerpo = json.dumps({"resultsPerPage": 1, "totalResults": 3, "vulnerabilities": [cve_nvd("CVE-2021-0001")]}).encode()
+        with _Servidor({"/api": (200, cuerpo)}) as s, mock.patch.object(cve, "NVD_API_URL", s.base + "/api"):
+            self.assertIsNone(cve.consultar_online("cpe:/a:apache:http_server:2.4.49", False))
 
 
 class BuscarGithubTests(unittest.TestCase):
