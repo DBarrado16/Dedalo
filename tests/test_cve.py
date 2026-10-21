@@ -196,5 +196,32 @@ class GuardarCvesTests(unittest.TestCase):
         self.assertEqual([r[0] for r in self.con.execute("SELECT id FROM cve")], ["CVE-2026-0001"])
 
 
+class CpeDesdeDeteccionTests(unittest.TestCase):
+    def test_normaliza_producto_y_pone_vendor_comodin(self):
+        self.assertEqual(cve.cpe_desde_deteccion("Apache httpd", "2.4.59"), "cpe:/a:*:apache_httpd:2.4.59")
+        self.assertEqual(cve.cpe_desde_deteccion("  Microsoft   IIS ", " 10.0 "), "cpe:/a:*:microsoft_iis:10.0")
+
+    def test_producto_vacio_o_no_texto_devuelve_none(self):
+        for producto in ("", "   ", None):
+            self.assertIsNone(cve.cpe_desde_deteccion(producto, "1.0"))
+
+    def test_sin_version_usa_comodin(self):
+        self.assertEqual(cve.cpe_desde_deteccion("nginx", ""), "cpe:/a:*:nginx:*")
+        self.assertEqual(cve.cpe_desde_deteccion("nginx", None), "cpe:/a:*:nginx:*")
+
+    def test_los_dos_puntos_no_rompen_el_cpe(self):
+        cpe = cve.cpe_desde_deteccion("a:b", "1:2")
+        self.assertEqual(cpe, "cpe:/a:*:a_b:1_2")
+
+    def test_el_cpe_casa_por_producto_con_cves_de(self):
+        with tempfile.TemporaryDirectory() as carpeta:
+            con = db.connect(carpeta)
+            cve.guardar_cves(con, [item("CVE-2026-0001", [regla("apache_httpd", v_fin="2.4.60")])])
+            self.assertEqual([c["id"] for c in cve.cves_de(con, cve.cpe_desde_deteccion("Apache httpd", "2.4.59"))],
+                             ["CVE-2026-0001"])
+            self.assertEqual(cve.cves_de(con, cve.cpe_desde_deteccion("Apache httpd", "2.4.60")), [])
+            con.close()
+
+
 if __name__ == "__main__":
     unittest.main()

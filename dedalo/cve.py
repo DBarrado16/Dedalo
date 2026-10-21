@@ -57,6 +57,20 @@ def _parsear_cpe(cpe: str):
     return ("" if vendor in ("*", "-") else vendor), producto, ("" if version in ("*", "-") else version)
 
 
+def cpe_desde_deteccion(producto: str, version: str) -> str | None:
+    """CPE 2.2 `cpe:/a:*:<producto>:<versión>` a partir del producto y la versión detectados; None sin producto.
+
+    El vendor va como comodín: `cves_de` casa entonces solo por producto. Producto en minúsculas, con
+    espacios (y `:`, que partiría el CPE) como `_`. Una versión vacía sale como `*`. Qué confianza basta
+    para construirlo lo decide quien llama.
+    """
+    def limpio(valor) -> str:
+        return re.sub(r"[\s:]+", "_", valor.strip().lower()) if isinstance(valor, str) else ""
+
+    producto = limpio(producto)
+    return f"cpe:/a:*:{producto}:{limpio(version) or '*'}" if producto else None
+
+
 def _texto(valor) -> str:
     return valor if isinstance(valor, str) else ""
 
