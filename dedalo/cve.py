@@ -1,13 +1,34 @@
 """Base local de CVE: reglas de aplicabilidad por CPE guardadas en SQLite y consulta por producto y versión.
 
-Solo toca la base (tablas cve y cve_cpe); no contacta con nada. Los datos llegan ya normalizados:
-quien los descargue (NVD) los convierte al formato de `guardar_cves`.
+Consultar y guardar solo tocan la base (tablas cve y cve_cpe). Las únicas salidas a internet son
+`actualizar_base` (feeds de la NVD) y `consultar_online` (API de la NVD), y las dos son no-op con el
+interruptor `sin_internet`. Ambas convierten lo descargado al formato de `guardar_cves`.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+import gzip
+import http.client
+import json
+from pathlib import Path
 import re
+import urllib.parse
 from urllib.parse import unquote
+import zlib
+
+from . import internet
+from .auditoria import get_config, set_config
+
+# Formato 2.0 de la NVD (el mismo en los feeds y en la API). Si cambia, se cambia aquí.
+NVD_FEED_ANUAL = "https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-{anio}.json.gz"
+NVD_FEED_MODIFICADA = "https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-modified.json.gz"
+NVD_API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+ANIOS_BASE = 10  # la base inicial cubre los últimos 10 años
+DIAS_INCREMENTAL = 7  # el feed de modificadas cubre ~8 días; con una marca más vieja se baja todo
+MAX_DESCARGA = 400 << 20  # tope de un feed comprimido
+MAX_DESCOMPRIMIDO = 2 << 30  # tope de un feed ya descomprimido
+MAX_RESPUESTA_API = 32 << 20  # tope de una respuesta de la API
 
 
 def _componente(texto: str) -> tuple[int, str]:
@@ -154,3 +175,189 @@ def cves_de(con, cpe: str) -> list[dict]:
         salida[fila["id"]] = {"id": fila["id"], "publicada": fila["publicada"], "severidad": fila["severidad"],
                               "cvss": fila["cvss"], "resumen": fila["resumen"], "sin_version": not version}
     return list(salida.values())
+
+
+# --- Salidas a internet: formato 2.0 de la NVD -> formato de `guardar_cves` ---
+
+def _campos_cpe23(criterio: str) -> list[str]:
+    """Campos de un CPE 2.3 (`cpe:2.3:parte:vendor:producto:versión:...`) sin los escapes de `\\:` y similares."""
+    return [re.sub(r"\\(.)", r"\1", c) for c in re.split(r"(?<!\\):", criterio.strip())]
+
+
+def _sin_comodin(valor: str) -> str:
+    valor = valor.strip().lower()
+    return "" if valor in ("*", "-") else valor
+
+
+def _regla_nvd(coincidencia):
+    """Regla de cve_cpe de un `cpeMatch` de la NVD; None si no es vulnerable o no se entiende.
+
+    Con rango (`versionStart*`/`versionEnd*`) se copia tal cual. Con una versión concreta en el CPE y sin
+    rango, la regla es el rango cerrado `v_ini = v_fin = versión`: sin rango, `cves_de` la leería como
+    «todas las versiones del producto». Con `*` o `-` de versión y sin rango sí vale para todas.
+    """
+    if not isinstance(coincidencia, dict) or coincidencia.get("vulnerable") is not True:
+        return None
+    criterio = coincidencia.get("criteria")
+    campos = _campos_cpe23(criterio) if isinstance(criterio, str) else []
+    if len(campos) < 6 or campos[0].lower() != "cpe" or campos[1] != "2.3" or not _sin_comodin(campos[4]):
+        return None
+    regla = {"parte": _sin_comodin(campos[2]), "vendor": _sin_comodin(campos[3]), "producto": _sin_comodin(campos[4]),
+             "v_ini": None, "v_ini_incl": 0, "v_fin": None, "v_fin_incl": 0}
+    ini_incl, ini_excl = coincidencia.get("versionStartIncluding"), coincidencia.get("versionStartExcluding")
+    fin_incl, fin_excl = coincidencia.get("versionEndIncluding"), coincidencia.get("versionEndExcluding")
+    if any(isinstance(v, str) and v.strip() for v in (ini_incl, ini_excl, fin_incl, fin_excl)):
+        regla["v_ini"], regla["v_ini_incl"] = (ini_incl, 1) if ini_incl else (ini_excl, 0)
+        regla["v_fin"], regla["v_fin_incl"] = (fin_incl, 1) if fin_incl else (fin_excl, 0)
+    elif _sin_comodin(campos[5]):
+        regla["v_ini"] = regla["v_fin"] = _sin_comodin(campos[5])
+        regla["v_ini_incl"] = regla["v_fin_incl"] = 1
+    return regla
+
+
+def _metrica_nvd(metricas) -> tuple[str, float | None]:
+    """(severidad, puntuación base) de la métrica CVSS más nueva disponible; ("", None) si no hay."""
+    if not isinstance(metricas, dict):
+        return "", None
+    for clave in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+        lista = [m for m in metricas.get(clave) or [] if isinstance(m, dict)] if isinstance(metricas.get(clave), list) else []
+        if not lista:
+            continue
+        metrica = next((m for m in lista if m.get("type") == "Primary"), lista[0])
+        datos = metrica.get("cvssData") if isinstance(metrica.get("cvssData"), dict) else {}
+        puntuacion = datos.get("baseScore")
+        puntuacion = float(puntuacion) if isinstance(puntuacion, (int, float)) and not isinstance(puntuacion, bool) else None
+        return _texto(datos.get("baseSeverity") or metrica.get("baseSeverity")).strip().upper(), puntuacion
+    return "", None
+
+
+def item_desde_nvd(entrada) -> dict | None:
+    """Convierte una entrada `{"cve": {...}}` del formato 2.0 de la NVD al item de `guardar_cves`.
+
+    None si está mal formada, sin id o rechazada por la NVD. Solo cuentan los `cpeMatch` vulnerables.
+    """
+    cve_nvd = entrada.get("cve") if isinstance(entrada, dict) else None
+    if not isinstance(cve_nvd, dict) or not _texto(cve_nvd.get("id")).strip() or cve_nvd.get("vulnStatus") == "Rejected":
+        return None
+    descripciones = [d for d in cve_nvd.get("descriptions") or [] if isinstance(d, dict) and _texto(d.get("value"))] \
+        if isinstance(cve_nvd.get("descriptions"), list) else []
+    descripcion = next((d for d in descripciones if d.get("lang") == "en"), descripciones[0] if descripciones else {})
+    severidad, cvss = _metrica_nvd(cve_nvd.get("metrics"))
+    reglas: list[dict] = []
+    for configuracion in cve_nvd.get("configurations") or [] if isinstance(cve_nvd.get("configurations"), list) else []:
+        nodos = configuracion.get("nodes") if isinstance(configuracion, dict) else None
+        for nodo in nodos if isinstance(nodos, list) else []:
+            coincidencias = nodo.get("cpeMatch") if isinstance(nodo, dict) else None
+            for coincidencia in coincidencias if isinstance(coincidencias, list) else []:
+                regla = _regla_nvd(coincidencia)
+                if regla and regla not in reglas:
+                    reglas.append(regla)
+    return {"id": cve_nvd["id"].strip(), "publicada": _texto(cve_nvd.get("published")), "severidad": severidad,
+            "cvss": cvss, "resumen": _texto(descripcion.get("value")), "cpes": reglas}
+
+
+def _items_de_json(texto: str) -> list[dict]:
+    """Items de `guardar_cves` de un JSON de la NVD (`{"vulnerabilities": [...]}`); ValueError si no lo es."""
+    datos = json.loads(texto)
+    vulnerabilidades = datos.get("vulnerabilities") if isinstance(datos, dict) else None
+    if not isinstance(vulnerabilidades, list):
+        raise ValueError("el JSON de la NVD no trae «vulnerabilities»")
+    return [item for item in map(item_desde_nvd, vulnerabilidades) if item]
+
+
+def _descargar(url: str, ruta: Path) -> None:
+    """Baja `url` a `ruta` (por un fichero parcial) con tope de tamaño; OSError/ValueError si falla."""
+    parcial = ruta.with_name(ruta.name + ".descarga")
+    total = 0
+    try:
+        with internet.peticion(url, timeout=60) as respuesta, parcial.open("wb") as salida:
+            while trozo := respuesta.read(1 << 20):
+                total += len(trozo)
+                if total > MAX_DESCARGA:
+                    raise ValueError("el feed es mayor de lo esperado")
+                salida.write(trozo)
+        parcial.replace(ruta)
+    finally:
+        parcial.unlink(missing_ok=True)
+
+
+def _leer_feed(ruta: Path) -> list[dict]:
+    """Items de un feed descargado, comprimido (gzip) o no, con o sin BOM."""
+    with ruta.open("rb") as f:
+        gz = f.read(2) == b"\x1f\x8b"
+    with (gzip.open(ruta, "rb") if gz else ruta.open("rb")) as f:
+        crudo = f.read(MAX_DESCOMPRIMIDO + 1)
+    if len(crudo) > MAX_DESCOMPRIMIDO:
+        raise ValueError("el feed descomprimido es mayor de lo esperado")
+    return _items_de_json(crudo.decode("utf-8-sig"))
+
+
+def _feeds_pendientes(con, ahora: datetime) -> list[tuple[str, str]]:
+    """(nombre, url) de lo que toca bajar: solo las modificadas si la base se actualizó hace poco, si no los últimos 10 años."""
+    try:
+        ultima = datetime.fromisoformat(get_config(con, "nvd_actualizada") or "")
+        ultima = ultima if ultima.tzinfo else ultima.replace(tzinfo=timezone.utc)
+    except ValueError:
+        ultima = None
+    if ultima is not None and timedelta(0) <= ahora - ultima <= timedelta(days=DIAS_INCREMENTAL):
+        return [("modificadas", NVD_FEED_MODIFICADA)]
+    return [(str(anio), NVD_FEED_ANUAL.format(anio=anio)) for anio in range(ahora.year - ANIOS_BASE + 1, ahora.year + 1)]
+
+
+def actualizar_base(con, destino: str | Path, sin_internet: bool, log=print) -> None:
+    """Descarga los feeds de la NVD a `destino`, los vuelca en la base y anota `config.nvd_actualizada`.
+
+    Con `sin_internet` no hace nada (ni crea `destino`). Sin datos previos baja los últimos 10 años; con una
+    actualización de hace menos de una semana, solo el feed de modificadas. Un feed que falla se salta (y se
+    cuenta en `log`): lo bueno queda guardado, pero la base no se marca como actualizada para reintentarlo.
+    Los ficheros descargados se borran al terminar.
+    """
+    if sin_internet:
+        return
+    ahora = datetime.now(timezone.utc)
+    carpeta = Path(destino)
+    carpeta.mkdir(parents=True, exist_ok=True)
+    fallos = 0
+    for nombre, url in _feeds_pendientes(con, ahora):
+        ruta = carpeta / f"nvd-{nombre}.json.gz"
+        log(f"Descargando el feed «{nombre}» de la NVD...")
+        try:
+            _descargar(url, ruta)
+            items = _leer_feed(ruta)
+        except (OSError, ValueError, EOFError, zlib.error, http.client.HTTPException) as exc:
+            fallos += 1
+            log(f"No se pudo importar el feed «{nombre}» de la NVD: {exc}")
+            continue
+        finally:
+            ruta.unlink(missing_ok=True)
+        guardar_cves(con, items)
+        log(f"Feed «{nombre}»: {len(items)} CVE guardadas.")
+    if fallos:
+        log("Actualización de la NVD incompleta; se reintentará la próxima vez.")
+        return
+    set_config(con, "nvd_actualizada", ahora.isoformat(timespec="seconds"))
+
+
+def consultar_online(cpe: str, sin_internet: bool) -> list[dict]:
+    """CVE del CPE según la API de la NVD, en el formato de `guardar_cves`; [] con `sin_internet` o si falla.
+
+    Es el respaldo cuando la base local no tiene el producto. Consulta por `virtualMatchString`, que también
+    casa con los rangos de versión. Quien llama decide el alcance antes: el CPE de un activo excluido no debe llegar aquí.
+    """
+    if sin_internet:
+        return []
+    partes = _parsear_cpe(cpe)
+    if partes is None:
+        return []
+    vendor, producto, version = partes
+    parte = (re.match(r"cpe:(?:2\.3:|/)([aoh])\b", cpe.strip().lower()) or [None, "a"])[1]
+    consulta = urllib.parse.urlencode({"virtualMatchString": f"cpe:2.3:{parte}:{vendor or '*'}:{producto}:{version or '*'}",
+                                       "resultsPerPage": 500})
+    try:
+        with internet.peticion(f"{NVD_API_URL}?{consulta}", timeout=30) as respuesta:
+            crudo = respuesta.read(MAX_RESPUESTA_API + 1)
+        if len(crudo) > MAX_RESPUESTA_API:
+            return []
+        return _items_de_json(crudo.decode("utf-8-sig"))
+    except (OSError, ValueError, http.client.HTTPException):
+        return []
