@@ -46,6 +46,38 @@ class PromptTests(unittest.TestCase):
         sin_tls = fingerprint.build_prompt(datos(tls={}))
         self.assertNotIn("tls", bloque(sin_tls))
 
+    def test_las_senales_del_html_van_en_el_json(self):
+        html = ('<meta name="generator" content="WordPress 6.4.2">'
+                '<script src="/a.js?ver=5.4"></script>')
+        enviado = bloque(fingerprint.build_prompt(datos(html=html)))
+        self.assertEqual(enviado["senales"], fingerprint.senales_html(html))
+        self.assertTrue(enviado["senales"])
+
+
+class SenalesHtmlTests(unittest.TestCase):
+    def test_encuentra_generator_comentario_query_de_version_y_texto_version(self):
+        html = ('<meta name="generator" content="WordPress 6.4.2">'
+                '<!-- Joomla 3.9 -->'
+                '<script src="/a.js?ver=5.4"></script>'
+                '<p>Version 2.1.0</p>')
+        self.assertEqual(fingerprint.senales_html(html), [
+            '<meta name="generator" content="WordPress 6.4.2">',
+            '<!-- Joomla 3.9 -->',
+            '<script src="/a.js?ver=5.4">',
+            'Version 2.1.0',
+        ])
+
+    def test_sin_duplicados_si_una_senal_se_repite(self):
+        html = '<!-- Joomla 3.9 --><p>texto</p><!-- Joomla 3.9 -->'
+        self.assertEqual(fingerprint.senales_html(html), ['<!-- Joomla 3.9 -->'])
+
+    def test_tope_de_senales(self):
+        html = "".join(f'<!-- señal {i} -->' for i in range(fingerprint.MAX_SENALES * 2))
+        self.assertEqual(len(fingerprint.senales_html(html)), fingerprint.MAX_SENALES)
+
+    def test_sin_senales_devuelve_lista_vacia(self):
+        self.assertEqual(fingerprint.senales_html("<html><body>sin pistas</body></html>"), [])
+
 
 class TechTests(unittest.TestCase):
     def test_parte_producto_y_version_por_el_ultimo_dos_puntos(self):
