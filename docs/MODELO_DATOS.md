@@ -179,16 +179,24 @@ CREATE TABLE cve_cpe (
 
 -- Lo que el cruce por CPE (ejecución 'vuln') halló en cada servicio. cve_id no es clave foránea:
 -- la base de CVE se puede renovar sin tocar los hallazgos de una auditoría.
+-- Una fila por CVE hallada. Un servicio sin ninguna CVE (o que no se pudo mirar) guarda UNA fila
+-- centinela con cve_id = '' (y severidad, exploit_nivel, enlaces y origen_cpe vacíos) que lleva su
+-- estado: 'ok' = se miró y está limpio, 'sin_datos' = no se pudo mirar (sin CPE, o sin base local
+-- completa y sin consulta en línea). Todas las filas de un servicio llevan el mismo estado. Un servicio
+-- que no tiene ninguna fila no se cruzó (p. ej. porque estaba fuera de alcance al hacerlo). La centinela
+-- no es una vulnerabilidad: las lecturas (auditoria.vuln_results) la convierten en `vulns = []`.
 CREATE TABLE vulnerabilidad (
   id            INTEGER PRIMARY KEY,
   ejecucion_id  TEXT NOT NULL REFERENCES ejecucion(id) ON DELETE CASCADE,
   servicio_id   INTEGER NOT NULL REFERENCES servicio(id) ON DELETE CASCADE,
-  cve_id        TEXT NOT NULL,
-  severidad     TEXT NOT NULL DEFAULT '',
+  cve_id        TEXT NOT NULL,            -- '' en la fila centinela
+  severidad     TEXT NOT NULL DEFAULT '', -- CRITICAL, HIGH, MEDIUM o LOW, en mayúsculas como la NVD
   exploit_nivel TEXT NOT NULL DEFAULT '', -- confirmado (CISA KEV / Exploit-DB) o PoC sin verificar (GitHub)
   enlaces       TEXT NOT NULL DEFAULT '[]', -- JSON: solo enlaces, nunca el exploit
-  origen_cpe    TEXT NOT NULL DEFAULT '',   -- el CPE que se cruzó
-  estado        TEXT NOT NULL DEFAULT ''
+  origen_cpe    TEXT NOT NULL DEFAULT '',   -- «fuente|cpe»: el CPE que se cruzó y de dónde salió
+                                            -- (fuente: nmap, el que dio Nmap, o deteccion, el construido
+                                            -- con la detección de alta confianza); se parte en la lectura
+  estado        TEXT NOT NULL DEFAULT ''    -- 'ok' o 'sin_datos'
 );
 
 -- Catálogo curado de credenciales por defecto, volcado del fichero dedalo/datos/credenciales.json
