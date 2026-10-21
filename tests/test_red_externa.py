@@ -432,6 +432,59 @@ class ActualizarFuentesTests(unittest.TestCase):
         self.assertEqual(list(self.destino.glob("*")), [])
         self.assertEqual(exploits.cargar_kev(self.kev), set())
 
+    def _servidor_truncado(self, cuerpo, anunciado, con_longitud=True):
+        """Servidor crudo que anuncia `anunciado` bytes de Content-Length, envía solo `cuerpo` y cierra."""
+        escucha = socket.socket()
+        escucha.bind(("127.0.0.1", 0))
+        escucha.listen(5)
+        self.addCleanup(escucha.close)
+
+        def atender():
+            while True:
+                try:
+                    conexion, _ = escucha.accept()
+                except OSError:
+                    return
+                with conexion:
+                    conexion.recv(4096)
+                    cabecera = f"Content-Length: {anunciado}\r\n" if con_longitud else ""
+                    conexion.sendall(("HTTP/1.1 200 OK\r\n" + cabecera + "Connection: close\r\n\r\n").encode() + cuerpo)
+
+        threading.Thread(target=atender, daemon=True).start()
+        return f"http://127.0.0.1:{escucha.getsockname()[1]}"
+
+    def test_una_descarga_truncada_no_sustituye_al_fichero_bueno_previo(self):
+        self.destino.mkdir(parents=True)
+        self.kev.write_bytes(KEV_PRUEBA)
+        self.edb.write_bytes(EDB_PRUEBA)
+        for fichero in (self.kev, self.edb):
+            os.utime(fichero, (time.time() - 3 * 86400,) * 2)
+        antes = (self.kev.read_bytes(), self.edb.read_bytes())
+        csv_cortado = b"id,file,description,date_published,codes\r\n"  # solo la cabecera: parece válido
+        # El KEV de prueba es un JSON completo y válido: solo el Content-Length delata que faltan bytes.
+        for nombre, cuerpo, anunciado in (("CSV", csv_cortado, len(csv_cortado) + 5000),
+                                          ("KEV", KEV_PRUEBA, len(KEV_PRUEBA) + 5000)):
+            with self.subTest(fuente=nombre):
+                base = self._servidor_truncado(cuerpo, anunciado)
+                mensajes = []
+                kev_url = base if nombre == "KEV" else "http://127.0.0.1:1/kev.json"
+                edb_url = base if nombre == "CSV" else "http://127.0.0.1:1/f.csv"
+                with mock.patch.multiple(exploits, KEV_URL=kev_url, EXPLOITDB_URL=edb_url):
+                    exploits.actualizar_fuentes(self.destino, False, log=mensajes.append)
+                self.assertEqual((self.kev.read_bytes(), self.edb.read_bytes()), antes)
+                self.assertTrue(any("No se pudo descargar " + ("Exploit-DB" if nombre == "CSV" else "CISA KEV") in m for m in mensajes))
+                self.assertEqual(self._restos(), [])
+
+    def test_sin_content_length_un_csv_que_no_acaba_en_salto_de_linea_se_rechaza(self):
+        self.destino.mkdir(parents=True)
+        self.edb.write_bytes(EDB_PRUEBA)
+        os.utime(self.edb, (time.time() - 3 * 86400,) * 2)
+        cortado = EDB_PRUEBA + b"50384,exploits/multiple/50384.txt,Cort"
+        base = self._servidor_truncado(cortado, 0, con_longitud=False)
+        with mock.patch.multiple(exploits, KEV_URL="http://127.0.0.1:1/kev.json", EXPLOITDB_URL=base):
+            exploits.actualizar_fuentes(self.destino, False, log=lambda *_: None)
+        self.assertEqual(self.edb.read_bytes(), EDB_PRUEBA)
+
     def test_un_fichero_bueno_previo_sobrevive_a_una_descarga_fallida_o_basura(self):
         self.destino.mkdir(parents=True)
         self.kev.write_bytes(KEV_PRUEBA)
