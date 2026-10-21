@@ -184,3 +184,54 @@ class CpesDelServicioTests(unittest.TestCase):
 
     def test_sin_producto_no_hay_cpe(self):
         self.assertEqual(vulnerabilidades.cpes_del_servicio([], [self.lectura("", "1.0", 99)]), [])
+
+
+class OrdenarServiciosTests(unittest.TestCase):
+    """El orden determinista con que se listan los servicios: confirmado, crítica, CVE, PoC, nada."""
+
+    @staticmethod
+    def servicio(ip, puerto, estado="ok", *vulns):
+        return {"ip": ip, "protocolo": "tcp", "puerto": puerto, "estado": estado, "vulns": list(vulns)}
+
+    @staticmethod
+    def vuln(cve_id, severidad="HIGH", nivel="ninguno"):
+        return {"cve": cve_id, "severidad": severidad, "exploit_nivel": nivel, "enlaces_exploit": [], "cpe": "c", "fuente_cpe": "nmap"}
+
+    def test_sorts_by_priority_then_numeric_ip_and_port(self):
+        servicios = [
+            self.servicio("10.0.0.10", 80),
+            self.servicio("10.0.0.9", 80, "ok", self.vuln("CVE-2026-0002")),
+            self.servicio("10.0.0.2", 443, "ok", self.vuln("CVE-2026-0003", "CRITICAL")),
+            self.servicio("10.0.0.20", 22, "ok", self.vuln("CVE-2026-0004", "LOW", "confirmado")),
+            self.servicio("10.0.0.2", 22, "ok", self.vuln("CVE-2026-0005")),
+        ]
+        orden = vulnerabilidades.ordenar_servicios(servicios)
+        self.assertEqual([(s["ip"], s["puerto"], s["prioridad"]) for s in orden],
+                         [("10.0.0.20", 22, 0), ("10.0.0.2", 443, 1), ("10.0.0.2", 22, 2), ("10.0.0.9", 80, 2), ("10.0.0.10", 80, 4)])
+
+    def test_sorts_the_vulns_of_a_service_exploit_first_then_severity_then_cve(self):
+        servicio = self.servicio("10.0.0.1", 22, "ok", self.vuln("CVE-2026-0003", "LOW"), self.vuln("CVE-2026-0002", "CRITICAL"),
+                                 self.vuln("CVE-2026-0004", "MEDIUM", "sin_verificar"), self.vuln("CVE-2026-0001", "CRITICAL"),
+                                 self.vuln("CVE-2026-0009", "LOW", "confirmado"))
+        vulns = vulnerabilidades.ordenar_servicios([servicio])[0]["vulns"]
+        self.assertEqual([v["cve"] for v in vulns],
+                         ["CVE-2026-0009", "CVE-2026-0004", "CVE-2026-0001", "CVE-2026-0002", "CVE-2026-0003"])
+
+    def test_adds_the_nvd_link_and_does_not_touch_the_input(self):
+        servicio = self.servicio("10.0.0.1", 22, "ok", self.vuln("CVE-2026-0001"))
+        orden = vulnerabilidades.ordenar_servicios([servicio])
+        self.assertEqual(orden[0]["vulns"][0]["enlace"], "https://nvd.nist.gov/vuln/detail/CVE-2026-0001")
+        self.assertNotIn("prioridad", servicio)
+        self.assertNotIn("enlace", servicio["vulns"][0])
+
+    def test_no_data_does_not_get_a_priority_and_comes_after_the_clean_ones_only_by_address(self):
+        orden = vulnerabilidades.ordenar_servicios([self.servicio("10.0.0.2", 80, "sin_datos"), self.servicio("10.0.0.1", 80)])
+        self.assertEqual([(s["ip"], s["estado"], s["prioridad"]) for s in orden],
+                         [("10.0.0.1", "ok", 4), ("10.0.0.2", "sin_datos", None)])
+
+    def test_the_export_state_tells_every_case_apart(self):
+        estado = vulnerabilidades.estado_servicio
+        self.assertEqual(estado(None), "")
+        self.assertEqual(estado(self.servicio("10.0.0.1", 80, "sin_datos")), "sin_datos")
+        self.assertEqual(estado(self.servicio("10.0.0.1", 80)), "sin_vulnerabilidades")
+        self.assertEqual(estado(self.servicio("10.0.0.1", 80, "ok", self.vuln("CVE-2026-0001"))), "con_vulnerabilidades")

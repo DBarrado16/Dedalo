@@ -2119,6 +2119,90 @@ class PortalTests(unittest.TestCase):
         job = self.create()
         self.assertEqual(self.request("/api/jobs/" + job["id"] + "/detener-vulnerabilidades", {})[0], 409)
 
+    # --- Las vulnerabilidades en las exportaciones, el detalle y la priorización con IA ---
+
+    def crossed_job(self):
+        """Un trabajo ya cruzado: 10.10.5.10:22 con una CVE crítica con exploit confirmado, 10.10.6.20:80 limpio y el resto sin datos."""
+        job_id = self.vuln_job()
+        self.seed_nvd(self.nvd_item("CVE-2026-0001", "openssh", "openbsd", "9.7", "CRITICAL"))
+        kev = self.store.root / "vulnerabilidades" / "kev.json"
+        kev.parent.mkdir(exist_ok=True)
+        kev.write_text(json.dumps({"vulnerabilities": [{"cveID": "CVE-2026-0001"}]}), encoding="utf-8")
+        with patch("dedalo.web.cve.actualizar_base"), patch("dedalo.web.cve.consultar_online", return_value=None), \
+                patch("dedalo.web.exploits.buscar_github", return_value=[]):
+            self.run_vuln(job_id)
+        return job_id
+
+    def inventory_csv(self, job_id):
+        status, content = self.request("/api/jobs/" + job_id + "/download/inventory-csv")
+        self.assertEqual(status, 200)
+        return {(r["ip"], r["puerto"]): r for r in csv.DictReader(io.StringIO(content.decode("utf-8-sig")))}
+
+    def test_the_inventory_exports_carry_the_crossed_vulnerabilities_and_keep_no_data_apart_from_clean(self):
+        job_id = self.crossed_job()
+        rows = self.inventory_csv(job_id)
+        ssh = rows[("10.10.5.10", "22")]
+        self.assertEqual((ssh["vuln_estado"], ssh["vuln_cves"], ssh["vuln_severidades"], ssh["vuln_exploits"], ssh["vuln_prioridad"]),
+                         ("con_vulnerabilidades", "CVE-2026-0001", "CRITICAL", "confirmado", "0"))
+        self.assertEqual(rows[("10.10.6.20", "80")]["vuln_estado"], "sin_vulnerabilidades")  # miró y está limpio
+        self.assertEqual(rows[("10.10.5.10", "80")]["vuln_estado"], "sin_datos")  # sin CPE: no se pudo mirar
+        self.assertEqual(rows[("192.168.1.8", "443")]["vuln_estado"], "")  # fuera de alcance: no se cruzó
+        inventario = json.loads(self.request("/api/jobs/" + job_id + "/inventory")[1])
+        servicio = next(s for a in inventario["activos"] if a["ip"] == "10.10.5.10" for s in a["servicios"] if s["puerto"] == 22)
+        self.assertEqual(([v["cve"] for v in servicio["vulnerabilidades"]], servicio["vuln_estado"], servicio["vuln_prioridad"]),
+                         (["CVE-2026-0001"], "con_vulnerabilidades", 0))
+
+    def test_a_host_excluded_after_the_crossing_leaves_the_exports_and_the_detail(self):
+        job_id = self.crossed_job()
+        self.store.update_audit(self.audit["id"], {"nombre": "Cliente de prueba", "incluir": "10.10.0.0/17", "excluir": "10.10.5.10"})
+        row = self.inventory_csv(job_id)[("10.10.5.10", "22")]
+        self.assertEqual((row["vuln_estado"], row["vuln_cves"]), ("", ""))
+        self.assertNotIn("10.10.5.10", [s["ip"] for s in self.store.detail(job_id)["vulnerabilidades"]])
+        self.assertNotIn("CVE-2026-0001", json.dumps(json.loads(self.request("/api/jobs/" + job_id + "/inventory")[1])))
+
+    def test_the_detail_lists_the_services_in_the_deterministic_order_with_their_priority(self):
+        job_id = self.crossed_job()
+        servicios = self.store.detail(job_id)["vulnerabilidades"]
+        self.assertEqual((servicios[0]["ip"], servicios[0]["puerto"], servicios[0]["prioridad"]), ("10.10.5.10", 22, 0))
+        self.assertEqual(servicios[0]["vulns"][0]["enlace"], "https://nvd.nist.gov/vuln/detail/CVE-2026-0001")
+        claves = [4 if s["prioridad"] is None else s["prioridad"] for s in servicios]  # sin datos cuenta como «nada» al ordenar
+        self.assertEqual(claves, sorted(claves))
+        self.assertIsNone(next(s for s in servicios if (s["ip"], s["puerto"]) == ("10.10.5.10", 80))["prioridad"])  # sin_datos
+
+    def test_the_capture_index_download_adds_the_vulnerabilities_without_rewriting_the_file(self):
+        job_id = self.crossed_job()
+        root = self.store.directory(job_id) / "resultado"
+        root.mkdir()
+        grupos = self.store.jobs[job_id]["grupos"]
+        report.write_index(root, {"version": 1, "grupos": grupos})
+        antes = (root / "indice.csv").read_bytes()
+        status, content = self.request("/api/jobs/" + job_id + "/download/csv")
+        self.assertEqual(status, 200)
+        filas = {(r["ip"], r["puerto"]): r for r in csv.DictReader(io.StringIO(content.decode("utf-8-sig")))}
+        self.assertEqual(filas[("10.10.6.20", "80")]["vuln_estado"], "sin_vulnerabilidades")
+        self.assertEqual(filas[("10.10.5.10", "80")]["vuln_estado"], "sin_datos")
+        self.assertNotIn(("10.10.5.10", "22"), filas)  # el puerto 22 no es un objetivo web
+        self.assertEqual((root / "indice.csv").read_bytes(), antes)  # el archivo del disco no cambia
+
+    def test_the_capture_index_download_without_a_crossing_has_the_columns_empty(self):
+        job = self.create()
+        root = self.store.directory(job["id"]) / "resultado"
+        root.mkdir()
+        report.write_index(root, {"version": 1, "grupos": self.store.jobs[job["id"]]["grupos"]})
+        content = self.request("/api/jobs/" + job["id"] + "/download/csv")[1]
+        filas = list(csv.DictReader(io.StringIO(content.decode("utf-8-sig"))))
+        self.assertTrue(filas)
+        self.assertEqual({f["vuln_estado"] + f["vuln_cves"] for f in filas}, {""})
+
+    def test_the_ai_prioritisation_gets_the_crossed_vulnerabilities_of_each_service(self):
+        job_id = self.crossed_job()
+        modelo = model_waiting_at(99, threading.Event())
+        self.assertEqual(self.analyse(job_id, modelo)["analisis"]["estado"], "completa")
+        con_cve = next(p for p in modelo.calls if '"ip": "10.10.5.10"' in p)
+        sin_cve = next(p for p in modelo.calls if '"ip": "10.10.6.20"' in p)
+        self.assertIn('{"cve": "CVE-2026-0001", "severidad": "CRITICAL", "exploit": "confirmado"}', con_cve)
+        self.assertNotIn("vulnerabilidades", sin_cve)
+
     def test_the_nvd_update_in_the_background_respects_the_switch_and_the_base_is_updated_once(self):
         with patch("dedalo.web.cve.actualizar_base") as actualizar:
             thread = self.store.actualizar_nvd_en_segundo_plano()

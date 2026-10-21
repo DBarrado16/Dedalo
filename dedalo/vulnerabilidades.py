@@ -7,6 +7,7 @@ activos en alcance, recomprobado justo antes (CONTRATOS §0.3), porque aquí pue
 
 from __future__ import annotations
 
+import ipaddress
 import re
 
 from . import cve, exploits
@@ -121,3 +122,75 @@ def orden(vulns: list[dict]) -> int:
     if any(v.get("exploit_nivel") == SIN_VERIFICAR for v in vulns):
         return 3
     return 4
+
+
+_SEVERIDAD = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+_EXPLOIT = {CONFIRMADO: 0, SIN_VERIFICAR: 1}
+_CVE_ID = re.compile(r"CVE-\d{4}-\d{4,}\Z")
+
+
+def _clave_vuln(vuln: dict) -> tuple:
+    """Dentro de un servicio: primero lo que tiene exploit confirmado, luego PoC, luego por severidad y por CVE."""
+    return (_EXPLOIT.get(vuln.get("exploit_nivel"), 2), _SEVERIDAD.get(str(vuln.get("severidad", "")).upper(), 4), vuln.get("cve", ""))
+
+
+def _clave_servicio(servicio: dict) -> tuple:
+    try:
+        ip = ipaddress.ip_address(servicio["ip"])
+        direccion = (ip.version, int(ip))
+    except ValueError:
+        direccion = (0, 0)
+    return (servicio["prioridad"] if servicio["prioridad"] is not None else 4, direccion, servicio["ip"], servicio["protocolo"], servicio["puerto"])
+
+
+def ordenar_servicios(servicios: list[dict]) -> list[dict]:
+    """Los resultados de `auditoria.vuln_results` en orden determinista y con su prioridad (ver `orden`), sin tocar la entrada.
+
+    Cada servicio sale con `prioridad` (0-4; `None` si no hubo datos: no se sabe si es limpio) y sus `vulns` ordenadas
+    de más a menos urgentes, cada una con el `enlace` a su ficha en la NVD. Entre servicios: prioridad, luego IP
+    (numérica), protocolo y puerto.
+    """
+    salida = []
+    for servicio in servicios:
+        vulns = [v | {"enlace": URL_CVE.format(id=v["cve"]) if _CVE_ID.match(v.get("cve", "")) else ""}
+                 for v in sorted(servicio["vulns"], key=_clave_vuln)]
+        prioridad = None if servicio["estado"] == "sin_datos" else orden(vulns)
+        salida.append(servicio | {"vulns": vulns, "prioridad": prioridad})
+    return sorted(salida, key=_clave_servicio)
+
+
+def estado_servicio(servicio: dict | None) -> str:
+    """Cómo se exporta lo que el cruce dijo de un servicio.
+
+    "" no se cruzó (o no está en el resultado); "sin_datos" no se pudo mirar; "sin_vulnerabilidades" se miró y está limpio;
+    "con_vulnerabilidades" tiene alguna CVE. «sin_datos» nunca se presenta como limpio.
+    """
+    if servicio is None:
+        return ""
+    if servicio["estado"] == "sin_datos":
+        return "sin_datos"
+    return "con_vulnerabilidades" if servicio["vulns"] else "sin_vulnerabilidades"
+
+
+# Columnas con que las exportaciones (CSV del inventario e índice de capturas) cuentan el resultado del cruce.
+COLUMNAS_EXPORTACION = ["vuln_estado", "vuln_prioridad", "vuln_cves", "vuln_severidades", "vuln_exploits", "vuln_enlaces"]
+
+
+def campos_exportacion(estado: str, prioridad: int | None, vulns: list[dict]) -> dict[str, str]:
+    """Las `COLUMNAS_EXPORTACION` de un servicio: `estado` (ver `estado_servicio`), su prioridad y sus `vulns` ya ordenadas.
+
+    Las listas van alineadas (el CVE n-ésimo, su severidad n-ésima y su nivel de exploit n-ésimo), separadas por «; ».
+    Los enlaces son los del exploit o PoC de cualquiera de ellas, sin repetir; solo se enlazan, nunca se descargan.
+    """
+    enlaces = list(dict.fromkeys(e for v in vulns for e in v.get("enlaces_exploit", [])))
+    return {"vuln_estado": estado, "vuln_prioridad": "" if prioridad is None else str(prioridad),
+            "vuln_cves": "; ".join(v["cve"] for v in vulns),
+            "vuln_severidades": "; ".join(v.get("severidad", "") for v in vulns),
+            "vuln_exploits": "; ".join(v.get("exploit_nivel", "") for v in vulns),
+            "vuln_enlaces": "; ".join(enlaces)}
+
+
+def columnas_tcp(servicios: list[dict]) -> dict[tuple[str, str], dict[str, str]]:
+    """{(ip, "puerto"): columnas vuln_*} de los servicios TCP de `auditoria.vuln_results`, para el índice de capturas."""
+    return {(s["ip"], str(s["puerto"])): campos_exportacion(estado_servicio(s), s["prioridad"], s["vulns"])
+            for s in ordenar_servicios(servicios) if s["protocolo"] == "tcp"}

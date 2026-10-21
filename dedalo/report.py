@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import os
 from pathlib import Path
@@ -11,8 +12,11 @@ import time
 from . import gowitness
 
 MANIFEST = "ejecucion.json"
+# Las seis últimas son lo que dio el cruce de vulnerabilidades (= vulnerabilidades.COLUMNAS_EXPORTACION, que un test
+# comprueba; aquí no se importa para no cerrar un ciclo con auditoria); en blanco hasta que se haga el cruce.
 COLUMNS = ["rango", "subred", "ip", "puerto", "url", "estado", "codigo_http",
-           "titulo", "url_final", "captura", "error"]
+           "titulo", "url_final", "captura", "error",
+           "vuln_estado", "vuln_prioridad", "vuln_cves", "vuln_severidades", "vuln_exploits", "vuln_enlaces"]
 
 
 def _resolved(path: Path) -> Path:
@@ -106,20 +110,33 @@ def csv_text(value):
     return value
 
 
-def write_index(root: Path, manifest: dict) -> None:
+def _write_rows(file, manifest: dict, vulns: dict | None) -> None:
+    """Escribe el índice. `vulns`: {(ip, "puerto"): columnas vuln_*} de los servicios cruzados (ver `vulnerabilidades.columnas_tcp`)."""
+    writer = csv.DictWriter(file, fieldnames=COLUMNS)
+    writer.writeheader()
+    for group in manifest["grupos"]:
+        rows = group.get("resultados")
+        if rows is None:
+            rows = [{
+                "rango": group["rango"], "subred": group["subred"],
+                "ip": target["ip"], "puerto": target["port"], "url": target["url"],
+                "estado": "pendiente",
+            } for target in group["objetivos"]]
+        for row in rows:
+            row = row | (vulns or {}).get((row["ip"], str(row["puerto"])), {})
+            writer.writerow({key: csv_text(value) for key, value in row.items()})
+
+
+def index_bytes(manifest: dict, vulns: dict | None = None) -> bytes:
+    """El índice de capturas con las vulnerabilidades al día, sin escribir nada (lo usa la descarga del portal)."""
+    output = io.StringIO(newline="")
+    _write_rows(output, manifest, vulns)
+    return output.getvalue().encode("utf-8-sig")
+
+
+def write_index(root: Path, manifest: dict, vulns: dict | None = None) -> None:
     temporary = root / "indice.csv.tmp"
     with temporary.open("w", newline="", encoding="utf-8-sig") as file:
-        writer = csv.DictWriter(file, fieldnames=COLUMNS)
-        writer.writeheader()
-        for group in manifest["grupos"]:
-            rows = group.get("resultados")
-            if rows is None:
-                rows = [{
-                    "rango": group["rango"], "subred": group["subred"],
-                    "ip": target["ip"], "puerto": target["port"], "url": target["url"],
-                    "estado": "pendiente",
-                } for target in group["objetivos"]]
-            for row in rows:
-                writer.writerow({key: csv_text(value) for key, value in row.items()})
+        _write_rows(file, manifest, vulns)
     replace(temporary, root / "indice.csv")
     save_manifest(root, manifest)

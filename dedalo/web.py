@@ -573,10 +573,26 @@ class PortalStore:
             with closing(self.database()) as con:
                 scope = auditoria.scope(con, self._imported(con, job_id, meta))
                 hosts = auditoria.observed_hosts(con, job_id)
+                cruce = auditoria.vuln_results(con, job_id)  # solo activos en el alcance vigente
             data = inventory.build(hosts, targets.read_networks_file(directory / "rangos.txt"))
             for asset in data["activos"]:
                 asset["alcance"] = scope.status(asset["ip"])
-            return data
+            return inventory.add_vulns(data, cruce)
+
+    def index_csv(self, job_id):
+        """El índice de capturas (indice.csv) con lo último que dio el cruce de vulnerabilidades, sin escribir nada.
+
+        Se compone al descargar, no al capturar: el cruce va después de la captura y puede repetirse, y un servicio
+        que se excluye después deja de salir (vuln_results solo da los del alcance vigente).
+        """
+        with self.lock:
+            meta = self._meta(job_id)
+            manifest = self._manifest(meta)
+            if manifest is None:  # sin manifiesto legible: se sirve el archivo tal cual (o falla si no existe)
+                return (self.directory(job_id) / "resultado" / "indice.csv").read_bytes()
+            with closing(self.database()) as con:
+                columnas = vulnerabilidades.columnas_tcp(auditoria.vuln_results(con, job_id))
+        return report.index_bytes(manifest, columnas)
 
     def audits(self):
         with self.lock, closing(self.database()) as con:
@@ -698,7 +714,8 @@ class PortalStore:
             response["version"] = auditoria.version_status(con, job_id)
             response["versiones"] = auditoria.version_readings(con, job_id)
             response["vuln"] = auditoria.vuln_status(con, job_id)
-            response["vulnerabilidades"] = auditoria.vuln_results(con, job_id)
+            # En orden determinista (vulnerabilidades.orden) y con la prioridad de cada servicio.
+            response["vulnerabilidades"] = vulnerabilidades.ordenar_servicios(auditoria.vuln_results(con, job_id))
         with self.lock:
             progress = self.analysis_progress.get(job_id)
             progreso_c = self.credential_progress.get(job_id)
@@ -792,6 +809,7 @@ class PortalStore:
                 return  # se canceló mientras esperaba en la cola, o otro lo sustituyó
             current = auditoria.scope(con, auditoria.audit_of(con, job_id))
             observed = auditoria.observed_hosts(con, job_id)
+            cruce = vulnerabilidades.ordenar_servicios(auditoria.vuln_results(con, job_id))  # lo ya cruzado, si se hizo
 
         def generate(prompt):
             return modelo.generate(prompt, model, self.model_host, schema=prioridad.ESQUEMA)
@@ -814,6 +832,10 @@ class PortalStore:
             # y tiene algún puerto abierto: sin servicios, el modelo no tiene nada que valorar.
             hosts = [a for a in inventory.build(observed, [])["activos"]
                      if a["servicios"] and current.status(a["ip"]) == current.IN]
+            vulns = {(s["ip"], s["protocolo"], s["puerto"]): s["vulns"] for s in cruce}
+            for activo in hosts:  # como la detección: a cada servicio, lo que ya se sabe de él (si hubo cruce)
+                for servicio in activo["servicios"]:
+                    servicio["vulns"] = vulns.get((activo["ip"], servicio["protocolo"], servicio["puerto"]), [])
             rows = prioridad.analizar(hosts, generate, parar=stopping, avance=progress)
             state, error = "completa", ""
         except prioridad.Interrumpido:
@@ -1718,9 +1740,12 @@ class PortalHandler(BaseHTTPRequestHandler):
                     self.send_bytes(200, content, "application/zip", filename)
                     return
                 if len(parts) == 5 and parts[3] == "download" and parts[4] in ("csv", "json"):
+                    if parts[4] == "csv":
+                        self.send_bytes(200, store.index_csv(job_id), "application/octet-stream", "indice.csv")
+                        return
                     with store.lock:
                         store._meta(job_id)
-                    filename = "indice.csv" if parts[4] == "csv" else report.MANIFEST
+                    filename = report.MANIFEST
                     artifact = store.directory(job_id) / "resultado" / filename
                     self.send_bytes(200, artifact.read_bytes(), "application/octet-stream", filename)
                     return
