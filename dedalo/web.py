@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import closing
 import copy
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import errno
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
@@ -29,8 +29,8 @@ import webbrowser
 from xml.etree.ElementTree import ParseError
 import zipfile
 
-from . import (auditoria, catalogo, cli, credenciales, db, descubrimiento, favicones, fingerprint, gowitness,
-               inventory, modelo, parser, prioridad, probador, redes, report, targets)
+from . import (auditoria, catalogo, cli, credenciales, cve, db, descubrimiento, exploits, favicones, fingerprint,
+               gowitness, inventory, modelo, parser, prioridad, probador, redes, report, targets, vulnerabilidades)
 
 VERSION_AVISO = ("Con la API de Claude, el HTML y las cabeceras de cada captura salen de tu equipo "
                  "hacia la nube de Anthropic. La clave va en la variable de entorno ANTHROPIC_API_KEY.")
@@ -44,6 +44,12 @@ STATIC_FILES = {
 }
 MAX_BODY = 32 * 1024 * 1024
 ACTIVE = {"en_cola", "en_curso", "deteniendo"}
+# Datos del cruce de vulnerabilidades, dentro de la carpeta de datos del portal: los feeds de la NVD
+# (temporales), y los ficheros públicos de exploits ya descargados (CISA KEV y files_exploits.csv de Exploit-DB).
+CARPETA_VULNS = "vulnerabilidades"
+KEV_FICHERO = "kev.json"
+EXPLOITDB_FICHERO = "files_exploits.csv"
+NVD_VIGENCIA = timedelta(days=1)  # una base NVD actualizada hace menos no se vuelve a bajar al cruzar
 
 
 class Conflict(ValueError):
@@ -121,8 +127,12 @@ class _AlcanceVivo:
 
 class PortalStore:
     def __init__(self, root, binary=None, chrome=None, model=modelo.DEFAULT_MODEL, ollama=modelo.OLLAMA,
-                 dns_dominio="example.com", catalogo_ruta=catalogo.RUTA):
+                 dns_dominio="example.com", catalogo_ruta=catalogo.RUTA, sin_internet=None):
         self.root = Path(root).resolve()
+        # Interruptor global de salidas a internet (NVD, GitHub…): el resto del código lo consulta antes
+        # de cualquier conexión a internet. Orden: argumento (--sin-internet), DEDALO_SIN_INTERNET, False.
+        self.sin_internet = bool(sin_internet) if sin_internet is not None else \
+            os.environ.get("DEDALO_SIN_INTERNET", "").strip().lower() in ("1", "true", "sí", "si")
         self.dns_dominio = dns_dominio
         # Fichero del catálogo de credenciales (compartido por el repo); configurable para apuntar
         # al del equipo. Se vuelca a la base al arrancar y cada vez que se amplía desde el portal.
@@ -172,6 +182,10 @@ class PortalStore:
         self.discovery_progress = {}
         # Servicios ya mirados de la detección de versión en curso; solo en memoria, como el análisis.
         self.version_progress = {}
+        # Servicios ya cruzados del cruce de vulnerabilidades en curso; solo en memoria, como el análisis.
+        self.vuln_progress = {}
+        # Una sola actualización de la base NVD a la vez (la del arranque y la de un cruce no se pisan).
+        self.nvd_lock = threading.Lock()
         # Carpetas antiguas que no se pudieron pasar a la base en este arranque; el
         # portal las muestra (/api/bootstrap) porque no aparecen en el historial.
         self.migration_failures = []
@@ -559,10 +573,26 @@ class PortalStore:
             with closing(self.database()) as con:
                 scope = auditoria.scope(con, self._imported(con, job_id, meta))
                 hosts = auditoria.observed_hosts(con, job_id)
+                cruce = auditoria.vuln_results(con, job_id)  # solo activos en el alcance vigente
             data = inventory.build(hosts, targets.read_networks_file(directory / "rangos.txt"))
             for asset in data["activos"]:
                 asset["alcance"] = scope.status(asset["ip"])
-            return data
+            return inventory.add_vulns(data, cruce)
+
+    def index_csv(self, job_id):
+        """El índice de capturas (indice.csv) con lo último que dio el cruce de vulnerabilidades, sin escribir nada.
+
+        Se compone al descargar, no al capturar: el cruce va después de la captura y puede repetirse, y un servicio
+        que se excluye después deja de salir (vuln_results solo da los del alcance vigente).
+        """
+        with self.lock:
+            meta = self._meta(job_id)
+            manifest = self._manifest(meta)
+            if manifest is None:  # sin manifiesto legible: se sirve el archivo tal cual (o falla si no existe)
+                return (self.directory(job_id) / "resultado" / "indice.csv").read_bytes()
+            with closing(self.database()) as con:
+                columnas = vulnerabilidades.columnas_tcp(auditoria.vuln_results(con, job_id))
+        return report.index_bytes(manifest, columnas)
 
     def audits(self):
         with self.lock, closing(self.database()) as con:
@@ -683,11 +713,15 @@ class PortalStore:
             response["descubrimiento_resultados"] = auditoria.discovery_results(con, job_id)
             response["version"] = auditoria.version_status(con, job_id)
             response["versiones"] = auditoria.version_readings(con, job_id)
+            response["vuln"] = auditoria.vuln_status(con, job_id)
+            # En orden determinista (vulnerabilidades.orden) y con la prioridad de cada servicio.
+            response["vulnerabilidades"] = vulnerabilidades.ordenar_servicios(auditoria.vuln_results(con, job_id))
         with self.lock:
             progress = self.analysis_progress.get(job_id)
             progreso_c = self.credential_progress.get(job_id)
             progreso_d = self.discovery_progress.get(job_id)
             progreso_v = self.version_progress.get(job_id)
+            progreso_vuln = self.vuln_progress.get(job_id)
         if progress and response["analisis"] and response["analisis"]["estado"] in ACTIVE:
             response["analisis"]["progreso"] = progress
         if progreso_c and response["credenciales"] and response["credenciales"]["estado"] in ACTIVE:
@@ -696,6 +730,8 @@ class PortalStore:
             response["descubrimiento"]["progreso"] = progreso_d
         if progreso_v and response["version"] and response["version"]["estado"] in ACTIVE:
             response["version"]["progreso"] = progreso_v
+        if progreso_vuln and response["vuln"] and response["vuln"]["estado"] in ACTIVE:
+            response["vuln"]["progreso"] = progreso_vuln
         return response
 
     def start(self, job_id):
@@ -773,6 +809,7 @@ class PortalStore:
                 return  # se canceló mientras esperaba en la cola, o otro lo sustituyó
             current = auditoria.scope(con, auditoria.audit_of(con, job_id))
             observed = auditoria.observed_hosts(con, job_id)
+            cruce = vulnerabilidades.ordenar_servicios(auditoria.vuln_results(con, job_id))  # lo ya cruzado, si se hizo
 
         def generate(prompt):
             return modelo.generate(prompt, model, self.model_host, schema=prioridad.ESQUEMA)
@@ -795,6 +832,10 @@ class PortalStore:
             # y tiene algún puerto abierto: sin servicios, el modelo no tiene nada que valorar.
             hosts = [a for a in inventory.build(observed, [])["activos"]
                      if a["servicios"] and current.status(a["ip"]) == current.IN]
+            vulns = {(s["ip"], s["protocolo"], s["puerto"]): s["vulns"] for s in cruce}
+            for activo in hosts:  # como la detección: a cada servicio, lo que ya se sabe de él (si hubo cruce)
+                for servicio in activo["servicios"]:
+                    servicio["vulns"] = vulns.get((activo["ip"], servicio["protocolo"], servicio["puerto"]), [])
             rows = prioridad.analizar(hosts, generate, parar=stopping, avance=progress)
             state, error = "completa", ""
         except prioridad.Interrumpido:
@@ -943,6 +984,143 @@ class PortalStore:
                 auditoria.finish_version(con, version_id, filas)
             else:
                 auditoria.set_state(con, version_id, state, error)
+
+    def _nvd_reciente(self, con) -> bool:
+        """Si la base local de la NVD se actualizó hace menos de NVD_VIGENCIA."""
+        try:
+            ultima = datetime.fromisoformat(auditoria.get_config(con, "nvd_actualizada") or "")
+        except ValueError:
+            return False
+        ultima = ultima if ultima.tzinfo else ultima.replace(tzinfo=timezone.utc)
+        return timedelta(0) <= datetime.now(timezone.utc) - ultima < NVD_VIGENCIA
+
+    def actualizar_nvd(self):
+        """Pone al día la base local de CVE (feeds de la NVD) y los ficheros de exploits (CISA KEV y Exploit-DB).
+
+        Cada una se salta si es reciente y las dos respetan `sin_internet`. Un fallo no se propaga: el cruce
+        sigue con lo que haya (la NVD incompleta se marca «sin datos»; sin KEV ni Exploit-DB no hay nivel «confirmado»).
+        """
+        with self.nvd_lock:
+            try:
+                with closing(self.database()) as con:
+                    if not self._nvd_reciente(con):
+                        cve.actualizar_base(con, self.root / CARPETA_VULNS / "nvd", self.sin_internet,
+                                            log=lambda texto: print(texto, flush=True))
+            except Exception as exc:
+                print(f"Error del portal: no se pudo actualizar la base de la NVD: {exc}", file=sys.stderr)
+            try:
+                exploits.actualizar_fuentes(self.root / CARPETA_VULNS, self.sin_internet, log=lambda texto: print(texto, flush=True))
+            except Exception as exc:
+                print(f"Error del portal: no se pudieron actualizar las fuentes de exploits: {exc}", file=sys.stderr)
+
+    def actualizar_nvd_en_segundo_plano(self):
+        """Lanza actualizar_nvd en un hilo aparte al arrancar el portal; con `sin_internet` ni se intenta (None)."""
+        if self.sin_internet:
+            return None
+        hilo = threading.Thread(target=self.actualizar_nvd, name="dedalo-nvd", daemon=True)
+        hilo.start()
+        return hilo
+
+    def cross_vulns(self, job_id, payload=None):
+        """Encola el cruce de vulnerabilidades de los servicios en alcance; solo lee la base al encolar."""
+        with self.lock:
+            meta = self._meta(job_id)
+            if self.closing or meta["estado"] in ACTIVE:
+                raise Conflict("Espera a que termine la captura antes de cruzar vulnerabilidades.")
+            with closing(self.database()) as con:
+                estado = auditoria.vuln_status(con, job_id)
+                if estado and estado["estado"] in ACTIVE:
+                    raise Conflict("Ya hay un cruce de vulnerabilidades de esta ejecución en marcha.")
+                if not auditoria.scope(con, auditoria.audit_of(con, job_id)).include:
+                    raise Conflict("Define el alcance de la ficha antes de cruzar vulnerabilidades.")
+                vuln_id = auditoria.start_vuln(con, job_id, {})
+            self.pending.put(("vuln", (job_id, vuln_id)))
+        return self.detail(job_id)
+
+    def stop_vulns(self, job_id):
+        with self.lock:
+            self._meta(job_id)
+            with closing(self.database()) as con:
+                if auditoria.stop_vuln(con, job_id) is None:
+                    raise Conflict("Esta ejecución no tiene un cruce de vulnerabilidades en marcha.")
+        return self.detail(job_id)
+
+    def _run_vulns(self, job_id, vuln_id):
+        """Nunca tumba el hilo de la cola: si falla, cierra el cruce en error si puede."""
+        try:
+            self._cruzar_vulns(job_id, vuln_id)
+        except Exception as exc:
+            print(f"Error del portal: no se pudo completar el cruce de vulnerabilidades de {job_id}: {exc}", file=sys.stderr)
+            try:
+                with closing(self.database()) as con:
+                    auditoria.set_state(con, vuln_id, "error",
+                                        "No se pudo completar el cruce. Consulta la terminal del portal.")
+            except Exception as again:
+                print(f"Error del portal: no se pudo cerrar el cruce de {job_id}: {again}", file=sys.stderr)
+
+    def _cruzar_vulns(self, job_id, vuln_id):
+        """Cruza cada servicio EN ALCANCE con sus CVE y exploits y lo guarda; ver vulnerabilidades.cruzar_servicio.
+
+        El alcance se recomprueba EN VIVO (_AlcanceVivo) para cada servicio, justo antes de reunir sus CPE y de
+        cruzarlos: ahí puede haber salida a internet (consulta online, PoC en GitHub), y el CPE de un host
+        excluido, aunque sea a mitad del cruce, no sale. El servicio fuera de alcance no se cruza ni se guarda.
+        """
+        with closing(self.database()) as con:
+            if not auditoria.begin_vuln(con, vuln_id):
+                return  # se canceló en la cola, o otro lo sustituyó
+            audit_id = auditoria.audit_of(con, job_id)
+            servicios = auditoria.vuln_services(con, job_id)
+        self.actualizar_nvd()  # antes de cruzar, para no usar una base vieja (no hace nada con sin_internet)
+        datos = self.root / CARPETA_VULNS
+        kev = exploits.cargar_kev(datos / KEV_FICHERO)
+        exploitdb = exploits.cargar_exploitdb(datos / EXPLOITDB_FICHERO)
+        vivo = _AlcanceVivo(self, audit_id)
+
+        def parar():
+            if self.closing:
+                return True
+            with closing(self.database()) as con:
+                estado = auditoria.vuln_status(con, job_id)
+            return estado is None or estado["estado"] == "deteniendo"
+
+        def avance(hechos, total):
+            with self.lock:
+                self.vuln_progress[job_id] = {"hechos": hechos, "total": total}
+
+        filas, respuestas = [], {}  # respuestas: lo ya cruzado por lista de CPE (varios servicios repiten el suyo)
+        state, error = "completa", ""
+        try:
+            avance(0, len(servicios))
+            for hechos, servicio in enumerate(servicios):
+                if parar():
+                    state = "interrumpida"
+                    error = "El portal se cerró antes de terminar el cruce." if self.closing else "Detenido desde el portal antes de terminar."
+                    break
+                if vivo.status(servicio["ip"]) == targets.Scope.IN:
+                    fuentes = {cpe: fuente for fuente, cpe in
+                               vulnerabilidades.cpes_del_servicio(servicio["cpe"], servicio["lecturas"])}
+                    clave = tuple(fuentes)
+                    if clave not in respuestas:
+                        with closing(self.database()) as con:
+                            respuestas[clave] = vulnerabilidades.cruzar_servicio(
+                                con, list(clave), kev, exploitdb, self.sin_internet, buscar_github=exploits.buscar_github)
+                    respuesta = respuestas[clave]
+                    vulns = [v | {"origen_cpe": f"{fuentes[v['origen_cpe']]}|{v['origen_cpe']}"} for v in respuesta["vulns"]]
+                    filas.append({"servicio_id": servicio["servicio_id"], "estado": respuesta["estado"], "vulns": vulns})
+                avance(hechos + 1, len(servicios))
+        except Exception as exc:
+            print(f"Error del portal: no se pudo cruzar vulnerabilidades en {job_id}: {exc}", file=sys.stderr)
+            state = "error"
+            error = str(exc) if isinstance(exc, ValueError) else "No se pudo completar el cruce. Consulta la terminal del portal."
+        finally:
+            with self.lock:
+                self.vuln_progress.pop(job_id, None)
+        # Solo un cruce completo sustituye al anterior: si este falla o se detiene, se sigue viendo el último bueno.
+        with closing(self.database()) as con:
+            if state == "completa":
+                auditoria.finish_vuln(con, vuln_id, filas)
+            else:
+                auditoria.set_state(con, vuln_id, state, error)
 
     def test_credentials(self, job_id, payload=None):
         """Encola la prueba de credenciales por defecto de los hosts en alcance; solo lee la base al encolar."""
@@ -1173,6 +1351,9 @@ class PortalStore:
                 continue
             if kind == "version":
                 self._run_version(*payload)
+                continue
+            if kind == "vuln":
+                self._run_vulns(*payload)
                 continue
             job_id, binary, chrome = payload
             with self.lock:
@@ -1497,6 +1678,12 @@ class PortalHandler(BaseHTTPRequestHandler):
                     if parts[3] == "descubrir":
                         self.json(store.discover(parts[2], payload), 202)
                         return
+                    if parts[3] == "cruzar-vulnerabilidades":
+                        self.json(store.cross_vulns(parts[2], payload), 202)
+                        return
+                    if parts[3] == "detener-vulnerabilidades":
+                        self.json(store.stop_vulns(parts[2]))
+                        return
                     if parts[3] == "detener-descubrimiento":
                         self.json(store.stop_discovery(parts[2]))
                         return
@@ -1553,9 +1740,12 @@ class PortalHandler(BaseHTTPRequestHandler):
                     self.send_bytes(200, content, "application/zip", filename)
                     return
                 if len(parts) == 5 and parts[3] == "download" and parts[4] in ("csv", "json"):
+                    if parts[4] == "csv":
+                        self.send_bytes(200, store.index_csv(job_id), "application/octet-stream", "indice.csv")
+                        return
                     with store.lock:
                         store._meta(job_id)
-                    filename = "indice.csv" if parts[4] == "csv" else report.MANIFEST
+                    filename = report.MANIFEST
                     artifact = store.directory(job_id) / "resultado" / filename
                     self.send_bytes(200, artifact.read_bytes(), "application/octet-stream", filename)
                     return
@@ -1603,7 +1793,8 @@ def serve_portal(args):
         if message:
             print(message, flush=True)
     store = PortalStore(args.datos, args.gowitness, args.chrome, model=args.modelo, ollama=args.ollama,
-                        dns_dominio=args.dns_dominio, catalogo_ruta=args.catalogo or catalogo.RUTA)
+                        dns_dominio=args.dns_dominio, catalogo_ruta=args.catalogo or catalogo.RUTA,
+                        sin_internet=True if args.sin_internet else None)  # None: decide DEDALO_SIN_INTERNET
     try:
         server = PortalServer(("127.0.0.1", args.puerto), store)
     except Exception as exc:
@@ -1613,6 +1804,7 @@ def serve_portal(args):
                              "Ciérralo o usa --puerto con otro número.") from exc
         raise
     url = f"http://127.0.0.1:{server.server_address[1]}"
+    store.actualizar_nvd_en_segundo_plano()  # ya enlazado el puerto; por detrás, como Ollama: no espera a la descarga
     print(f"Portal dedalo: {url}\nDatos: {store.root}\nCtrl+C para cerrar.", flush=True)
     if args.abrir:
         webbrowser.open(url)
