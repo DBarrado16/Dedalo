@@ -83,11 +83,17 @@ def main():
     refused = socket.socket()
     refused.bind(("127.0.0.1", 0))
     closed_port = refused.getsockname()[1]
-    threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in (http, https)]
+    # Esquema equivocado: un HTTPS que se pide como http y un HTTP que se pide como https.
+    https_as_http = server("127.0.2.1", 0, "HTTPS")
+    https_as_http.socket = context.wrap_socket(https_as_http.socket, server_side=True)
+    http_as_https = server("127.0.3.1", 0, "HTTP")
+    servers = (http, https, https_as_http, http_as_https)
+    threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in servers]
     for thread in threads:
         thread.start()
 
     http_port, https_port = http.server_address[1], https.server_address[1]
+    wrong_http_port, wrong_https_port = https_as_http.server_address[1], http_as_https.server_address[1]
     nmap = destination / "local.xml"
     nmap.write_text(f"""<nmaprun>
 <host><status state="up"/><address addr="127.0.0.1" addrtype="ipv4"/><ports>
@@ -96,6 +102,12 @@ def main():
 </ports></host>
 <host><status state="up"/><address addr="127.0.1.1" addrtype="ipv4"/><ports>
 <port protocol="tcp" portid="{https_port}"><state state="open"/><service name="http" tunnel="ssl"/></port>
+</ports></host>
+<host><status state="up"/><address addr="127.0.2.1" addrtype="ipv4"/><ports>
+<port protocol="tcp" portid="{wrong_http_port}"><state state="open"/><service name="http"/></port>
+</ports></host>
+<host><status state="up"/><address addr="127.0.3.1" addrtype="ipv4"/><ports>
+<port protocol="tcp" portid="{wrong_https_port}"><state state="open"/><service name="http" tunnel="ssl"/></port>
 </ports></host></nmaprun>""", encoding="utf-8")
     ranges = destination / "rangos.txt"
     ranges.write_text("127.0.0.0/8\n")
@@ -105,25 +117,42 @@ def main():
         if not browser:
             raise RuntimeError("Esta prueba necesita Chrome/Chromium/Edge instalado para evitar descargas.")
         args = ["capturar", str(nmap), "-r", str(ranges), "-o", str(output),
-                "--puertos", f"{http_port}=http,{https_port}=https,{closed_port}=http",
+                "--puertos", f"{http_port}=http,{https_port}=https,{closed_port}=http,"
+                             f"{wrong_http_port}=http,{wrong_https_port}=https",
                 "--chrome", browser, "--timeout", "12", "--delay", "1", "--hilos", "2", "--formato", "png"]
         run(args + ["--simular"], destination / "simulacion.log")
         assert not output.exists()
         run(args, destination / "captura.log", expected=3)
         manifest = report.load_manifest(output)
-        assert len(manifest["grupos"]) == 2
-        assert sum(g["capturas"] for g in manifest["grupos"]) == 2
+        assert len(manifest["grupos"]) == 4
+        assert sum(g["capturas"] for g in manifest["grupos"]) == 4
         assert sum(g["sin_captura"] for g in manifest["grupos"]) == 1
         rows = [row for g in manifest["grupos"] for row in g["resultados"]]
         successes = [row for row in rows if row["captura"]]
         assert {row["titulo"] for row in successes} == {"Prueba local HTTP", "Prueba local HTTPS"}
+        # Esquema equivocado: la fila conserva la URL del objetivo y url_final lleva el otro esquema.
+        wrong = {row["ip"]: row for row in rows if row["ip"] in ("127.0.2.1", "127.0.3.1")}
+        for ip, target_scheme, real_scheme in (("127.0.2.1", "http", "https"), ("127.0.3.1", "https", "http")):
+            row = wrong[ip]
+            assert row["estado"] == "capturada", row
+            assert row["url"].startswith(target_scheme + "://"), row
+            assert row["url_final"].startswith(real_scheme + "://"), row
+            group = next(g for g in manifest["grupos"] if g["subred"] == f"{ip.rsplit('.', 1)[0]}.0/24")
+            assert (output / group["carpeta"] / gowitness.SCHEME_URLS).is_file()
+            assert (output / group["carpeta"] / gowitness.SCHEME_LOG).is_file()
         assert next(row for row in successes if row["ip"] == "127.0.0.1")["url_final"].endswith("/portal")
         for row in successes:
             assert (output / row["captura"]).read_bytes().startswith(b"\x89PNG")
         for group in manifest["grupos"]:
             actual = gowitness.read_results(output / group["carpeta"] / gowitness.DB_NAME)
             requested = {gowitness.normalize_url(t["url"]) for t in group["objetivos"]}
-            assert set(actual).issubset(requested), "gowitness añadió URLs no solicitadas"
+            # La pasada de esquema solo añade el otro esquema de las URL que ella misma lista.
+            scheme_file = output / group["carpeta"] / gowitness.SCHEME_URLS
+            scheme_urls = ({gowitness.normalize_url(u) for u in scheme_file.read_text(encoding="utf-8").split()}
+                           if scheme_file.is_file() else set())
+            assert scheme_urls <= {gowitness.normalize_url(gowitness.other_scheme(t["url"]))
+                                   for t in group["objetivos"]}
+            assert set(actual).issubset(requested | scheme_urls), "gowitness añadió URLs no solicitadas"
             log_text = (output / group["carpeta"] / "gowitness.log").read_text(encoding="utf-8")
             attempted = {gowitness.normalize_url(u) for u in re.findall(r'target=(https?://[^\s"]+)', log_text)}
             assert attempted == requested, f"URLs ejecutadas distintas de las solicitadas: {attempted ^ requested}"
@@ -134,7 +163,7 @@ def main():
         run(["ver", str(output), "127.0.0.0/8", "--preparar"], destination / "rango.log")
         combined_output = run(["ver", str(output), "--preparar"], destination / "todo.log")
         view = Path(next(line.removeprefix("Vista: ") for line in combined_output.splitlines() if line.startswith("Vista: ")))
-        assert len(gowitness.read_results(view / gowitness.DB_NAME)) == 2
+        assert len(gowitness.read_results(view / gowitness.DB_NAME)) == 4
 
         with socket.socket() as free_port:
             free_port.bind(("127.0.0.1", 0))
@@ -166,10 +195,10 @@ def main():
         print(f"OK: HTTP + HTTPS + redirección + fallo + índices + vistas + servidor web.\nResultados: {output}", flush=True)
         (destination / "validacion.json").write_text(json.dumps({
             "resultado": "OK", "http_puerto": http_port, "https_puerto": https_port,
-            "capturas": 2, "sin_captura": 1, "vista": str(view), "salida": str(output),
+            "capturas": 4, "sin_captura": 1, "vista": str(view), "salida": str(output),
         }, indent=2), encoding="utf-8")
     finally:
-        for instance in (http, https):
+        for instance in servers:
             instance.shutdown()
             instance.server_close()
         for thread in threads:
