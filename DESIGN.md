@@ -35,6 +35,7 @@ El rojo claro de la marca sirve como enlace en oscuro para mantener el contraste
 - Bordes de 3–4 px de radio en controles e imágenes; 8 px en diálogos. Sin sombras de tarjetas ni fondos borrosos.
 - Las capturas no se envuelven en otra tarjeta: imagen y ficha comparten alineación.
 - Los errores de captura ocupan el espacio de la imagen y explican el motivo.
+- Vulnerabilidades (pestaña propia y columna del inventario): sin tokens nuevos. Crítica, alta y exploit confirmado usan el token de error; media y PoC sin verificar, el de atención; baja y «Sin datos», el secundario; «Sin vulnerabilidades», el de éxito. Cada marca lleva su texto, y «Sin datos» nunca se pinta como «Sin vulnerabilidades». Los enlaces externos (NVD, exploits) solo se enlazan si son http(s) y abren con `rel="noopener noreferrer"`.
 - Foco visible de 2 px. Los controles de archivos tienen foco en el contenedor. Los diálogos conservan cierre por Escape y restauración del foco.
 - Los temas se guardan en `dedalo-theme`; se recupera la preferencia anterior de `prometheus-theme` si todavía no existe una válida. Sin elección previa, se respeta el sistema. La paleta no altera las imágenes capturadas.
 - Rejilla de capturas adaptable. A 760 px o menos, historial horizontal y filtros en dos columnas; búsqueda y estado ocupan la fila completa. Las tablas tienen desplazamiento propio.
