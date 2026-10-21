@@ -26,10 +26,19 @@ class CompararVersionesTests(unittest.TestCase):
         self.assertEqual(cve.comparar_versiones("1.0.0", "1.0"), 0)
         self.assertEqual(cve.comparar_versiones("2.4.59", "2.4.59"), 0)
 
-    def test_componentes_no_numericos_son_lexicograficos(self):
+    def test_sufijos_se_comparan_como_texto_tras_el_numero(self):
         self.assertEqual(cve.comparar_versiones("1.0.a", "1.0.b"), -1)
         self.assertEqual(cve.comparar_versiones("1.0.b", "1.0.a"), 1)
         self.assertEqual(cve.comparar_versiones("1.0a", "1.0a"), 0)
+        self.assertEqual(cve.comparar_versiones("1.0a", "1.0b"), -1)
+
+    def test_numero_inicial_manda_sobre_el_sufijo_openssh(self):
+        self.assertEqual(cve.comparar_versiones("7.4p1", "7.10p1"), -1)
+        self.assertEqual(cve.comparar_versiones("7.10p1", "7.4p1"), 1)
+        self.assertEqual(cve.comparar_versiones("9.8p1", "9.10p1"), -1)
+        self.assertEqual(cve.comparar_versiones("9.10p1", "9.8p1"), 1)
+        self.assertEqual(cve.comparar_versiones("7.4p1", "7.4p2"), -1)
+        self.assertEqual(cve.comparar_versiones("7.4p1", "7.4"), 1)
 
     def test_version_mas_larga_con_resto_no_nulo_es_mayor(self):
         self.assertEqual(cve.comparar_versiones("1.0", "1.0.1"), -1)
@@ -107,6 +116,14 @@ class CvesDeTests(unittest.TestCase):
         for cpe in ("", "no es un cpe", "cpe:/a", "cpe:/a:apache"):
             with self.subTest(cpe=cpe):
                 self.assertEqual(cve.cves_de(self.con, cpe), [])
+
+    def test_versiones_con_sufijo_respetan_el_rango_numerico(self):
+        cve.guardar_cves(self.con, [
+            item("CVE-2026-0010", [regla("openssh", vendor="openbsd", v_fin="7.9", v_fin_incl=1)]),    # <= 7.9
+            item("CVE-2026-0011", [regla("openssh", vendor="openbsd", v_ini="7.10", v_fin="8.0")]),    # 7.10 <= v < 8.0
+        ])
+        self.assertEqual(self.ids(cve.cves_de(self.con, "cpe:/a:openbsd:openssh:7.10p1")), ["CVE-2026-0011"])
+        self.assertEqual(self.ids(cve.cves_de(self.con, "cpe:/a:openbsd:openssh:7.4p1")), ["CVE-2026-0010"])
 
     def test_cada_cve_sale_una_vez_aunque_casen_varias_reglas(self):
         cve.guardar_cves(self.con, [item("CVE-2026-0009", [regla("http_server", v_fin="3.0"),

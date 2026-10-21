@@ -6,25 +6,31 @@ quien los descargue (NVD) los convierte al formato de `guardar_cves`.
 
 from __future__ import annotations
 
+import re
 from urllib.parse import unquote
 
 
-def _componentes(version: str) -> list[str]:
-    return [parte or "0" for parte in version.strip().lower().split(".")]
+def _componente(texto: str) -> tuple[int, str]:
+    """«10p1» -> (10, «p1»): los dígitos iniciales como número y el resto como sufijo."""
+    digitos, sufijo = re.match(r"(\d*)(.*)", texto).groups()
+    return int(digitos or 0), sufijo
+
+
+def _componentes(version: str) -> list[tuple[int, str]]:
+    return [_componente(parte) for parte in version.strip().lower().split(".")]
 
 
 def comparar_versiones(a: str, b: str) -> int:
     """-1, 0 o 1 según `a` sea menor, igual o mayor que `b`.
 
-    Se parte por puntos; los componentes numéricos se comparan como números y, si alguno
-    no lo es, como texto. Al más corto se le completa con ceros: «1.0» y «1.0.0» son iguales.
+    Se parte por puntos y cada componente por (dígitos iniciales como número, sufijo como texto):
+    «7.4p1» < «7.10p1» porque 4 < 10, y «7.4p1» < «7.4p2» por el sufijo. Al más corto se le
+    completa con ceros: «1.0» y «1.0.0» son iguales.
     """
     ca, cb = _componentes(a), _componentes(b)
     for i in range(max(len(ca), len(cb))):
-        x = ca[i] if i < len(ca) else "0"
-        y = cb[i] if i < len(cb) else "0"
-        if x.isdecimal() and y.isdecimal():
-            x, y = int(x), int(y)
+        x = ca[i] if i < len(ca) else (0, "")
+        y = cb[i] if i < len(cb) else (0, "")
         if x != y:
             return -1 if x < y else 1
     return 0
