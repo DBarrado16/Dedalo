@@ -146,3 +146,41 @@ class OrdenTests(unittest.TestCase):
     def test_gana_la_mejor_de_la_lista(self):
         mixto = [self.vuln("LOW"), self.vuln("LOW", "confirmado")]
         self.assertEqual(vulnerabilidades.orden(mixto), vulnerabilidades.orden([self.vuln("LOW", "confirmado")]))
+
+
+class CpesDelServicioTests(unittest.TestCase):
+    def lectura(self, producto, version, confianza):
+        return {"producto": producto, "version": version, "confianza": confianza}
+
+    def test_reune_el_cpe_de_nmap_y_el_de_una_deteccion_de_alta_confianza_marcando_su_origen(self):
+        res = vulnerabilidades.cpes_del_servicio(["cpe:/a:openbsd:openssh:9.6"], [self.lectura("OpenSSH", "9.6", 90)])
+        self.assertEqual(res, [("nmap", "cpe:/a:openbsd:openssh:9.6"), ("deteccion", "cpe:/a:*:openssh:9.6")])
+
+    def test_el_umbral_de_alta_confianza_es_ochenta(self):
+        self.assertEqual(vulnerabilidades.CONFIANZA_ALTA, 80)
+        self.assertEqual(vulnerabilidades.cpes_del_servicio([], [self.lectura("nginx", "1.24.0", 80)]),
+                         [("deteccion", "cpe:/a:*:nginx:1.24.0")])
+        self.assertEqual(vulnerabilidades.cpes_del_servicio([], [self.lectura("nginx", "1.24.0", 79)]), [])
+
+    def test_una_lectura_sin_confianza_no_sirve_para_construir_cpe(self):
+        # Las tecnologías de gowitness llegan sin confianza: no son una detección fiable.
+        self.assertEqual(vulnerabilidades.cpes_del_servicio([], [self.lectura("nginx", "1.24.0", None)]), [])
+
+    def test_se_queda_con_el_token_limpio_de_la_version(self):
+        res = vulnerabilidades.cpes_del_servicio([], [self.lectura("Apache", "2.4.59 (Debian)", 95),
+                                                      self.lectura("OpenSSH", "v9.6p1 Ubuntu-3", 95)])
+        self.assertEqual([cpe for _, cpe in res], ["cpe:/a:*:apache:2.4.59", "cpe:/a:*:openssh:9.6p1"])
+
+    def test_una_version_sin_numero_sale_sin_version(self):
+        res = vulnerabilidades.cpes_del_servicio([], [self.lectura("nginx", "desconocida", 95)])
+        self.assertEqual(res, [("deteccion", "cpe:/a:*:nginx:*")])
+
+    def test_un_cpe_repetido_se_queda_con_el_primero(self):
+        res = vulnerabilidades.cpes_del_servicio(["cpe:/a:*:nginx:1.24.0"], [self.lectura("nginx", "1.24.0", 99)])
+        self.assertEqual(res, [("nmap", "cpe:/a:*:nginx:1.24.0")])
+
+    def test_ignora_cpe_de_nmap_que_no_son_texto(self):
+        self.assertEqual(vulnerabilidades.cpes_del_servicio(["", None, "cpe:/a:x:y:1"], []), [("nmap", "cpe:/a:x:y:1")])
+
+    def test_sin_producto_no_hay_cpe(self):
+        self.assertEqual(vulnerabilidades.cpes_del_servicio([], [self.lectura("", "1.0", 99)]), [])

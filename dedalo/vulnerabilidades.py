@@ -7,8 +7,16 @@ activos en alcance, recomprobado justo antes (CONTRATOS §0.3), porque aquí pue
 
 from __future__ import annotations
 
+import re
+
 from . import cve, exploits
 from .auditoria import get_config
+
+# Confianza mínima (0-100) de una lectura de producto/versión de la detección para construir con ella un CPE.
+# Las de gowitness llegan sin confianza y no cuentan; el umbral de la propia detección (MIN_CONFIANZA) es más bajo.
+CONFIANZA_ALTA = 80
+
+_TOKEN_VERSION = re.compile(r"[vV]?(\d[\w.+~-]*)")
 
 URL_CVE = "https://nvd.nist.gov/vuln/detail/{id}"
 
@@ -16,6 +24,33 @@ URL_CVE = "https://nvd.nist.gov/vuln/detail/{id}"
 CONFIRMADO = "confirmado"  # en CISA KEV o Exploit-DB
 SIN_VERIFICAR = "sin_verificar"  # solo un PoC encontrado en GitHub
 NINGUNO = "ninguno"
+
+
+def _token_version(version) -> str:
+    """El primer token numérico de una versión: «2.4.59 (Debian)» -> «2.4.59»; sin número, cadena vacía."""
+    encontrado = _TOKEN_VERSION.match(version.strip()) if isinstance(version, str) else None
+    return encontrado.group(1) if encontrado else ""
+
+
+def cpes_del_servicio(cpe_nmap: list, lecturas: list[dict]) -> list[tuple[str, str]]:
+    """[(fuente, cpe)] de un servicio: los de Nmap y los construidos con la detección de alta confianza.
+
+    `fuente` es "nmap" o "deteccion". De la detección solo cuentan las lecturas con confianza >= CONFIANZA_ALTA
+    y producto; la versión se limpia a su primer token antes de construir el CPE (cpe_desde_deteccion no lo hace,
+    y un «2.4.59 (Debian)» no casaría con ningún rango). Un CPE repetido se queda con la primera fuente.
+    """
+    cpes: dict[str, str] = {}
+    for cpe in cpe_nmap or []:
+        if isinstance(cpe, str) and cpe.strip():
+            cpes.setdefault(cpe.strip(), "nmap")
+    for lectura in lecturas:
+        confianza = lectura.get("confianza")
+        if not isinstance(confianza, int) or isinstance(confianza, bool) or confianza < CONFIANZA_ALTA:
+            continue
+        cpe = cve.cpe_desde_deteccion(lectura.get("producto"), _token_version(lectura.get("version")))
+        if cpe:
+            cpes.setdefault(cpe, "deteccion")
+    return [(fuente, cpe) for cpe, fuente in cpes.items()]
 
 
 def _vuln(fila: dict, cpe: str, sin_version: bool, kev, edb, sin_internet: bool, buscar_github) -> dict:
