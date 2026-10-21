@@ -871,6 +871,21 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(len(seen), 1)
         self.assertNotIn("favicon", seen[0]["datos"])
 
+    def test_with_favicon_rechecks_the_live_scope_on_every_call_without_connecting_when_out(self):
+        _, _, target = self._prepared_version()
+        item = {"servicio_id": 1, "url": target["url"],
+                "datos": {"final_url": target["url"], "html": ""}}
+        vivo = web._AlcanceVivo(self.store, self.audit["id"])
+        contenido = b"favicon de prueba de la tarea 5"
+        catalogo = {"mmh3": {favicones.mmh3_shodan(contenido): {"producto": "RouterOS"}}, "sha256": {}}
+        with patch("dedalo.web.favicones.descargar", return_value=contenido) as descargar:
+            self.assertEqual(self.store._with_favicon(vivo, item, catalogo)["datos"]["favicon"]["producto"], "RouterOS")
+            self.assertEqual(descargar.call_count, 1)
+            # El alcance cambia a mitad: la siguiente llamada, con el mismo objeto, ya no conecta.
+            self.store.update_audit(self.audit["id"], {"nombre": "Cliente de prueba", "incluir": "192.0.2.0/24"})
+            self.assertNotIn("favicon", self.store._with_favicon(vivo, item, catalogo)["datos"])
+            self.assertEqual(descargar.call_count, 1)
+
     def test_subnet_zip_contains_only_that_subnet_captures(self):
         job = self.create()
         meta = self.store.jobs[job["id"]]

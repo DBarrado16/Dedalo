@@ -865,21 +865,19 @@ class PortalStore:
             except Exception as again:
                 print(f"Error del portal: no se pudo cerrar la detección de {job_id}: {again}", file=sys.stderr)
 
-    def _with_favicon(self, audit_id, item, catalogo):
+    def _with_favicon(self, vivo, item, catalogo):
         """Añade datos['favicon'] si el servicio sigue en alcance en vivo y el favicon se identifica.
 
-        El alcance se recomprueba EN VIVO justo antes de conectar (patrón de `probar`, más abajo):
-        una exclusión a mitad de la detección gana y ese servicio no se toca. Un fallo de red, de
-        alcance o del catálogo no detiene la detección: se sigue con el resto de datos (TLS, HTML,
-        cabeceras) tal cual los dejó la captura.
+        `vivo` es un _AlcanceVivo de la ficha: el alcance se recomprueba EN VIVO justo antes de
+        conectar (relee la base solo si cambió): una exclusión a mitad de la detección gana y ese
+        servicio no se toca. Un fallo de red, de alcance o del catálogo no detiene la detección: se
+        sigue con el resto de datos (TLS, HTML, cabeceras) tal cual los dejó la captura.
         """
         datos = dict(item["datos"])
         try:
             base_url = datos.get("final_url") or item["url"]
             ip = urlsplit(base_url).hostname
-            with closing(self.database()) as con:
-                vigente = auditoria.scope(con, audit_id)
-            if ip and vigente.status(ip) == vigente.IN:
+            if ip and vivo.status(ip) == targets.Scope.IN:
                 objetivo = favicones.url_favicon(base_url, datos.get("html", ""))
                 if objetivo is not None:
                     contenido = favicones.descargar(objetivo)
@@ -910,7 +908,8 @@ class PortalStore:
         items = [{"servicio_id": s["servicio_id"], "url": s["url"], "datos": found}
                  for s in servicios if (found := gowitness.find_result(datos, s["url"]))]
         catalogo_favicones = favicones.cargar()
-        items = [self._with_favicon(audit_id, item, catalogo_favicones) for item in items]
+        vivo = _AlcanceVivo(self, audit_id)
+        items = [self._with_favicon(vivo, item, catalogo_favicones) for item in items]
 
         generate = modelo.generador(engine, model, self.model_host, schema=fingerprint.ESQUEMA)
 
