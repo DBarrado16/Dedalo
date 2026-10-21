@@ -49,6 +49,7 @@ Una IP queda en una de estas situaciones:
 2. **Solo se contacta lo que está en alcance.** Las capturas, el descubrimiento DNS y las credenciales —y en el futuro los escaneos— comprueban el alcance justo antes de conectar, no solo al planificar.
 3. Una auditoría sin reglas `incluir` no tiene nada en alcance: se puede importar y consultar, pero no lanzar conexiones. El portal pide definir el alcance.
 4. Cambiar el alcance no borra datos; solo cambia qué se puede contactar a partir de ese momento.
+5. La captura que prueba el otro esquema (http/https) cuando falla el primero solo usa IP:puerto que ya son objetivo y ya pasaron el filtro de alcance: las URL candidatas se derivan de la lista de objetivos, nunca de lo que diga el log, y solo cambian el esquema.
 
 > **Cambio respecto a hoy:** ahora mismo las IP que no están en ningún rango se capturan igualmente, agrupadas en `fuera_de_rango`. Con este contrato dejan de capturarse. Las ejecuciones migradas conservan sus capturas antiguas.
 

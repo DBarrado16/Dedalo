@@ -281,6 +281,34 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(rows["https://10.10.5.10/"]["error"],
                              "También sin imagen al reintentar con el otro motor: context deadline exceeded")
 
+    def test_capture_prueba_el_otro_esquema(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            calls = []
+            def scan(binary, directory, urls, opts, urls_file=gowitness.URLS_FILE, log_name=gowitness.LOG_NAME):
+                calls.append((list(urls), urls_file, log_name))
+                if log_name == gowitness.LOG_NAME and "http://10.10.6.20:8443/" in urls:
+                    # El log nombra también una IP que no es objetivo: no debe generar candidata.
+                    (Path(directory) / log_name).write_text(
+                        'ERRO failed to witness target target=http://10.10.6.20:8443/ err="page load error net::ERR_EMPTY_RESPONSE"\n'
+                        'ERRO failed to witness target target=http://10.9.9.9:8443/ err="page load error net::ERR_EMPTY_RESPONSE"\n',
+                        encoding="utf-8")
+            _, output = self.run_with(Path(temporary) / "salida", scan, ["--puertos", "8443=http"])
+            self.assertEqual(len(calls), 4, calls)       # 3 subredes y la pasada de esquema
+            self.assertEqual([c for c in calls if c[2] == gowitness.SCHEME_LOG],
+                             [(["https://10.10.6.20:8443/"], gowitness.SCHEME_URLS, gowitness.SCHEME_LOG)])
+            self.assertIn("1 sin respuesta; se prueban con el otro esquema (http/https)", output)
+
+    def test_capture_sin_reintento_no_prueba_esquema(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            calls = []
+            def scan(binary, directory, urls, opts, urls_file=gowitness.URLS_FILE, log_name=gowitness.LOG_NAME):
+                calls.append(log_name)
+                (Path(directory) / log_name).write_text(
+                    'ERRO failed to witness target target=http://10.10.6.20:8443/ err="page load error net::ERR_EMPTY_RESPONSE"\n',
+                    encoding="utf-8")
+            self.run_with(Path(temporary) / "salida", scan, ["--puertos", "8443=http", "--sin-reintento"])
+            self.assertEqual(calls, [gowitness.LOG_NAME] * 3)   # una sola pasada por subred
+
     def test_connection_errors_are_not_retried(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -289,6 +317,88 @@ class WorkflowTests(unittest.TestCase):
                 'ERRO could not grab screenshot target=http://10.0.0.2:80/ err="context deadline exceeded"\n', encoding="utf-8")
             self.assertEqual(gowitness.retry_candidates(directory, ["http://10.0.0.1/", "http://10.0.0.2/", "http://10.0.0.3/"]),
                              ["http://10.0.0.2/"])
+
+    def test_other_scheme(self):
+        # El puerto estándar del esquema original pasa a explícito: 80 no es el 443.
+        for url, otra in (("http://10.0.0.1/", "https://10.0.0.1:80/"),
+                          ("https://10.0.0.1/", "http://10.0.0.1:443/"),
+                          ("http://10.0.0.1:8443/", "https://10.0.0.1:8443/"),
+                          ("http://[fe80::1]:8080/", "https://[fe80::1]:8080/")):
+            self.assertEqual(gowitness.other_scheme(url), otra, url)
+
+    def test_scheme_candidates(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / gowitness.LOG_NAME).write_text(
+                'ERRO failed to witness target target=http://10.0.0.1:8443/ err="page load error net::ERR_EMPTY_RESPONSE"\n'
+                'ERRO failed to witness target target=https://10.0.0.2:8080/ err="page load error net::ERR_SSL_PROTOCOL_ERROR"\n'
+                'ERRO failed to witness target target=http://10.0.0.3:80/ err="page load error net::ERR_CONNECTION_REFUSED"\n'
+                'ERRO failed to witness target target=http://10.9.9.9:8443/ err="page load error net::ERR_EMPTY_RESPONSE"\n',
+                encoding="utf-8")
+            # 10.9.9.9 está en el log pero no es objetivo: nunca genera candidata (alcance).
+            urls = ["http://10.0.0.1:8443/", "https://10.0.0.2:8080/", "http://10.0.0.3/"]
+            self.assertEqual(gowitness.scheme_candidates(directory, urls),
+                             ["https://10.0.0.1:8443/", "http://10.0.0.2:8080/"])
+
+    def test_scheme_candidates_ignore_connection_errors_and_captured_urls(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            errores = ("ERR_CONNECTION_REFUSED", "ERR_CONNECTION_TIMED_OUT", "ERR_ADDRESS_UNREACHABLE",
+                       "ERR_NETWORK_ACCESS_DENIED", "ERR_EMPTY_RESPONSE")
+            lines = "".join(f'ERRO failed to witness target target=http://10.0.0.{i}:8080/ err="page load error net::{e}"\n'
+                            for i, e in enumerate(errores, 1))
+            (directory / gowitness.LOG_NAME).write_text(
+                lines + 'ERRO could not grab screenshot target=http://10.0.0.6:8080/ err="ERR_EMPTY_RESPONSE"\n',
+                encoding="utf-8")
+            urls = [f"http://10.0.0.{i}:8080/" for i in range(1, 7)]
+            self.assertEqual(gowitness.scheme_candidates(directory, urls), ["https://10.0.0.5:8080/"])
+            fake_database(directory, ["http://10.0.0.5:8080/"])   # con captura ya no hay candidata
+            self.assertEqual(gowitness.scheme_candidates(directory, urls), [])
+
+    def test_collect_group_usa_el_otro_esquema(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            directory = root / "subnet"
+            fake_database(directory, ["https://10.0.0.1:8443/"])
+            group = {"rango": "fuera_de_rango", "subred": "10.0.0.0/24", "carpeta": "subnet",
+                     "objetivos": [{"ip": "10.0.0.1", "port": 8443, "url": "http://10.0.0.1:8443/"}]}
+            report.collect_group(root, group)
+            fila = group["resultados"][0]
+            # La fila sigue siendo la del objetivo; la URL que respondió se ve en url_final.
+            self.assertEqual((fila["url"], fila["estado"], fila["url_final"]),
+                             ("http://10.0.0.1:8443/", "capturada", "https://10.0.0.1:8443/"))
+            self.assertEqual((group["capturas"], group["sin_captura"], group["estado"]), (1, 0, "completo"))
+            self.assertEqual((directory / "sin_captura.txt").read_text(), "")
+
+    def test_collect_group_ni_http_ni_https(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            directory = root / "subnet"
+            directory.mkdir()
+            (directory / gowitness.LOG_NAME).write_text(
+                'ERRO failed to witness target target=http://10.0.0.1:8443/ err="page load error net::ERR_EMPTY_RESPONSE"\n',
+                encoding="utf-8")
+            (directory / gowitness.SCHEME_LOG).write_text(
+                'ERRO failed to witness target target=https://10.0.0.1:8443/ err="page load error net::ERR_SSL_PROTOCOL_ERROR"\n',
+                encoding="utf-8")
+            group = {"rango": "fuera_de_rango", "subred": "10.0.0.0/24", "carpeta": "subnet",
+                     "objetivos": [{"ip": "10.0.0.1", "port": 8443, "url": "http://10.0.0.1:8443/"}]}
+            report.collect_group(root, group)
+            fila = group["resultados"][0]
+            self.assertEqual((fila["url"], fila["estado"]), ("http://10.0.0.1:8443/", "sin_captura"))
+            self.assertTrue(fila["error"].startswith("Ni http ni https respondieron: "), fila["error"])
+            self.assertIn("ERR_SSL_PROTOCOL_ERROR", fila["error"])
+            self.assertEqual((directory / "sin_captura.txt").read_text().strip(), "http://10.0.0.1:8443/")
+
+    def test_retry_incluye_pasada_de_esquema(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / gowitness.SCHEME_LOG).write_text(
+                'ERRO could not grab screenshot target=https://10.0.0.1:8443/ err="context deadline exceeded"\n',
+                encoding="utf-8")
+            urls, alternativas = ["http://10.0.0.1:8443/"], ["https://10.0.0.1:8443/"]
+            self.assertEqual(gowitness.retry_candidates(directory, urls + alternativas), ["https://10.0.0.1:8443/"])
+            self.assertEqual(gowitness.retry_candidates(directory, urls), [])
 
     def test_failed_binary_continues_other_groups(self):
         with tempfile.TemporaryDirectory() as temporary:

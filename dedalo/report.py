@@ -72,7 +72,9 @@ def collect_group(root: Path, group: dict, error: str = "") -> None:
     errors = gowitness.read_errors(directory)
     rows, missing = [], []
     for target in group["objetivos"]:
-        result = found.get(gowitness.normalize_url(target["url"]))
+        # Si solo respondió el otro esquema, la fila sigue siendo la del objetivo; la URL que
+        # respondió se ve en url_final.
+        result = gowitness.find_result(found, target["url"])
         shot = ""
         if result:
             shot = gowitness.screenshot_path(directory, result["filename"]).relative_to(root).as_posix()
@@ -85,7 +87,7 @@ def collect_group(root: Path, group: dict, error: str = "") -> None:
             "codigo_http": result["response_code"] if result else "",
             "titulo": result["title"] if result else "",
             "url_final": result["final_url"] if result else "",
-            "captura": shot, "error": "" if result else (errors.get(gowitness.normalize_url(target["url"])) or error or "Consultar gowitness.log"),
+            "captura": shot, "error": "" if result else (gowitness.find_error(errors, target["url"]) or error or "Consultar gowitness.log"),
         })
     group["resultados"] = rows
     group["capturas"] = len(rows) - len(missing)

@@ -68,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--driver", choices=gowitness.DRIVERS, default=gowitness.DRIVERS[0],
                          help=f"Motor con el que gowitness maneja el navegador ({gowitness.DRIVERS[0]})")
     capture.add_argument("--sin-reintento", action="store_true",
-                         help="No reintentar con el otro motor las páginas que cargan pero no dan imagen")
+                         help="No probar el otro esquema (http/https) ni reintentar con el otro motor las páginas que cargan pero no dan imagen")
     capture.add_argument("--sin-barra-url", action="store_true",
                          help="No quemar la barra con la URL en las capturas (por defecto sí se quema)")
     capture.add_argument("--chrome", help="Ruta o nombre del ejecutable Chrome/Chromium/Edge")
@@ -199,7 +199,18 @@ def capture(args) -> int:
         try:
             gowitness.scan_subnet(binary, directory, urls, opts)
             stopping = getattr(args, "stop_file", None) and Path(args.stop_file).exists()
-            retry = gowitness.retry_candidates(directory, urls) if opts["retry"] and not stopping else []
+            # Error típico de esquema equivocado: se prueba una vez el otro esquema en el mismo
+            # IP:puerto. Las candidatas salen de los objetivos (ya en alcance), no del log.
+            alternatives = gowitness.scheme_candidates(directory, urls) if opts["retry"] and not stopping else []
+            if alternatives:
+                print(f"  {len(alternatives)} sin respuesta; se prueban con el otro esquema (http/https)...", flush=True)
+                try:
+                    gowitness.scan_subnet(binary, directory, alternatives, opts,
+                                          gowitness.SCHEME_URLS, gowitness.SCHEME_LOG)
+                except (OSError, subprocess.CalledProcessError) as exc:
+                    print(f"  La prueba del otro esquema no pudo completarse: {exc}. Consulta {gowitness.SCHEME_LOG}", file=sys.stderr)
+                stopping = getattr(args, "stop_file", None) and Path(args.stop_file).exists()
+            retry = gowitness.retry_candidates(directory, urls + alternatives) if opts["retry"] and not stopping else []
             if retry:
                 # La página respondió pero no hubo imagen: el otro motor a veces sí la obtiene.
                 other = gowitness.other_driver(opts["driver"])
