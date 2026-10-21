@@ -364,7 +364,9 @@ class WorkflowTests(unittest.TestCase):
                      "objetivos": [{"ip": "10.0.0.1", "port": 8443, "url": "http://10.0.0.1:8443/"}]}
             report.collect_group(root, group)
             fila = group["resultados"][0]
-            self.assertEqual((fila["url"], fila["estado"]), ("https://10.0.0.1:8443/", "capturada"))
+            # La fila sigue siendo la del objetivo; la URL que respondió se ve en url_final.
+            self.assertEqual((fila["url"], fila["estado"], fila["url_final"]),
+                             ("http://10.0.0.1:8443/", "capturada", "https://10.0.0.1:8443/"))
             self.assertEqual((group["capturas"], group["sin_captura"], group["estado"]), (1, 0, "completo"))
             self.assertEqual((directory / "sin_captura.txt").read_text(), "")
 

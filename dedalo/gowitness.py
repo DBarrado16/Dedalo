@@ -229,6 +229,16 @@ def other_scheme(url: str) -> str:
     return urlunsplit((scheme, f"{host}:{port}", parts.path or "/", parts.query, ""))
 
 
+def find_result(found: dict, url: str) -> dict | None:
+    """Resultado de la URL del objetivo o, si no hay, el de su otro esquema (pasada de esquema)."""
+    return found.get(normalize_url(url)) or found.get(normalize_url(other_scheme(url)))
+
+
+def find_error(errors: dict, url: str) -> str | None:
+    """Error de la URL del objetivo; prevalece el del otro esquema, que es el de la última pasada."""
+    return errors.get(normalize_url(other_scheme(url))) or errors.get(normalize_url(url))
+
+
 def scheme_candidates(directory: Path, urls: list[str]) -> list[str]:
     """URL con el otro esquema para las que fallaron como si el esquema fuera el equivocado.
 

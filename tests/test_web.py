@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 import zipfile
 
-from dedalo import auditoria, cli, report, web
+from dedalo import auditoria, cli, gowitness, report, web
 from dedalo.web import PortalStore, PortalServer
 from tests.test_dedalo import ROOT, fake_database
 
@@ -769,6 +769,38 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.request("/api/jobs/" + job["id"] + "/download/../../trabajo.json")[0], 404)
         self.assertEqual(self.request("/api/jobs/" + "a"*32)[0], 404)
         self.assertEqual(self.request("/api/jobs/" + job["id"] + "/image/-1/0")[0], 404)
+
+    def test_target_captured_with_the_other_scheme_is_shown_served_and_not_duplicated(self):
+        job = self.create()
+        meta = self.store.jobs[job["id"]]
+        root = self.store.directory(job["id"]) / "resultado"
+        group = meta["grupos"][0]
+        target = group["objetivos"][0]
+        other = gowitness.other_scheme(target["url"])
+        fake_database(root / group["carpeta"], [other])   # solo respondió el otro esquema
+        report.collect_group(root, group)
+        report.write_index(root, {"version": 1, "grupos": meta["grupos"]})
+        self.assertEqual(group["resultados"][0]["url"], target["url"])
+        # El portal lo da por capturado y sirve la imagen.
+        status, content = self.request("/api/jobs/" + job["id"])
+        self.assertEqual(status, 200)
+        shown = json.loads(content)["grupos"][0]["objetivos"][0]
+        self.assertEqual((shown["url"], shown["estado"]), (target["url"], "capturada"))
+        self.assertTrue(shown["imagen"])
+        self.assertEqual(self.request(shown["imagen"])[:1], (200,))
+        self.assertEqual(self.request(shown["imagen"])[1], b"test-image")
+        # El zip nombra la imagen con el esquema de la fila que respondió.
+        with zipfile.ZipFile(io.BytesIO(self.request("/api/jobs/" + job["id"] + "/download/captures/0")[1])) as archive:
+            scheme = other.split(":", 1)[0]
+            self.assertIn(f"{target['ip']}_{target['port']}_{scheme}.png", archive.namelist())
+        # En la base no queda una fila pendiente huérfana junto a otra capturada.
+        with closing(self.store.database()) as con:
+            capture = auditoria.start_capture(con, job["id"], {}, meta["grupos"])
+            auditoria.record_captures(con, capture, {"grupos": meta["grupos"]}, root, self.store.root)
+            rows = con.execute("SELECT url, estado FROM captura WHERE ejecucion_id = ? ORDER BY url", (capture,)).fetchall()
+        self.assertEqual(len(rows), len({t["url"] for g in meta["grupos"] for t in g["objetivos"]}))
+        self.assertEqual({r["url"]: r["estado"] for r in rows}[target["url"]], "capturada")
+        self.assertNotIn(other, [r["url"] for r in rows])
 
     def test_subnet_zip_contains_only_that_subnet_captures(self):
         job = self.create()

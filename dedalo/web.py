@@ -658,7 +658,7 @@ class PortalStore:
             targets = []
             for number, target in enumerate(group["objetivos"]):
                 row = rows.get(target["url"], {})
-                current = live.get(gowitness.normalize_url(target["url"]))
+                current = gowitness.find_result(live, target["url"])
                 captured = bool(row.get("captura") or current)
                 targets.append({
                     "ip": target["ip"], "puerto": target["port"], "url": target["url"],
@@ -666,7 +666,7 @@ class PortalStore:
                     "codigo": row.get("codigo_http", "") or (current or {}).get("response_code", ""),
                     "url_final": row.get("url_final", "") or (current or {}).get("final_url", ""),
                     "estado": "capturada" if captured else row.get("estado", group["estado"] if group["estado"] == "en_curso" else "pendiente"),
-                    "error": "" if captured else errors.get(gowitness.normalize_url(target["url"]), row.get("error", "")),
+                    "error": "" if captured else gowitness.find_error(errors, target["url"]) or row.get("error", ""),
                     "imagen": f"/api/jobs/{job_id}/image/{index}/{number}" if captured else "",
                 })
             response["grupos"].append({
@@ -1249,7 +1249,7 @@ class PortalStore:
 
     @staticmethod
     def _shot(directory, found, target):
-        row = found.get(gowitness.normalize_url(target["url"]))
+        row = gowitness.find_result(found, target["url"])
         if not row:
             raise FileNotFoundError("Captura no disponible")
         path = gowitness.screenshot_path(directory, row["filename"])
@@ -1277,7 +1277,7 @@ class PortalStore:
                     path, row = self._shot(directory, found, target)
                 except FileNotFoundError:
                     continue
-                scheme = target["url"].split(":", 1)[0]
+                scheme = row["url"].split(":", 1)[0]  # el de la fila que respondió, no el del objetivo
                 name = f"{target['ip'].replace(':', '_')}_{target['port']}_{scheme}{path.suffix.lower()}"
                 archive.write(path, name)
                 writer.writerow([report.csv_text(value) for value in (name, target["ip"], target["port"], target["url"],
