@@ -27,11 +27,13 @@ SCHEME_URLS = "urls-esquema.txt"
 SCHEME_LOG = "gowitness-esquema.log"
 SCHEME_ERRORS = ("ERR_EMPTY_RESPONSE", "ERR_INVALID_HTTP_RESPONSE", "ERR_CONNECTION_RESET",
                  "ERR_CONNECTION_CLOSED", "ERR_SSL_PROTOCOL_ERROR", "ERR_SSL_VERSION_OR_CIPHER_MISMATCH")
+LOGS = (LOG_NAME, SCHEME_LOG, RETRY_LOG)
 # Motores de gowitness para manejar el navegador. gorod va primero: chromedp se
 # queda sin imagen en páginas que gorod captura (probado con scanme.nmap.org y
 # una espera de 3 s o más).
 DRIVERS = ("gorod", "chromedp")
 GRAB_FAILED = "could not grab screenshot"
+WITNESS_FAILED = "failed to witness target"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 VERSION = "3.2.0"
@@ -220,13 +222,9 @@ def other_scheme(url: str) -> str:
     El puerto estándar del esquema original pasa a explícito: http://ip/ es el
     puerto 80, y https://ip/ sería el 443, otro puerto distinto.
     """
-    parts = urlsplit(url)
-    host = parts.hostname or ""
-    if ":" in host:
-        host = f"[{host}]"
-    port = parts.port or {"http": 80, "https": 443}[parts.scheme]
+    parts = urlsplit(explicit_port(url))
     scheme = "https" if parts.scheme == "http" else "http"
-    return urlunsplit((scheme, f"{host}:{port}", parts.path or "/", parts.query, ""))
+    return urlunsplit((scheme, parts.netloc, parts.path or "/", parts.query, ""))
 
 
 def find_result(found: dict, url: str) -> dict | None:
@@ -246,7 +244,9 @@ def scheme_candidates(directory: Path, urls: list[str]) -> list[str]:
     el log: un error de una URL que no es objetivo no genera ninguna candidata.
     """
     wrong = {key for key, kind, message in _log_errors(Path(directory) / LOG_NAME)
-             if kind == "failed to witness target" and any(error in message for error in SCHEME_ERRORS)}
+             if kind == WITNESS_FAILED and any(error in message for error in SCHEME_ERRORS)}
+    if not wrong:
+        return []
     captured = read_results(Path(directory) / DB_NAME)
     return [other_scheme(url) for url in urls if normalize_url(url) in wrong and normalize_url(url) not in captured]
 
@@ -275,7 +275,7 @@ def _log_errors(path: Path):
     try:
         with path.open(encoding="utf-8", errors="replace") as log:
             for line in log:
-                match = re.search(r'(failed to witness target|could not grab screenshot) target=(\S+) err=("(?:[^"\\]|\\.)*")', line)
+                match = re.search(rf'({WITNESS_FAILED}|{GRAB_FAILED}) target=(\S+) err=("(?:[^"\\]|\\.)*")', line)
                 if not match:
                     continue
                 try:

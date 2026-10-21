@@ -21,6 +21,7 @@ import zipfile
 from dedalo import auditoria, cli, gowitness, report, web
 from dedalo.web import PortalStore, PortalServer
 from tests.test_dedalo import ROOT, fake_database
+from tests.test_gowitness_fingerprint import build_gowitness_db
 
 
 def first_image(results):
@@ -801,6 +802,28 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(len(rows), len({t["url"] for g in meta["grupos"] for t in g["objetivos"]}))
         self.assertEqual({r["url"]: r["estado"] for r in rows}[target["url"]], "capturada")
         self.assertNotIn(other, [r["url"] for r in rows])
+
+    def test_version_detection_reads_the_fingerprint_of_the_other_scheme(self):
+        job = self.create()
+        meta = self.store.jobs[job["id"]]
+        root = self.store.directory(job["id"]) / "resultado"
+        group = meta["grupos"][0]
+        target = group["objetivos"][0]
+        (root / group["carpeta"]).mkdir(parents=True, exist_ok=True)
+        # gowitness solo guardó el otro esquema; el servicio consta como capturado con la URL del objetivo.
+        build_gowitness_db(root / group["carpeta"] / gowitness.DB_NAME, gowitness.other_scheme(target["url"]))
+        with closing(self.store.database()) as con:
+            capture = auditoria.start_capture(con, job["id"], {}, meta["grupos"])
+            with con:
+                con.execute("UPDATE captura SET estado = 'capturada' WHERE ejecucion_id = ? AND url = ?",
+                            (capture, target["url"]))
+            version = auditoria.start_version(con, job["id"], {"engine": "ollama", "model": "m"})
+        seen = []
+        with patch("dedalo.web.modelo.generador", return_value=lambda prompt: ""), \
+                patch("dedalo.web.fingerprint.detectar", side_effect=lambda items, *a, **k: seen.extend(items) or []):
+            self.store._detect(job["id"], version, "ollama", "m")
+        self.assertEqual([i["url"] for i in seen], [target["url"]])
+        self.assertIn("nginx/1.18.0", seen[0]["datos"]["headers"].values())
 
     def test_subnet_zip_contains_only_that_subnet_captures(self):
         job = self.create()

@@ -381,7 +381,7 @@ class PortalStore:
         result = self.directory(job_id) / "resultado"
         return [self.directory(job_id) / "proceso.log"] + [
             report.inside(result, g["carpeta"]) / name for g in manifest["grupos"]
-            for name in (gowitness.LOG_NAME, gowitness.SCHEME_LOG, gowitness.RETRY_LOG)]
+            for name in gowitness.LOGS]
 
     def _capture_state(self, job_id, state, error="", record=False, strict=False):
         """Guarda en la base el estado de la captura de un trabajo y, si se pide, sus resultados.
@@ -879,8 +879,8 @@ class PortalStore:
                 datos.update(gowitness.read_fingerprint(base))
             except (OSError, sqlite3.Error, ValueError):
                 continue
-        items = [{"servicio_id": s["servicio_id"], "url": s["url"], "datos": datos[key]}
-                 for s in servicios if (key := gowitness.normalize_url(s["url"])) in datos]
+        items = [{"servicio_id": s["servicio_id"], "url": s["url"], "datos": found}
+                 for s in servicios if (found := gowitness.find_result(datos, s["url"]))]
 
         generate = modelo.generador(engine, model, self.model_host, schema=fingerprint.ESQUEMA)
 
@@ -1277,7 +1277,7 @@ class PortalStore:
                     path, row = self._shot(directory, found, target)
                 except FileNotFoundError:
                     continue
-                scheme = row["url"].split(":", 1)[0]  # el de la fila que respondió, no el del objetivo
+                scheme = urlsplit(row["url"]).scheme  # el de la fila que respondió, no el del objetivo
                 name = f"{target['ip'].replace(':', '_')}_{target['port']}_{scheme}{path.suffix.lower()}"
                 archive.write(path, name)
                 writer.writerow([report.csv_text(value) for value in (name, target["ip"], target["port"], target["url"],
@@ -1297,7 +1297,7 @@ class PortalStore:
         if manifest:
             paths += [report.inside(directory / "resultado", g["carpeta"]) / name
                       for g in manifest["grupos"] if g["estado"] in ("en_curso", "parcial", "error", "interrumpido")
-                      for name in (gowitness.LOG_NAME, gowitness.SCHEME_LOG, gowitness.RETRY_LOG)]
+                      for name in gowitness.LOGS]
         lines = []
         # El registro del proceso y los siete últimos de gowitness que existan.
         for path in paths[:1] + [p for p in paths[1:] if p.is_file()][-7:]:
