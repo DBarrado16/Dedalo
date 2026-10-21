@@ -1,0 +1,8 @@
+{
+  "version": "2026-10-21",
+  "nota": "Semilla de ejemplo para la demo: entradas con huella calculada a mano sobre bytes de prueba, no sobre favicons reales descargados (ver dedalo/favicones.py). Ampliar con huellas de productos reales desde recopilaciones públicas (Shodan/Censys dumps, EyeWitness, etc.) tras revisar su licencia.",
+  "entradas": [
+    {"mmh3": -1042407699, "sha256": "b0e3f700bb21dccf2fd9d6c2012f3989c1252d28a57d61e7c12ca281e19e5fb5",
+     "producto": "Genérico (favicon de ejemplo)", "version": "", "fuente": "demo, bytes de prueba"}
+  ]
+}
