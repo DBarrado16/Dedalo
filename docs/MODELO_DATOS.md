@@ -46,7 +46,7 @@ CREATE TABLE alcance (
 CREATE TABLE ejecucion (
   id           TEXT PRIMARY KEY,       -- uuid hex; en importaciones coincide con la carpeta de portal_datos
   auditoria_id TEXT NOT NULL REFERENCES auditoria(id) ON DELETE CASCADE,
-  tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'descubrimiento', 'analisis', 'credenciales', 'version')),
+  tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'descubrimiento', 'analisis', 'credenciales', 'version', 'vuln')),
   origen_id    TEXT REFERENCES ejecucion(id) ON DELETE CASCADE,  -- captura o análisis -> importación de la que salen
   nombre       TEXT NOT NULL,
   estado       TEXT NOT NULL CHECK (estado IN (...)),  -- los nueve estados de CONTRATOS.md 0.4
@@ -153,6 +153,44 @@ CREATE TABLE deteccion (
   detalle      TEXT NOT NULL DEFAULT ''
 );
 
+-- Base local de CVE (la rellena la actualización de la NVD; la fecha de la última va en config,
+-- clave 'nvd_actualizada'). cve_cpe guarda cómo se aplica cada CVE: producto (y vendor) y un rango
+-- de versiones. v_ini/v_fin vacíos (NULL) = sin límite por ese lado; *_incl dice si el límite entra.
+-- Sin rango en ningún lado = todas las versiones del producto. vendor y producto en minúsculas.
+CREATE TABLE cve (
+  id        TEXT PRIMARY KEY,             -- CVE-2026-0001
+  publicada TEXT NOT NULL DEFAULT '',
+  severidad TEXT NOT NULL DEFAULT '',
+  cvss      REAL,
+  resumen   TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE cve_cpe (
+  id         INTEGER PRIMARY KEY,
+  cve_id     TEXT NOT NULL REFERENCES cve(id) ON DELETE CASCADE,
+  parte      TEXT NOT NULL DEFAULT '',    -- a (aplicación), o (sistema), h (hardware)
+  vendor     TEXT NOT NULL DEFAULT '',
+  producto   TEXT NOT NULL,
+  v_ini      TEXT,
+  v_ini_incl INTEGER NOT NULL DEFAULT 0,
+  v_fin      TEXT,
+  v_fin_incl INTEGER NOT NULL DEFAULT 0
+);
+
+-- Lo que el cruce por CPE (ejecución 'vuln') halló en cada servicio. cve_id no es clave foránea:
+-- la base de CVE se puede renovar sin tocar los hallazgos de una auditoría.
+CREATE TABLE vulnerabilidad (
+  id            INTEGER PRIMARY KEY,
+  ejecucion_id  TEXT NOT NULL REFERENCES ejecucion(id) ON DELETE CASCADE,
+  servicio_id   INTEGER NOT NULL REFERENCES servicio(id) ON DELETE CASCADE,
+  cve_id        TEXT NOT NULL,
+  severidad     TEXT NOT NULL DEFAULT '',
+  exploit_nivel TEXT NOT NULL DEFAULT '', -- confirmado (CISA KEV / Exploit-DB) o PoC sin verificar (GitHub)
+  enlaces       TEXT NOT NULL DEFAULT '[]', -- JSON: solo enlaces, nunca el exploit
+  origen_cpe    TEXT NOT NULL DEFAULT '',   -- el CPE que se cruzó
+  estado        TEXT NOT NULL DEFAULT ''
+);
+
 -- Catálogo curado de credenciales por defecto, volcado del fichero dedalo/datos/credenciales.json
 -- al arrancar (se refresca cuando su huella cambia; la huella se guarda en config).
 CREATE TABLE credencial_catalogo (
@@ -190,7 +228,7 @@ CREATE TABLE config (
 );
 ```
 
-La migración 1 añade índices para las búsquedas habituales: ejecuciones por auditoría, observaciones por servicio y por activo, y capturas por servicio. La migración 2 reconstruye `ejecucion` para admitir el tipo `descubrimiento` y para que borrar una importación borre también las capturas que salieron de ella; añade el índice por `origen_id`. La migración 3 la reconstruye otra vez para admitir el tipo `analisis` y crea la tabla `prioridad` con un índice por activo (el de ejecución ya lo da su `UNIQUE`). La migración 4 la reconstruye para admitir el tipo `credenciales` y crea `credencial_catalogo` (con índice por servicio), `credencial_resultado` (con índice por activo) y `config`. La migración 5 la reconstruye para admitir el tipo `version` y crea `deteccion` (lecturas de producto/versión desde la captura, con índice por servicio). El esquema exacto está en `dedalo/db.py`.
+La migración 1 añade índices para las búsquedas habituales: ejecuciones por auditoría, observaciones por servicio y por activo, y capturas por servicio. La migración 2 reconstruye `ejecucion` para admitir el tipo `descubrimiento` y para que borrar una importación borre también las capturas que salieron de ella; añade el índice por `origen_id`. La migración 3 la reconstruye otra vez para admitir el tipo `analisis` y crea la tabla `prioridad` con un índice por activo (el de ejecución ya lo da su `UNIQUE`). La migración 4 la reconstruye para admitir el tipo `credenciales` y crea `credencial_catalogo` (con índice por servicio), `credencial_resultado` (con índice por activo) y `config`. La migración 5 la reconstruye para admitir el tipo `version` y crea `deteccion` (lecturas de producto/versión desde la captura, con índice por servicio). La migración 6 la reconstruye para admitir el tipo `vuln` y crea `cve` y `cve_cpe` (con índices por producto y por CVE) y `vulnerabilidad` (con índice por servicio). El esquema exacto está en `dedalo/db.py`.
 
 La situación de alcance de un activo (en alcance, excluido o fuera) **no se guarda**: se calcula con las reglas vigentes. Así, cambiar el alcance nunca deja datos desactualizados.
 
