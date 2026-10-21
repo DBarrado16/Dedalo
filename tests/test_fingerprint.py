@@ -5,10 +5,11 @@ import unittest
 from dedalo import fingerprint
 
 
-def datos(headers=None, titulo="Panel", tecnologias=None, html="<html></html>"):
+def datos(headers=None, titulo="Panel", tecnologias=None, html="<html></html>", tls=None, favicon=None):
     return {"final_url": "", "response_code": 200, "title": titulo,
             "headers": headers or {"Server": "nginx/1.18.0"},
-            "technologies": tecnologias or [], "html": html}
+            "technologies": tecnologias or [], "html": html, "tls": tls if tls is not None else {},
+            "favicon": favicon}
 
 
 def answer(producto="RouterOS", version="6.49.7", confianza=90):
@@ -37,6 +38,54 @@ class PromptTests(unittest.TestCase):
 
     def test_el_esquema_cuadra_con_lo_que_parse_acepta(self):
         self.assertEqual(set(fingerprint.ESQUEMA["required"]), {"producto", "version", "confianza"})
+
+    def test_el_tls_se_incluye_solo_si_no_esta_vacio(self):
+        con_tls = fingerprint.build_prompt(datos(tls={"subject": "FortiGate", "issuer": "Fortinet",
+                                                       "san": ["vpn.example.com"]}))
+        self.assertEqual(bloque(con_tls)["tls"], {"subject": "FortiGate", "issuer": "Fortinet",
+                                                    "san": ["vpn.example.com"]})
+        sin_tls = fingerprint.build_prompt(datos(tls={}))
+        self.assertNotIn("tls", bloque(sin_tls))
+
+    def test_el_favicon_se_incluye_recortado_a_producto_version_fuente(self):
+        con_favicon = fingerprint.build_prompt(datos(favicon={"producto": "RouterOS", "version": "6.49",
+                                                               "fuente": "demo", "mmh3": 123, "sha256": "x"}))
+        self.assertEqual(bloque(con_favicon)["favicon"], {"producto": "RouterOS", "version": "6.49",
+                                                            "fuente": "demo"})
+        sin_favicon = fingerprint.build_prompt(datos(favicon=None))
+        self.assertNotIn("favicon", bloque(sin_favicon))
+
+    def test_las_senales_del_html_van_en_el_json(self):
+        html = ('<meta name="generator" content="WordPress 6.4.2">'
+                '<script src="/a.js?ver=5.4"></script>')
+        enviado = bloque(fingerprint.build_prompt(datos(html=html)))
+        self.assertEqual(enviado["senales"], fingerprint.senales_html(html))
+        self.assertTrue(enviado["senales"])
+
+
+class SenalesHtmlTests(unittest.TestCase):
+    def test_encuentra_generator_comentario_query_de_version_y_texto_version(self):
+        html = ('<meta name="generator" content="WordPress 6.4.2">'
+                '<!-- Joomla 3.9 -->'
+                '<script src="/a.js?ver=5.4"></script>'
+                '<p>Version 2.1.0</p>')
+        self.assertEqual(fingerprint.senales_html(html), [
+            '<meta name="generator" content="WordPress 6.4.2">',
+            '<!-- Joomla 3.9 -->',
+            '<script src="/a.js?ver=5.4">',
+            'Version 2.1.0',
+        ])
+
+    def test_sin_duplicados_si_una_senal_se_repite(self):
+        html = '<!-- Joomla 3.9 --><p>texto</p><!-- Joomla 3.9 -->'
+        self.assertEqual(fingerprint.senales_html(html), ['<!-- Joomla 3.9 -->'])
+
+    def test_tope_de_senales(self):
+        html = "".join(f'<!-- señal {i} -->' for i in range(fingerprint.MAX_SENALES * 2))
+        self.assertEqual(len(fingerprint.senales_html(html)), fingerprint.MAX_SENALES)
+
+    def test_sin_senales_devuelve_lista_vacia(self):
+        self.assertEqual(fingerprint.senales_html("<html><body>sin pistas</body></html>"), [])
 
 
 class TechTests(unittest.TestCase):

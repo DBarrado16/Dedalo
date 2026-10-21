@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 import zipfile
 
-from dedalo import auditoria, cli, gowitness, report, web
+from dedalo import auditoria, cli, favicones, gowitness, report, web
 from dedalo.web import PortalStore, PortalServer
 from tests.test_dedalo import ROOT, fake_database
 from tests.test_gowitness_fingerprint import build_gowitness_db
@@ -824,6 +824,67 @@ class PortalTests(unittest.TestCase):
             self.store._detect(job["id"], version, "ollama", "m")
         self.assertEqual([i["url"] for i in seen], [target["url"]])
         self.assertIn("nginx/1.18.0", seen[0]["datos"]["headers"].values())
+
+    def _prepared_version(self):
+        """Un trabajo con un servicio capturado con éxito y su detección lista; (job_id, version_id, target)."""
+        job = self.create()
+        meta = self.store.jobs[job["id"]]
+        root = self.store.directory(job["id"]) / "resultado"
+        group = meta["grupos"][0]
+        target = group["objetivos"][0]
+        (root / group["carpeta"]).mkdir(parents=True, exist_ok=True)
+        build_gowitness_db(root / group["carpeta"] / gowitness.DB_NAME, target["url"])
+        with closing(self.store.database()) as con:
+            capture = auditoria.start_capture(con, job["id"], {}, meta["grupos"])
+            with con:
+                con.execute("UPDATE captura SET estado = 'capturada' WHERE ejecucion_id = ? AND url = ?",
+                            (capture, target["url"]))
+            version = auditoria.start_version(con, job["id"], {"engine": "ollama", "model": "m"})
+        return job["id"], version, target
+
+    def test_version_detection_identifies_the_favicon_against_the_catalog(self):
+        job_id, version, target = self._prepared_version()
+        contenido = b"favicon de prueba de la tarea 5"
+        catalogo = {"mmh3": {favicones.mmh3_shodan(contenido): {"producto": "RouterOS", "version": "6.49",
+                                                                 "fuente": "demo"}},
+                    "sha256": {}}
+        seen = []
+        with patch("dedalo.web.modelo.generador", return_value=lambda prompt: ""), \
+                patch("dedalo.web.fingerprint.detectar", side_effect=lambda items, *a, **k: seen.extend(items) or []), \
+                patch("dedalo.web.favicones.cargar", return_value=catalogo), \
+                patch("dedalo.web.favicones.descargar", return_value=contenido) as descargar:
+            self.store._detect(job_id, version, "ollama", "m")
+        self.assertEqual(descargar.call_count, 1)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["datos"]["favicon"]["producto"], "RouterOS")
+
+    def test_version_detection_does_not_download_the_favicon_when_out_of_scope_live(self):
+        job_id, version, target = self._prepared_version()
+        # El alcance cambia DESPUÉS de capturar: el servicio queda fuera justo antes de detectar.
+        self.store.update_audit(self.audit["id"], {"nombre": "Cliente de prueba", "incluir": "192.0.2.0/24"})
+        seen = []
+        with patch("dedalo.web.modelo.generador", return_value=lambda prompt: ""), \
+                patch("dedalo.web.fingerprint.detectar", side_effect=lambda items, *a, **k: seen.extend(items) or []), \
+                patch("dedalo.web.favicones.descargar") as descargar:
+            self.store._detect(job_id, version, "ollama", "m")
+        descargar.assert_not_called()
+        self.assertEqual(len(seen), 1)
+        self.assertNotIn("favicon", seen[0]["datos"])
+
+    def test_with_favicon_rechecks_the_live_scope_on_every_call_without_connecting_when_out(self):
+        _, _, target = self._prepared_version()
+        item = {"servicio_id": 1, "url": target["url"],
+                "datos": {"final_url": target["url"], "html": ""}}
+        vivo = web._AlcanceVivo(self.store, self.audit["id"])
+        contenido = b"favicon de prueba de la tarea 5"
+        catalogo = {"mmh3": {favicones.mmh3_shodan(contenido): {"producto": "RouterOS"}}, "sha256": {}}
+        with patch("dedalo.web.favicones.descargar", return_value=contenido) as descargar:
+            self.assertEqual(self.store._with_favicon(vivo, item, catalogo)["datos"]["favicon"]["producto"], "RouterOS")
+            self.assertEqual(descargar.call_count, 1)
+            # El alcance cambia a mitad: la siguiente llamada, con el mismo objeto, ya no conecta.
+            self.store.update_audit(self.audit["id"], {"nombre": "Cliente de prueba", "incluir": "192.0.2.0/24"})
+            self.assertNotIn("favicon", self.store._with_favicon(vivo, item, catalogo)["datos"])
+            self.assertEqual(descargar.call_count, 1)
 
     def test_subnet_zip_contains_only_that_subnet_captures(self):
         job = self.create()

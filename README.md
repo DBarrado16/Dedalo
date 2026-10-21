@@ -162,12 +162,13 @@ Pulsa **Analizar con IA**. El análisis va por la misma cola que las capturas, a
 
 ## Detección de producto y versión
 
-Tras cada captura, Dédalo puede estimar el **producto y la versión** de cada servicio web a partir de lo que gowitness ya guardó —las **cabeceras de respuesta**, las **tecnologías** que detecta y el **HTML** del front—, sin volver a conectar con nada. Mejora el fingerprint que se ve en el inventario y, de rebote, qué credenciales por defecto se le prueban a cada servicio.
+Tras cada captura, Dédalo puede estimar el **producto y la versión** de cada servicio web a partir de lo que gowitness ya guardó —las **cabeceras de respuesta**, las **tecnologías** que detecta, el **certificado TLS**, un extracto del **HTML** del front con sus señales de versión— y, además, trae el **favicon del propio objetivo, en alcance**, para cruzarlo con un catálogo local ampliable. Mejora el fingerprint que se ve en el inventario y, de rebote, qué credenciales por defecto se le prueban a cada servicio.
 
 - **Apagada de serie.** Se enciende en la pestaña **Priorización**, con «Detectar producto y versión tras cada captura». Cuando está activa, al terminar una captura la detección se lanza **por detrás**, sin frenar la galería: las imágenes se ven al momento y la versión se va rellenando sola.
 - **gowitness primero, la IA solo afina.** Las tecnologías que gowitness reconoce se muestran tal cual; la IA entra únicamente a completar y afinar lo que no reconoce (routers, paneles, firmware). Cada lectura se etiqueta con su origen (**gowitness** o **IA**, con su confianza). Si la IA falla o está apagada, queda al menos lo de gowitness.
+- **El favicon, solo del propio objetivo.** La detección conecta, pero únicamente para traer el favicon del mismo IP:puerto que el servicio capturado: el alcance se recomprueba **en vivo** justo antes, y un `href` de favicon que apunte a otro host (un CDN, por ejemplo) no se descarga. Si se identifica contra el catálogo local (`dedalo/favicones.py`, `dedalo/datos/favicons.json`), esa pista también afina el fingerprint. Un fallo de red o de alcance al traer el favicon no detiene la detección: sigue con el resto de datos.
 - **Motor elegible.** Por defecto, **Ollama en local** (mismas reglas que la priorización: solo loopback, sin modelos de la nube). Como opción, la **API de Claude**: al elegirla, el portal avisa de que el HTML y las cabeceras de la captura **salen del equipo** hacia la nube de Anthropic; la clave va en la variable de entorno `ANTHROPIC_API_KEY`, nunca en la base ni en el repo.
-- **Contenido no confiable.** El HTML y las cabeceras van al modelo como datos acotados, nunca como instrucciones; la respuesta se valida y lo que no encaja o tiene poca confianza queda sin versión.
+- **Contenido no confiable.** El TLS, el HTML y las cabeceras van al modelo como datos acotados, nunca como instrucciones; la respuesta se valida y lo que no encaja o tiene poca confianza queda sin versión.
 - Cuando Nmap y la captura discrepan, se guardan **las dos lecturas** y, al probar credenciales, se prueban las que pegan con cualquiera de ellas.
 
 ## Credenciales por defecto

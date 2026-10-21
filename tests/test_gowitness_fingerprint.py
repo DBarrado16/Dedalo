@@ -6,14 +6,16 @@ from pathlib import Path
 from dedalo import gowitness
 
 
-def build_gowitness_db(path, url):
-    """Una base como la que escribe gowitness v3: results + headers + technologies."""
+def build_gowitness_db(path, url, tls=None):
+    """Una base como la que escribe gowitness v3: results + headers + technologies (+ tls si se pide)."""
     con = sqlite3.connect(path)
     con.executescript("""
         CREATE TABLE results (id INTEGER PRIMARY KEY, url TEXT, final_url TEXT, response_code INTEGER,
                               title TEXT, html TEXT);
         CREATE TABLE headers (id INTEGER PRIMARY KEY, result_id INTEGER, key TEXT, value TEXT);
         CREATE TABLE technologies (id INTEGER PRIMARY KEY, result_id INTEGER, value TEXT);
+        CREATE TABLE tls (id INTEGER PRIMARY KEY, result_id INTEGER, subject_name TEXT, issuer TEXT);
+        CREATE TABLE tls_san_lists (id INTEGER PRIMARY KEY, tls_id INTEGER, value TEXT);
     """)
     html = '<html><head><title>Panel</title><meta name="generator" content="WordPress 6.4.2"></head></html>'
     rid = con.execute("INSERT INTO results (url, final_url, response_code, title, html) VALUES (?, ?, ?, ?, ?)",
@@ -22,6 +24,11 @@ def build_gowitness_db(path, url):
                     [(rid, "Server", "nginx/1.18.0"), (rid, "X-Powered-By", "PHP/7.4.33")])
     con.executemany("INSERT INTO technologies (result_id, value) VALUES (?, ?)",
                     [(rid, "WordPress:6.4.2"), (rid, "PHP:7.4.33")])
+    if tls:
+        tls_id = con.execute("INSERT INTO tls (result_id, subject_name, issuer) VALUES (?, ?, ?)",
+                              (rid, tls["subject"], tls["issuer"])).lastrowid
+        con.executemany("INSERT INTO tls_san_lists (tls_id, value) VALUES (?, ?)",
+                        [(tls_id, san) for san in tls.get("san", [])])
     con.commit()
     con.close()
 
@@ -58,6 +65,20 @@ class ReadFingerprintTests(unittest.TestCase):
         con.commit()
         con.close()
         self.assertEqual(gowitness.read_fingerprint(self.db), {})
+
+    def test_returns_the_tls_certificate_when_there_is_a_row(self):
+        url = "https://10.10.5.3:443/"
+        build_gowitness_db(self.db, url, tls={"subject": "FortiGate", "issuer": "Fortinet",
+                                               "san": ["vpn.example.com"]})
+        data = gowitness.read_fingerprint(self.db)
+        row = data[gowitness.normalize_url(url)]
+        self.assertEqual(row["tls"], {"subject": "FortiGate", "issuer": "Fortinet", "san": ["vpn.example.com"]})
+
+    def test_tls_is_an_empty_dict_without_a_row(self):
+        url = "http://10.10.5.3:80/"
+        build_gowitness_db(self.db, url)
+        data = gowitness.read_fingerprint(self.db)
+        self.assertEqual(data[gowitness.normalize_url(url)]["tls"], {})
 
 
 if __name__ == "__main__":

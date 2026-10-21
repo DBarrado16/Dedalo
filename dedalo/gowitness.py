@@ -339,10 +339,11 @@ def read_results(db_path: str | Path) -> dict[str, dict]:
 
 
 def read_fingerprint(db_path: str | Path) -> dict[str, dict]:
-    """URL original normalizada -> datos para estimar producto/versión: cabeceras, tecnologías y HTML.
+    """URL original normalizada -> datos para estimar producto/versión: cabeceras, tecnologías, TLS y HTML.
 
-    Lee lo que gowitness ya guarda (tablas results/headers/technologies). Solo lectura; si la base
-    no existe o no tiene resultados, devuelve {}. No conecta con nada: trabaja sobre lo capturado.
+    Lee lo que gowitness ya guarda (tablas results/headers/technologies/tls/tls_san_lists). Solo
+    lectura; si la base no existe o no tiene resultados, devuelve {}. No conecta con el objetivo:
+    trabaja sobre lo ya capturado en disco.
     """
     path = Path(db_path).resolve()
     if not path.is_file():
@@ -355,6 +356,11 @@ def read_fingerprint(db_path: str | Path) -> dict[str, dict]:
         ).fetchall()
         headers = con.execute("SELECT result_id, key, value FROM headers").fetchall()
         techs = con.execute("SELECT result_id, value FROM technologies").fetchall()
+        try:
+            tls_rows = con.execute("SELECT id, result_id, subject_name, issuer FROM tls").fetchall()
+            sans = con.execute("SELECT tls_id, value FROM tls_san_lists").fetchall()
+        except sqlite3.OperationalError:  # bases de gowitness sin esas tablas (versión antigua)
+            tls_rows, sans = [], []
     finally:
         con.close()
     by_result_headers: dict[int, dict[str, str]] = {}
@@ -363,6 +369,13 @@ def read_fingerprint(db_path: str | Path) -> dict[str, dict]:
     by_result_techs: dict[int, list[str]] = {}
     for row in techs:
         by_result_techs.setdefault(row["result_id"], []).append(row["value"])
+    by_tls_san: dict[int, list[str]] = {}
+    for row in sans:
+        by_tls_san.setdefault(row["tls_id"], []).append(row["value"])
+    by_result_tls: dict[int, dict] = {}
+    for row in tls_rows:
+        by_result_tls[row["result_id"]] = {"subject": row["subject_name"] or "", "issuer": row["issuer"] or "",
+                                           "san": by_tls_san.get(row["id"], [])}
     out = {}
     for row in results:
         out[normalize_url(row["url"])] = {
@@ -371,6 +384,7 @@ def read_fingerprint(db_path: str | Path) -> dict[str, dict]:
             "title": row["title"] or "",
             "headers": by_result_headers.get(row["id"], {}),
             "technologies": by_result_techs.get(row["id"], []),
+            "tls": by_result_tls.get(row["id"], {}),
             "html": row["html"] or "",
         }
     return out
