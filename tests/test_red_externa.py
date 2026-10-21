@@ -5,9 +5,11 @@ Las URL de los feeds y de las APIs son constantes de módulo; aquí se apuntan a
 
 import gzip
 import json
+import os
 import socket
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -334,6 +336,146 @@ class BuscarGithubTests(unittest.TestCase):
             self.assertEqual(exploits.buscar_github("CVE-2021-41773", False), [])
         with mock.patch.object(exploits, "GITHUB_BUSQUEDA_URL", "http://127.0.0.1:1/search"):
             self.assertEqual(exploits.buscar_github("CVE-2021-41773", False), [])
+
+
+KEV_PRUEBA = json.dumps({"vulnerabilities": [{"cveID": "CVE-2021-41773"}, {"cveID": "cve-2022-0847"}, {"cveID": "basura"}]}).encode("utf-8")
+EDB_PRUEBA = b'id,file,description,date_published,codes\r\n50383,exploits/multiple/50383.txt,Apache 2.4.49,2021-10-05,CVE-2021-41773;OSVDB-1\r\n'
+
+
+class _Respuesta:
+    """Respuesta falsa de `internet.peticion`: sirve `cuerpo` y, si se pide, falla a mitad de la lectura."""
+
+    def __init__(self, cuerpo, falla_a_mitad=False):
+        self.cuerpo, self.falla_a_mitad = cuerpo, falla_a_mitad
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self, n=-1):
+        if self.falla_a_mitad:
+            raise ConnectionResetError("se cortó la conexión a mitad de descarga")
+        return self.cuerpo[:n] if n >= 0 else self.cuerpo
+
+
+class ActualizarFuentesTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.destino = Path(self.temp.name) / "vulnerabilidades"
+        self.kev = self.destino / "kev.json"
+        self.edb = self.destino / "files_exploits.csv"
+
+    def _parchear(self, servidor):
+        return mock.patch.multiple(exploits, KEV_URL=servidor.base + "/kev.json", EXPLOITDB_URL=servidor.base + "/files_exploits.csv")
+
+    def _rutas(self, **extra):
+        rutas = {"/kev.json": (200, KEV_PRUEBA), "/files_exploits.csv": (200, EDB_PRUEBA)}
+        rutas.update(extra)
+        return rutas
+
+    def _restos(self):
+        return sorted(p.name for p in self.destino.glob("*") if p.name not in ("kev.json", "files_exploits.csv"))
+
+    def test_las_urls_apuntan_a_las_fuentes_oficiales(self):
+        self.assertTrue(exploits.KEV_URL.startswith("https://www.cisa.gov/") and exploits.KEV_URL.endswith("known_exploited_vulnerabilities.json"))
+        self.assertTrue(exploits.EXPLOITDB_URL.startswith("https://") and exploits.EXPLOITDB_URL.endswith("files_exploits.csv"))
+
+    def test_sin_internet_no_toca_la_red_ni_crea_ficheros(self):
+        with mock.patch.object(internet, "peticion", side_effect=AssertionError("tocó la red")) as peticion, \
+                mock.patch.object(socket.socket, "connect", side_effect=AssertionError("abrió un socket")):
+            mensajes = []
+            self.assertIsNone(exploits.actualizar_fuentes(self.destino, True, log=mensajes.append))
+            self.assertEqual(peticion.call_count, 0)
+        self.assertFalse(self.destino.exists())
+        self.assertEqual(mensajes, [])
+
+    def test_descarga_las_dos_fuentes_y_cargar_las_lee_bien(self):
+        with _Servidor(self._rutas()) as s, self._parchear(s):
+            mensajes = []
+            exploits.actualizar_fuentes(self.destino, False, log=mensajes.append)
+            self.assertEqual(sorted(s.rutas_pedidas()), ["/files_exploits.csv", "/kev.json"])
+        self.assertEqual(exploits.cargar_kev(self.kev), {"CVE-2021-41773", "CVE-2022-0847"})
+        self.assertEqual(exploits.cargar_exploitdb(self.edb), {"CVE-2021-41773": ["https://www.exploit-db.com/exploits/50383"]})
+        self.assertTrue(mensajes)
+        self.assertEqual(self._restos(), [])  # sin ficheros temporales
+
+    def test_un_bom_de_origen_no_rompe_la_lectura(self):
+        rutas = self._rutas(**{"/kev.json": (200, b"\xef\xbb\xbf" + KEV_PRUEBA), "/files_exploits.csv": (200, b"\xef\xbb\xbf" + EDB_PRUEBA)})
+        with _Servidor(rutas) as s, self._parchear(s):
+            exploits.actualizar_fuentes(self.destino, False, log=lambda *_: None)
+        self.assertEqual(exploits.cargar_kev(self.kev), {"CVE-2021-41773", "CVE-2022-0847"})
+        self.assertIn("CVE-2021-41773", exploits.cargar_exploitdb(self.edb))
+
+    def test_si_una_fuente_falla_no_impide_la_otra_ni_rompe(self):
+        for caida, otra in (("/kev.json", self.edb), ("/files_exploits.csv", self.kev)):
+            with self.subTest(caida=caida), _Servidor(self._rutas(**{caida: (503, b"")})) as s, self._parchear(s):
+                with tempfile.TemporaryDirectory() as t:
+                    destino = Path(t) / "v"
+                    mensajes = []
+                    exploits.actualizar_fuentes(destino, False, log=mensajes.append)
+                    self.assertTrue(destino.joinpath(otra.name).exists())
+                    self.assertFalse(destino.joinpath("kev.json" if otra is self.edb else "files_exploits.csv").exists())
+                    self.assertEqual(len(list(destino.glob("*"))), 1)  # ni parciales
+                    self.assertTrue(any("No se pudo" in m for m in mensajes))
+
+    def test_servidor_inalcanzable_no_rompe_ni_deja_ficheros(self):
+        with mock.patch.multiple(exploits, KEV_URL="http://127.0.0.1:1/kev.json", EXPLOITDB_URL="http://127.0.0.1:1/f.csv"):
+            exploits.actualizar_fuentes(self.destino, False, log=lambda *_: None)
+        self.assertEqual(list(self.destino.glob("*")), [])
+
+    def test_descarga_cortada_a_mitad_no_deja_fichero_a_medias(self):
+        with mock.patch.object(internet, "peticion", return_value=_Respuesta(KEV_PRUEBA, falla_a_mitad=True)):
+            exploits.actualizar_fuentes(self.destino, False, log=lambda *_: None)
+        self.assertEqual(list(self.destino.glob("*")), [])
+        self.assertEqual(exploits.cargar_kev(self.kev), set())
+
+    def test_un_fichero_bueno_previo_sobrevive_a_una_descarga_fallida_o_basura(self):
+        self.destino.mkdir(parents=True)
+        self.kev.write_bytes(KEV_PRUEBA)
+        self.edb.write_bytes(EDB_PRUEBA)
+        for fichero in (self.kev, self.edb):  # vencidos: toca volver a bajarlos
+            os.utime(fichero, (time.time() - 3 * 86400,) * 2)
+        antes = (self.kev.read_bytes(), self.edb.read_bytes())
+        rutas = {"/kev.json": (200, b'{"vulnerabilities": [{"cveI'), "/files_exploits.csv": (200, b"<html>mantenimiento</html>")}
+        with _Servidor(rutas) as s, self._parchear(s):
+            exploits.actualizar_fuentes(self.destino, False, log=lambda *_: None)
+            self.assertEqual(len(s.peticiones), 2)
+        self.assertEqual((self.kev.read_bytes(), self.edb.read_bytes()), antes)
+        self.assertEqual(self._restos(), [])
+
+    def test_contenido_que_no_es_el_esperado_no_se_guarda(self):
+        malos = {"/kev.json": [b"no es json", b'{"otra": []}', b'{"vulnerabilities": []}', b'{"vulnerabilities": 5}'],
+                 "/files_exploits.csv": [b"", b"a,b,c\r\n1,2,3\r\n", b"\xff\xfe\x00 no es utf-8"]}
+        for ruta, cuerpos in malos.items():
+            for cuerpo in cuerpos:
+                with self.subTest(ruta=ruta, cuerpo=cuerpo), _Servidor(self._rutas(**{ruta: (200, cuerpo)})) as s, self._parchear(s):
+                    with tempfile.TemporaryDirectory() as t:
+                        destino = Path(t) / "v"
+                        exploits.actualizar_fuentes(destino, False, log=lambda *_: None)
+                        self.assertFalse(destino.joinpath(ruta.lstrip("/")).exists())
+                        self.assertEqual(len(list(destino.glob("*"))), 1)
+
+    def test_una_descarga_mayor_que_el_tope_se_descarta(self):
+        with _Servidor(self._rutas()) as s, self._parchear(s), mock.patch.multiple(exploits, MAX_KEV=10, MAX_EXPLOITDB=10):
+            exploits.actualizar_fuentes(self.destino, False, log=lambda *_: None)
+        self.assertEqual(list(self.destino.glob("*")), [])
+
+    def test_con_ficheros_recientes_no_vuelve_a_descargar(self):
+        with _Servidor(self._rutas()) as s, self._parchear(s):
+            exploits.actualizar_fuentes(self.destino, False, log=lambda *_: None)
+            self.assertEqual(len(s.peticiones), 2)
+            exploits.actualizar_fuentes(self.destino, False, log=lambda *_: None)
+            self.assertEqual(len(s.peticiones), 2)
+
+    def test_un_fichero_vencido_se_vuelve_a_bajar_y_solo_ese(self):
+        with _Servidor(self._rutas()) as s, self._parchear(s):
+            exploits.actualizar_fuentes(self.destino, False, log=lambda *_: None)
+            os.utime(self.kev, (time.time() - 3 * 86400,) * 2)
+            exploits.actualizar_fuentes(self.destino, False, log=lambda *_: None)
+            self.assertEqual(s.rutas_pedidas()[2:], ["/kev.json"])
 
 
 if __name__ == "__main__":
