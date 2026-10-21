@@ -1903,7 +1903,7 @@ class PortTests(unittest.TestCase):
                 args = argparse.Namespace(datos=second_data, gowitness="indicado", chrome=None,
                                           puerto=server.server_address[1], abrir=False,
                                           modelo=web.modelo.DEFAULT_MODEL, ollama=web.modelo.OLLAMA, arrancar_ollama=False,
-                                          dns_dominio="example.com", catalogo=None)
+                                          dns_dominio="example.com", catalogo=None, sin_internet=False)
                 with self.assertRaisesRegex(ValueError, "ya está en uso"):
                     web.serve_portal(args)
             finally:
@@ -1978,6 +1978,53 @@ class ModelOptionTests(unittest.TestCase):
                 web.serve_portal(args)
         self.assertEqual((store.call_args.kwargs["model"], store.call_args.kwargs["ollama"]),
                          ("qwen2.5:7b", "http://127.0.0.1:9999"))
+
+
+class SinInternetTests(unittest.TestCase):
+    """Interruptor global de salidas a internet: flag > variable de entorno > False."""
+
+    def store(self, env=None, **kwargs):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ):
+            os.environ.pop("DEDALO_SIN_INTERNET", None)  # el equipo que pasa los tests puede tenerla puesta
+            os.environ.update(env or {})
+            store = PortalStore(temporary, **kwargs)
+            try:
+                return store.sin_internet
+            finally:
+                store.close()
+
+    def test_by_default_the_portal_may_go_out(self):
+        self.assertIs(self.store(), False)
+
+    def test_the_environment_turns_it_on(self):
+        for value in ("1", "true", "TRUE", "sí", "Si", " 1 "):
+            with self.subTest(value=value):
+                self.assertIs(self.store({"DEDALO_SIN_INTERNET": value}), True)
+
+    def test_empty_or_zero_in_the_environment_stays_off(self):
+        for value in ("", "0", "no"):
+            with self.subTest(value=value):
+                self.assertIs(self.store({"DEDALO_SIN_INTERNET": value}), False)
+
+    def test_the_flag_wins_over_the_environment(self):
+        self.assertIs(self.store(sin_internet=True), True)
+        self.assertIs(self.store({"DEDALO_SIN_INTERNET": "0"}, sin_internet=True), True)
+
+    def test_the_web_command_has_the_flag_and_passes_it_to_the_portal(self):
+        self.assertFalse(cli.build_parser().parse_args(["web"]).sin_internet)
+        args = cli.build_parser().parse_args(["web", "--datos", "datos", "--sin-internet"])
+        self.assertTrue(args.sin_internet)
+
+        class Stop(Exception):
+            pass
+
+        for flags, esperado in (([], None), (["--sin-internet"], True)):
+            args = cli.build_parser().parse_args(["web", "--datos", "datos", *flags])
+            with self.subTest(flags=flags), patch("dedalo.web.ensure_gowitness"), \
+                    patch("dedalo.web.PortalStore", side_effect=Stop) as store:
+                with self.assertRaises(Stop):
+                    web.serve_portal(args)
+            self.assertEqual(store.call_args.kwargs["sin_internet"], esperado)
 
 
 class StopTests(unittest.TestCase):

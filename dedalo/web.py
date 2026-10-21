@@ -121,8 +121,12 @@ class _AlcanceVivo:
 
 class PortalStore:
     def __init__(self, root, binary=None, chrome=None, model=modelo.DEFAULT_MODEL, ollama=modelo.OLLAMA,
-                 dns_dominio="example.com", catalogo_ruta=catalogo.RUTA):
+                 dns_dominio="example.com", catalogo_ruta=catalogo.RUTA, sin_internet=None):
         self.root = Path(root).resolve()
+        # Interruptor global de salidas a internet (NVD, GitHub…): el resto del código lo consulta antes
+        # de cualquier conexión a internet. Orden: argumento (--sin-internet), DEDALO_SIN_INTERNET, False.
+        self.sin_internet = bool(sin_internet) if sin_internet is not None else \
+            os.environ.get("DEDALO_SIN_INTERNET", "").strip().lower() in ("1", "true", "sí", "si")
         self.dns_dominio = dns_dominio
         # Fichero del catálogo de credenciales (compartido por el repo); configurable para apuntar
         # al del equipo. Se vuelca a la base al arrancar y cada vez que se amplía desde el portal.
@@ -1603,7 +1607,8 @@ def serve_portal(args):
         if message:
             print(message, flush=True)
     store = PortalStore(args.datos, args.gowitness, args.chrome, model=args.modelo, ollama=args.ollama,
-                        dns_dominio=args.dns_dominio, catalogo_ruta=args.catalogo or catalogo.RUTA)
+                        dns_dominio=args.dns_dominio, catalogo_ruta=args.catalogo or catalogo.RUTA,
+                        sin_internet=True if args.sin_internet else None)  # None: decide DEDALO_SIN_INTERNET
     try:
         server = PortalServer(("127.0.0.1", args.puerto), store)
     except Exception as exc:
