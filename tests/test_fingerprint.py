@@ -5,10 +5,11 @@ import unittest
 from dedalo import fingerprint
 
 
-def datos(headers=None, titulo="Panel", tecnologias=None, html="<html></html>", tls=None):
+def datos(headers=None, titulo="Panel", tecnologias=None, html="<html></html>", tls=None, favicon=None):
     return {"final_url": "", "response_code": 200, "title": titulo,
             "headers": headers or {"Server": "nginx/1.18.0"},
-            "technologies": tecnologias or [], "html": html, "tls": tls if tls is not None else {}}
+            "technologies": tecnologias or [], "html": html, "tls": tls if tls is not None else {},
+            "favicon": favicon}
 
 
 def answer(producto="RouterOS", version="6.49.7", confianza=90):
@@ -45,6 +46,14 @@ class PromptTests(unittest.TestCase):
                                                     "san": ["vpn.example.com"]})
         sin_tls = fingerprint.build_prompt(datos(tls={}))
         self.assertNotIn("tls", bloque(sin_tls))
+
+    def test_el_favicon_se_incluye_recortado_a_producto_version_fuente(self):
+        con_favicon = fingerprint.build_prompt(datos(favicon={"producto": "RouterOS", "version": "6.49",
+                                                               "fuente": "demo", "mmh3": 123, "sha256": "x"}))
+        self.assertEqual(bloque(con_favicon)["favicon"], {"producto": "RouterOS", "version": "6.49",
+                                                            "fuente": "demo"})
+        sin_favicon = fingerprint.build_prompt(datos(favicon=None))
+        self.assertNotIn("favicon", bloque(sin_favicon))
 
     def test_las_senales_del_html_van_en_el_json(self):
         html = ('<meta name="generator" content="WordPress 6.4.2">'
