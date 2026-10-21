@@ -11,10 +11,16 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from html.parser import HTMLParser
 import json
 from pathlib import Path
+import urllib.error
+from urllib.parse import urljoin, urlsplit
+
+from . import probador
 
 RUTA = Path(__file__).resolve().parent / "datos" / "favicons.json"
+_PUERTOS_POR_DEFECTO = {"http": 80, "https": 443}
 
 
 def _mmh3_x86_32(datos: bytes, seed: int = 0) -> int:
@@ -92,3 +98,58 @@ def identificar(contenido: bytes, catalogo: dict) -> dict | None:
     if entrada is not None:
         return entrada
     return catalogo.get("sha256", {}).get(sha256_hex(contenido))
+
+
+class _BuscadorIcono(HTMLParser):
+    """El primer <link rel="...icon..." href="..."> del HTML; el resto del documento no importa."""
+    def __init__(self):
+        super().__init__()
+        self.href = None
+
+    def handle_starttag(self, tag, attrs):
+        if self.href is not None or tag.lower() != "link":
+            return
+        attrs = dict(attrs)
+        rel = (attrs.get("rel") or "").lower().split()
+        if "icon" in rel and attrs.get("href"):
+            self.href = attrs["href"]
+
+
+def _extremo(url: str) -> tuple[str | None, int]:
+    """(host, puerto) de una URL, con el puerto por defecto de su esquema si no lo trae explícito."""
+    partes = urlsplit(url)
+    return partes.hostname, partes.port or _PUERTOS_POR_DEFECTO.get(partes.scheme, 0)
+
+
+def url_favicon(base_url: str, html: str) -> str | None:
+    """URL del favicon del propio objetivo: el <link rel=icon> del HTML, o /favicon.ico si no hay.
+
+    HTML es dato no confiable del objetivo: aquí solo se lee un atributo, nunca se ejecuta nada de
+    su contenido. Devuelve None si la URL resuelta no queda en el mismo host:puerto que `base_url`
+    (un href a otro dominio, por ejemplo un CDN, queda fuera de alcance y no se descarga).
+    """
+    buscador = _BuscadorIcono()
+    buscador.feed(html or "")
+    href = buscador.href
+    url = urljoin(base_url, href) if href else urljoin(base_url, "/favicon.ico")
+    if _extremo(url) != _extremo(base_url):
+        return None
+    return url
+
+
+def descargar(url: str, timeout: float = 5, tope: int = 100_000) -> bytes | None:
+    """Trae como mucho `tope` bytes de `url` con el opener de probador (sin proxy, sin verificar TLS,
+    sin seguir redirecciones). None si falla la conexión, si el Content-Type no es de imagen o si
+    el cuerpo supera `tope`: el favicon es dato no confiable y no debe colgar ni crecer sin límite.
+    """
+    try:
+        with probador._OPENER.open(url, timeout=timeout) as respuesta:
+            tipo = respuesta.headers.get("Content-Type", "")
+            if "image" not in tipo.lower():
+                return None
+            contenido = respuesta.read(tope + 1)
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    if len(contenido) > tope:
+        return None
+    return contenido
