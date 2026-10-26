@@ -119,17 +119,17 @@ def _por_cvss(fila: dict) -> tuple:
     return (cvss is None, -(cvss or 0), fila["id"])
 
 
-def _cves_del_cpe(con, cpe: str, sin_internet: bool) -> tuple[list[dict], bool, bool]:
+def _cves_del_cpe(con, cpe: str, sin_internet: bool, en_linea: bool) -> tuple[list[dict], bool, bool]:
     """(CVE del cpe, si el cpe no trae versión, si esa respuesta es fiable).
 
-    La consulta en línea solo se hace si la base local no basta: no tiene el producto o no está completa (sin la
-    marca `config.nvd_actualizada`). Sin versión se quedan solo las TOPE_SIN_VERSION de mayor CVSS.
+    La consulta en línea solo se hace si `en_linea` y la base local no basta: no tiene el producto o no está
+    completa (sin la marca `config.nvd_actualizada`). Sin versión se quedan solo las TOPE_SIN_VERSION de mayor CVSS.
     """
     sin_version = cpe_sin_version(cpe)
     filas, fiable = cve.cves_de(con, cpe), True
     completa = get_config(con, "nvd_actualizada") is not None
     if not filas and not (completa and cve.producto_conocido(con, cpe)):  # conocido y completa: esta versión, 0 CVE
-        online = None if sin_internet else cve.consultar_online(cpe, sin_internet)
+        online = cve.consultar_online(cpe, sin_internet) if en_linea and not sin_internet else None
         if online is not None:  # consultado: [] es «0 CVE», no «sin datos»
             filas = online
         else:  # sin consulta posible: la base local solo vale como «0 CVE» si está completa
@@ -144,7 +144,9 @@ def cruzar_servicio(con, cpes: list[tuple[str, str]], kev, edb, sin_internet: bo
     """Reúne las vulnerabilidades de un servicio a partir de sus CPE: los pares (fuente, cpe) de `cpes_del_servicio`.
 
     Por cada cpe, primero la base local; solo si no da ninguna CVE para ese cpe y no basta (no conoce el producto o
-    no está completa), la consulta online (nunca con `sin_internet`). Un cpe sin versión se queda con sus
+    no está completa), la consulta online (nunca con `sin_internet`). Solo sale en línea un cpe de Nmap: el de la
+    detección lleva un producto leído del HTML del objetivo, que podría nombrar al cliente, y se cruza solo con la
+    base local. Un cpe sin versión se queda con sus
     TOPE_SIN_VERSION CVE de mayor CVSS. A cada CVE se le pone su nivel de exploit: "confirmado" (KEV/Exploit-DB),
     "sin_verificar" (solo un PoC en GitHub, buscado únicamente si no es confirmado, el cpe trae versión y hay salida a
     internet) o "ninguno". Una CVE que sale por dos cpe se cuenta una vez, con el primero.
@@ -162,7 +164,7 @@ def cruzar_servicio(con, cpes: list[tuple[str, str]], kev, edb, sin_internet: bo
     respondido = False
     for fuente, cpe in cpes:
         if cpe not in memo.cpes:
-            memo.cpes[cpe] = _cves_del_cpe(con, cpe, sin_internet)
+            memo.cpes[cpe] = _cves_del_cpe(con, cpe, sin_internet, en_linea=fuente == "nmap")
         filas, sin_version, fiable = memo.cpes[cpe]
         respondido = respondido or fiable
         for fila in filas:

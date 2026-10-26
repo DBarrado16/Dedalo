@@ -113,6 +113,18 @@ class CruzarServicioTests(BaseTemporal):
                 res = vulnerabilidades.cruzar_servicio(self.con, nmap(cpe), set(), {}, True, sin_github)
                 self.assertEqual([v["cve"] for v in res["vulns"]], [esperada])
 
+    def test_el_cpe_de_la_deteccion_nunca_se_consulta_en_linea(self):
+        # Su producto sale del HTML del objetivo, que puede llevar el nombre del cliente o texto inyectado:
+        # se cruza solo con la base local. El de Nmap sí puede salir.
+        online = mock.Mock(return_value=[])
+        with mock.patch.object(cve, "consultar_online", online):
+            res = vulnerabilidades.cruzar_servicio(self.con, [("deteccion", "cpe:/a:*:portal_acme_interno:2.1")],
+                                                   set(), {}, False, sin_github)
+            online.assert_not_called()
+            self.assertEqual(res["estado"], "sin_datos")  # base incompleta y sin consulta posible
+            vulnerabilidades.cruzar_servicio(self.con, nmap(CPE_HTTPD), set(), {}, False, sin_github)
+        online.assert_called_once_with(CPE_HTTPD, False)
+
     def test_un_cpe_se_consulta_una_sola_vez_por_cruce(self):
         online = mock.Mock(return_value=[item("CVE-2026-0001", [regla("http_server")])])
         memo = vulnerabilidades.Memo()
