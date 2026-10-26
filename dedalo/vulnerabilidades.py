@@ -30,6 +30,14 @@ CONFIRMADO = "confirmado"  # en CISA KEV o Exploit-DB
 SIN_VERIFICAR = "sin_verificar"  # solo un PoC encontrado en GitHub
 NINGUNO = "ninguno"
 
+# Severidades de la NVD, de más a menos grave.
+SEVERIDADES = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
+
+
+def normalizar_severidad(valor) -> str:
+    """La severidad en mayúsculas, como la da la NVD («critical» -> «CRITICAL»); "" si no es texto."""
+    return valor.upper() if isinstance(valor, str) else ""
+
 
 def _token_version(version) -> str:
     """El primer token numérico de una versión: «2.4.59 (Debian)» -> «2.4.59»; sin número, cadena vacía."""
@@ -93,8 +101,7 @@ def _vuln(fila: dict, cpe: str, sin_version: bool, kev, edb, sin_internet: bool,
         poc = _poc(cve_id, sin_internet, buscar_github, memo)
         if poc:
             nivel, enlaces = SIN_VERIFICAR, list(poc)
-    severidad = fila.get("severidad")
-    return {"cve": cve_id, "severidad": severidad.upper() if isinstance(severidad, str) else "",
+    return {"cve": cve_id, "severidad": normalizar_severidad(fila.get("severidad")),
             "enlace": URL_CVE.format(id=cve_id), "exploit_nivel": nivel, "enlaces_exploit": enlaces,
             "origen_cpe": cpe, "sin_version": sin_version}
 
@@ -166,7 +173,7 @@ def orden(vulns: list[dict]) -> int:
     """
     if any(v.get("exploit_nivel") == CONFIRMADO for v in vulns):
         return 0
-    if any(str(v.get("severidad", "")).upper() == "CRITICAL" for v in vulns):
+    if any(normalizar_severidad(v.get("severidad")) == "CRITICAL" for v in vulns):
         return 1
     if any(v.get("cve") for v in vulns):
         return 2
@@ -175,14 +182,14 @@ def orden(vulns: list[dict]) -> int:
     return 4
 
 
-_SEVERIDAD = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+_SEVERIDAD = {severidad: i for i, severidad in enumerate(SEVERIDADES)}
 _EXPLOIT = {CONFIRMADO: 0, SIN_VERIFICAR: 1}
-_CVE_ID = re.compile(r"CVE-\d{4}-\d{4,}\Z")
 
 
 def _clave_vuln(vuln: dict) -> tuple:
     """Dentro de un servicio: primero lo que tiene exploit confirmado, luego PoC, luego por severidad y por CVE."""
-    return (_EXPLOIT.get(vuln.get("exploit_nivel"), 2), _SEVERIDAD.get(str(vuln.get("severidad", "")).upper(), 4), vuln.get("cve", ""))
+    return (_EXPLOIT.get(vuln.get("exploit_nivel"), 2), _SEVERIDAD.get(normalizar_severidad(vuln.get("severidad")), 4),
+            vuln.get("cve", ""))
 
 
 def _clave_servicio(servicio: dict) -> tuple:
@@ -203,7 +210,7 @@ def ordenar_servicios(servicios: list[dict]) -> list[dict]:
     """
     salida = []
     for servicio in servicios:
-        vulns = [v | {"enlace": URL_CVE.format(id=v["cve"]) if _CVE_ID.match(v.get("cve", "")) else ""}
+        vulns = [v | {"enlace": URL_CVE.format(id=v["cve"]) if exploits.es_cve(v.get("cve")) else ""}
                  for v in sorted(servicio["vulns"], key=_clave_vuln)]
         prioridad = None if servicio["estado"] == "sin_datos" else orden(vulns)
         salida.append(servicio | {"vulns": vulns, "prioridad": prioridad})

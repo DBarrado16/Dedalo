@@ -8,17 +8,14 @@ respuesta se valida contra un esquema fijo antes de usarse.
 from __future__ import annotations
 
 import json
-import re
 
-from . import modelo, vulnerabilidades
+from . import exploits, modelo, vulnerabilidades
 
 NIVELES = ("alta", "media", "baja")
 _ORDEN = {"alta": 0, "media": 1, "baja": 2, "sin_analisis": 3}
 _CAMPOS = ("puerto", "protocolo", "servicio", "producto", "version", "detalle")
 _TITULO = 120  # el título web es texto del objetivo: va recortado, como dato
 MAX_VULNS = 10  # vulnerabilidades por servicio que llegan al modelo (las más urgentes); el resto solo se cuenta
-_CVE = re.compile(r"CVE-\d{4}-\d{4,}\Z")
-_SEVERIDADES = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
 
 # Esquema de la respuesta: Ollama obliga al modelo a ajustarse a él; parse_result lo vuelve a comprobar.
 ESQUEMA = {
@@ -69,11 +66,16 @@ def _vulns(servicio: dict) -> dict:
 
     Lo que viene de la NVD no se fía: solo pasan los CVE con forma de CVE y las severidades conocidas.
     """
-    vulns = [v for v in servicio.get("vulns", []) if _CVE.match(str(v.get("cve", "")))]
+    vulns = [v for v in servicio.get("vulns", []) if exploits.es_cve(v.get("cve"))]
     if not vulns:
         return {}
+
+    def severidad(vuln: dict) -> str:
+        valor = vulnerabilidades.normalizar_severidad(vuln.get("severidad"))
+        return valor if valor in vulnerabilidades.SEVERIDADES else ""
+
     datos = {"vulnerabilidades": [
-        {"cve": v["cve"], "severidad": str(v.get("severidad", "")).upper() if str(v.get("severidad", "")).upper() in _SEVERIDADES else "",
+        {"cve": v["cve"], "severidad": severidad(v),
          "exploit": v["exploit_nivel"] if v.get("exploit_nivel") in (vulnerabilidades.CONFIRMADO, vulnerabilidades.SIN_VERIFICAR)
          else vulnerabilidades.NINGUNO} for v in vulns[:MAX_VULNS]]}
     if len(vulns) > MAX_VULNS:
