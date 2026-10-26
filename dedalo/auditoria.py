@@ -462,20 +462,21 @@ def finish_vuln(con, vuln_id: str, filas: list[dict]) -> None:
     """Guarda lo hallado en cada servicio, da el cruce por completo y solo entonces sustituye al anterior.
 
     `filas` = [{servicio_id, estado ("ok" | "sin_datos"), vulns: [{cve, severidad, exploit_nivel, enlaces_exploit,
-    origen_cpe}]}]. Un servicio sin CVE (o sin datos) guarda una fila con `cve_id` vacío que lleva su `estado`: así
-    «se miró y está limpio» (ok) no se confunde con «no se pudo mirar» (sin_datos) ni con «no se cruzó» (sin filas).
+    origen_cpe, fuente_cpe}]}]. Un servicio sin CVE (o sin datos) guarda una fila con `cve_id` vacío que lleva su `estado`:
+    así «se miró y está limpio» (ok) no se confunde con «no se pudo mirar» (sin_datos) ni con «no se cruzó» (sin filas).
     Todo en una transacción; un servicio que no es de su auditoría se ignora (el JOIN no casa).
     """
-    insert = ("INSERT INTO vulnerabilidad (ejecucion_id, servicio_id, cve_id, severidad, exploit_nivel, enlaces, origen_cpe, estado) "
-              "SELECT e.id, s.id, ?, ?, ?, ?, ?, ? FROM ejecucion e JOIN servicio s ON s.id = ? "
+    insert = ("INSERT INTO vulnerabilidad (ejecucion_id, servicio_id, cve_id, severidad, exploit_nivel, enlaces, origen_cpe, "
+              "fuente_cpe, estado) SELECT e.id, s.id, ?, ?, ?, ?, ?, ?, ? FROM ejecucion e JOIN servicio s ON s.id = ? "
               "JOIN activo a ON a.id = s.activo_id AND a.auditoria_id = e.auditoria_id WHERE e.id = ?")
-    vacia = {"cve": "", "severidad": "", "exploit_nivel": "", "enlaces_exploit": [], "origen_cpe": ""}
+    vacia = {"cve": "", "severidad": "", "exploit_nivel": "", "enlaces_exploit": [], "origen_cpe": "", "fuente_cpe": ""}
     with con:
         for fila in filas:
             for vuln in fila.get("vulns") or [vacia]:
                 con.execute(insert, (vuln["cve"], vuln.get("severidad", ""), vuln.get("exploit_nivel", ""),
                                      json.dumps(vuln.get("enlaces_exploit", []), ensure_ascii=False),
-                                     vuln.get("origen_cpe", ""), fila["estado"], fila["servicio_id"], vuln_id))
+                                     vuln.get("origen_cpe", ""), vuln.get("fuente_cpe", ""), fila["estado"],
+                                     fila["servicio_id"], vuln_id))
         _set_state(con, vuln_id, "completa")
         con.execute("DELETE FROM ejecucion WHERE tipo = 'vuln' AND id <> ? "
                     "AND origen_id = (SELECT origen_id FROM ejecucion WHERE id = ?)", (vuln_id, vuln_id))
@@ -485,21 +486,21 @@ def vuln_results(con, import_id: str) -> list[dict]:
     """Lo que dio el último cruce de una importación, por servicio; solo activos en el alcance vigente.
 
     {ip, protocolo, puerto, estado ("ok" | "sin_datos"), vulns: [{cve, severidad, exploit_nivel, enlaces_exploit,
-    cpe, fuente_cpe}]}. Un servicio que no se cruzó no aparece. `origen_cpe` se guarda como «fuente|cpe»
-    (fuente: nmap o deteccion).
+    cpe, fuente_cpe}]}, con `cpe` el que se cruzó y `fuente_cpe` de dónde salió (nmap o deteccion). Un servicio que no
+    se cruzó no aparece.
     """
     servicios: dict[int, dict] = {}
     for row in con.execute(
             "SELECT v.servicio_id, a.ip, s.protocolo, s.puerto, v.cve_id, v.severidad, v.exploit_nivel, v.enlaces, "
-            "v.origen_cpe, v.estado FROM vulnerabilidad v JOIN ejecucion e ON e.id = v.ejecucion_id "
+            "v.origen_cpe, v.fuente_cpe, v.estado FROM vulnerabilidad v JOIN ejecucion e ON e.id = v.ejecucion_id "
             "JOIN servicio s ON s.id = v.servicio_id JOIN activo a ON a.id = s.activo_id "
             "WHERE e.origen_id = ? AND e.tipo = 'vuln' ORDER BY v.id", (import_id,)):
         servicio = servicios.setdefault(row["servicio_id"], {
             "ip": row["ip"], "protocolo": row["protocolo"], "puerto": row["puerto"], "estado": row["estado"], "vulns": []})
         if row["cve_id"]:
-            fuente, _, cpe = row["origen_cpe"].partition("|")
             servicio["vulns"].append({"cve": row["cve_id"], "severidad": row["severidad"], "exploit_nivel": row["exploit_nivel"],
-                                      "enlaces_exploit": json.loads(row["enlaces"]), "cpe": cpe, "fuente_cpe": fuente})
+                                      "enlaces_exploit": json.loads(row["enlaces"]), "cpe": row["origen_cpe"],
+                                      "fuente_cpe": row["fuente_cpe"]})
     if not servicios:
         return []
     current = scope(con, audit_of(con, import_id))

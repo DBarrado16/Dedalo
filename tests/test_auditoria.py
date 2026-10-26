@@ -250,9 +250,9 @@ class ImportTests(unittest.TestCase):
     def vuln_row(self, service, estado="ok", vulns=None):
         return {"servicio_id": service, "estado": estado, "vulns": vulns or []}
 
-    def vuln_item(self, cve="CVE-2026-0001", nivel="confirmado", cpe="nmap|cpe:/a:openbsd:openssh:9.6"):
+    def vuln_item(self, cve="CVE-2026-0001", nivel="confirmado", cpe="cpe:/a:openbsd:openssh:9.6", fuente="nmap"):
         return {"cve": cve, "severidad": "CRITICAL", "exploit_nivel": nivel,
-                "enlaces_exploit": ["https://www.exploit-db.com/exploits/1"], "origen_cpe": cpe}
+                "enlaces_exploit": ["https://www.exploit-db.com/exploits/1"], "origen_cpe": cpe, "fuente_cpe": fuente}
 
     def test_vuln_services_gives_the_nmap_cpe_and_the_good_readings_of_each_observed_service(self):
         self.load_in_scope("lunes")

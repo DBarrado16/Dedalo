@@ -23,6 +23,11 @@ def sin_github(cve_id, sin_internet, token=None):
     return []
 
 
+def nmap(*cpes):
+    """Los pares (fuente, cpe) que recibe cruzar_servicio, todos como si los hubiera dado Nmap."""
+    return [("nmap", cpe) for cpe in cpes]
+
+
 class BaseTemporal(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -42,8 +47,8 @@ class CruzarServicioTests(BaseTemporal):
             return ["https://github.com/x/poc"] if cve_id == "CVE-2026-0002" else []
 
         # Dos servicios: Apache (CVE crítica en KEV) y nginx (CVE media con solo un PoC de GitHub).
-        apache = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], {"CVE-2026-0001"}, {}, False, github)
-        nginx = vulnerabilidades.cruzar_servicio(self.con, ["cpe:/a:f5:nginx:1.0"], {"CVE-2026-0001"}, {}, False, github)
+        apache = vulnerabilidades.cruzar_servicio(self.con, nmap(CPE_HTTPD),{"CVE-2026-0001"}, {}, False, github)
+        nginx = vulnerabilidades.cruzar_servicio(self.con, nmap("cpe:/a:f5:nginx:1.0"),{"CVE-2026-0001"}, {}, False, github)
         self.assertEqual(apache["estado"], "ok")
         self.assertEqual(apache["vulns"][0]["cve"], "CVE-2026-0001")
         self.assertEqual(apache["vulns"][0]["exploit_nivel"], "confirmado")
@@ -54,35 +59,35 @@ class CruzarServicioTests(BaseTemporal):
 
     def test_forma_de_cada_vulnerabilidad(self):
         cve.guardar_cves(self.con, [item("CVE-2026-0001", [regla("http_server")])])
-        res = vulnerabilidades.cruzar_servicio(self.con, [CPE_SIN_VERSION], set(), {"CVE-2026-0001": ["https://edb/1"]},
-                                               False, sin_github)
+        res = vulnerabilidades.cruzar_servicio(self.con, [("deteccion", CPE_SIN_VERSION)], set(),
+                                               {"CVE-2026-0001": ["https://edb/1"]}, False, sin_github)
         self.assertEqual(res["vulns"], [{
             "cve": "CVE-2026-0001", "severidad": "HIGH", "enlace": "https://nvd.nist.gov/vuln/detail/CVE-2026-0001",
             "exploit_nivel": "confirmado", "enlaces_exploit": ["https://edb/1"],
-            "origen_cpe": CPE_SIN_VERSION, "sin_version": True}])
+            "origen_cpe": CPE_SIN_VERSION, "fuente_cpe": "deteccion", "sin_version": True}])
 
     def test_sin_base_local_y_sin_internet_es_sin_datos_no_ok_vacio(self):
         with mock.patch.object(cve, "consultar_online") as online:
-            res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, True, sin_github)
+            res = vulnerabilidades.cruzar_servicio(self.con, nmap(CPE_HTTPD),set(), {}, True, sin_github)
         self.assertEqual(res, {"estado": "sin_datos", "vulns": []})
         online.assert_not_called()  # con el interruptor no se llama ni a la consulta
 
     def test_sin_base_local_y_consulta_fallida_es_sin_datos(self):
         with mock.patch.object(cve, "consultar_online", return_value=None):
-            res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, False, sin_github)
+            res = vulnerabilidades.cruzar_servicio(self.con, nmap(CPE_HTTPD),set(), {}, False, sin_github)
         self.assertEqual(res["estado"], "sin_datos")
 
     def test_consultado_con_cero_cve_es_ok_vacio(self):
         with mock.patch.object(cve, "consultar_online", return_value=[]):
-            res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, False, sin_github)
+            res = vulnerabilidades.cruzar_servicio(self.con, nmap(CPE_HTTPD),set(), {}, False, sin_github)
         self.assertEqual(res, {"estado": "ok", "vulns": []})
 
     def test_base_local_completa_sin_cve_del_producto_es_ok_aunque_falle_la_consulta(self):
         set_config(self.con, "nvd_actualizada", "2026-10-20T00:00:00+00:00")
         with mock.patch.object(cve, "consultar_online", return_value=None):
-            res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, False, sin_github)
+            res = vulnerabilidades.cruzar_servicio(self.con, nmap(CPE_HTTPD),set(), {}, False, sin_github)
         self.assertEqual(res, {"estado": "ok", "vulns": []})
-        res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, True, sin_github)
+        res = vulnerabilidades.cruzar_servicio(self.con, nmap(CPE_HTTPD),set(), {}, True, sin_github)
         self.assertEqual(res, {"estado": "ok", "vulns": []})
 
     def test_base_completa_que_conoce_el_producto_no_sale_si_la_version_no_esta_afectada(self):
@@ -90,11 +95,11 @@ class CruzarServicioTests(BaseTemporal):
         online = mock.Mock(return_value=None)
         with mock.patch.object(cve, "consultar_online", online):
             # Base incompleta: conocer el producto no basta, se pregunta.
-            vulnerabilidades.cruzar_servicio(self.con, ["cpe:/a:apache:http_server:2.4.60"], set(), {}, False, sin_github)
+            vulnerabilidades.cruzar_servicio(self.con, nmap("cpe:/a:apache:http_server:2.4.60"),set(), {}, False, sin_github)
             online.assert_called_once()
             online.reset_mock()
             set_config(self.con, "nvd_actualizada", "2026-10-20T00:00:00+00:00")
-            res = vulnerabilidades.cruzar_servicio(self.con, ["cpe:/a:apache:http_server:2.4.60"], set(), {}, False, sin_github)
+            res = vulnerabilidades.cruzar_servicio(self.con, nmap("cpe:/a:apache:http_server:2.4.60"),set(), {}, False, sin_github)
         self.assertEqual(res, {"estado": "ok", "vulns": []})
         online.assert_not_called()
 
@@ -103,7 +108,7 @@ class CruzarServicioTests(BaseTemporal):
         memo = vulnerabilidades.Memo()
         with mock.patch.object(cve, "consultar_online", online):
             for _ in range(2):  # dos servicios del mismo cruce con el mismo CPE
-                res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, False, sin_github, memo=memo)
+                res = vulnerabilidades.cruzar_servicio(self.con, nmap(CPE_HTTPD),set(), {}, False, sin_github, memo=memo)
                 self.assertEqual([v["cve"] for v in res["vulns"]], ["CVE-2026-0001"])
         online.assert_called_once()
 
@@ -116,7 +121,7 @@ class CruzarServicioTests(BaseTemporal):
         online = mock.Mock(return_value=[item("CVE-2026-0009", [regla("openssh", vendor="openbsd")], "critical", 9.0)])
         with mock.patch.object(cve, "consultar_online", online):
             res = vulnerabilidades.cruzar_servicio(
-                self.con, [CPE_HTTPD, "cpe:/a:openbsd:openssh:7.4"], set(), {}, False, sin_github)
+                self.con, nmap(CPE_HTTPD, "cpe:/a:openbsd:openssh:7.4"),set(), {}, False, sin_github)
         online.assert_called_once_with("cpe:/a:openbsd:openssh:7.4", False)
         self.assertEqual({v["cve"]: v["origen_cpe"] for v in res["vulns"]},
                          {"CVE-2026-0001": CPE_HTTPD, "CVE-2026-0009": "cpe:/a:openbsd:openssh:7.4"})
@@ -127,35 +132,35 @@ class CruzarServicioTests(BaseTemporal):
     def test_online_con_cpe_sin_version_marca_sin_version(self):
         online = mock.Mock(return_value=[item("CVE-2026-0009", [regla("openssh", vendor="openbsd")])])
         with mock.patch.object(cve, "consultar_online", online):
-            res = vulnerabilidades.cruzar_servicio(self.con, ["cpe:/a:openbsd:openssh"], set(), {}, False, sin_github)
+            res = vulnerabilidades.cruzar_servicio(self.con, nmap("cpe:/a:openbsd:openssh"),set(), {}, False, sin_github)
         self.assertTrue(res["vulns"][0]["sin_version"])
 
     def test_github_solo_para_no_confirmadas_y_con_internet(self):
         cve.guardar_cves(self.con, [item("CVE-2026-0001", [regla("http_server")]),
                                     item("CVE-2026-0002", [regla("http_server")])])
         github = mock.Mock(return_value=["https://github.com/x/poc"])
-        vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], {"CVE-2026-0001"}, {}, False, github)
+        vulnerabilidades.cruzar_servicio(self.con, nmap(CPE_HTTPD),{"CVE-2026-0001"}, {}, False, github)
         github.assert_called_once_with("CVE-2026-0002", False)
         github.reset_mock()
-        res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, True, github)
+        res = vulnerabilidades.cruzar_servicio(self.con, nmap(CPE_HTTPD),set(), {}, True, github)
         github.assert_not_called()
         self.assertEqual({v["exploit_nivel"] for v in res["vulns"]}, {"ninguno"})
 
     def test_cve_repetida_en_dos_cpes_sale_una_vez(self):
         cve.guardar_cves(self.con, [item("CVE-2026-0001", [regla("http_server")])])
-        res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD, CPE_SIN_VERSION], set(), {}, False, sin_github)
+        res = vulnerabilidades.cruzar_servicio(self.con, nmap(CPE_HTTPD, CPE_SIN_VERSION),set(), {}, False, sin_github)
         self.assertEqual([v["cve"] for v in res["vulns"]], ["CVE-2026-0001"])
 
     def test_cpe_sin_version_se_queda_con_las_de_mayor_cvss_y_no_busca_en_github(self):
         # Nmap pone cpe:/o:linux:linux_kernel en cada servicio de un Linux: sin versión casan todas las del producto.
         cve.guardar_cves(self.con, [item(f"CVE-2026-{n:04d}", [regla("http_server")], cvss=n / 10) for n in range(1, 51)])
         github = mock.Mock(return_value=["https://github.com/x/poc"])
-        res = vulnerabilidades.cruzar_servicio(self.con, [CPE_SIN_VERSION], set(), {}, False, github)
+        res = vulnerabilidades.cruzar_servicio(self.con, nmap(CPE_SIN_VERSION), set(), {}, False, github)
         self.assertEqual({v["cve"] for v in res["vulns"]}, {f"CVE-2026-{n:04d}" for n in range(31, 51)})
         # Lo mismo si las da la consulta en línea.
         online = [item(f"CVE-2026-{n:04d}", [regla("openssh", vendor="openbsd")], cvss=n / 10) for n in range(1, 31)]
         with mock.patch.object(cve, "consultar_online", return_value=online):
-            res = vulnerabilidades.cruzar_servicio(self.con, ["cpe:/a:openbsd:openssh"], set(), {}, False, github)
+            res = vulnerabilidades.cruzar_servicio(self.con, nmap("cpe:/a:openbsd:openssh"),set(), {}, False, github)
         self.assertEqual({v["cve"] for v in res["vulns"]}, {f"CVE-2026-{n:04d}" for n in range(11, 31)})
         github.assert_not_called()
         self.assertEqual(vulnerabilidades.TOPE_SIN_VERSION, 20)
@@ -163,7 +168,7 @@ class CruzarServicioTests(BaseTemporal):
     def test_si_github_no_responde_no_se_le_vuelve_a_preguntar_en_el_cruce(self):
         cve.guardar_cves(self.con, [item("CVE-2026-0001", [regla("http_server")]), item("CVE-2026-0002", [regla("http_server")])])
         github = mock.Mock(return_value=None)  # 403/429 o fallo de red: no se pudo consultar
-        res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, False, github)
+        res = vulnerabilidades.cruzar_servicio(self.con, nmap(CPE_HTTPD),set(), {}, False, github)
         self.assertEqual(github.call_count, 1)
         self.assertEqual({v["exploit_nivel"] for v in res["vulns"]}, {"ninguno"})
 
@@ -172,7 +177,7 @@ class CruzarServicioTests(BaseTemporal):
         github = mock.Mock(return_value=["https://github.com/x/poc"])
         memo = vulnerabilidades.Memo()
         for cpe in (CPE_HTTPD, "cpe:/a:f5:nginx:1.0"):  # dos servicios del mismo cruce con la misma CVE
-            res = vulnerabilidades.cruzar_servicio(self.con, [cpe], set(), {}, False, github, memo=memo)
+            res = vulnerabilidades.cruzar_servicio(self.con, nmap(cpe), set(), {}, False, github, memo=memo)
             self.assertEqual(res["vulns"][0]["enlaces_exploit"], ["https://github.com/x/poc"])
         github.assert_called_once_with("CVE-2026-0001", False)
 

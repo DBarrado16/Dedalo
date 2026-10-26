@@ -92,7 +92,8 @@ def _poc(cve_id: str, sin_internet: bool, buscar_github, memo: Memo) -> list[str
     return memo.github[cve_id]
 
 
-def _vuln(fila: dict, cpe: str, sin_version: bool, kev, edb, sin_internet: bool, buscar_github, memo: Memo) -> dict:
+def _vuln(fila: dict, fuente: str, cpe: str, sin_version: bool, kev, edb, sin_internet: bool, buscar_github,
+          memo: Memo) -> dict:
     cve_id = fila["id"]
     exploit = exploits.exploit_de(cve_id, kev, edb)
     nivel, enlaces = exploit["nivel"], list(exploit["enlaces"])
@@ -103,7 +104,7 @@ def _vuln(fila: dict, cpe: str, sin_version: bool, kev, edb, sin_internet: bool,
             nivel, enlaces = SIN_VERIFICAR, list(poc)
     return {"cve": cve_id, "severidad": normalizar_severidad(fila.get("severidad")),
             "enlace": URL_CVE.format(id=cve_id), "exploit_nivel": nivel, "enlaces_exploit": enlaces,
-            "origen_cpe": cpe, "sin_version": sin_version}
+            "origen_cpe": cpe, "fuente_cpe": fuente, "sin_version": sin_version}
 
 
 def _por_cvss(fila: dict) -> tuple:
@@ -133,34 +134,35 @@ def _cves_del_cpe(con, cpe: str, sin_internet: bool) -> tuple[list[dict], bool, 
     return filas, sin_version, fiable
 
 
-def cruzar_servicio(con, cpes: list[str], kev, edb, sin_internet: bool, buscar_github=exploits.buscar_github,
+def cruzar_servicio(con, cpes: list[tuple[str, str]], kev, edb, sin_internet: bool, buscar_github=exploits.buscar_github,
                     memo: Memo | None = None) -> dict:
-    """Reúne las vulnerabilidades de un servicio a partir de sus CPE.
+    """Reúne las vulnerabilidades de un servicio a partir de sus CPE: los pares (fuente, cpe) de `cpes_del_servicio`.
 
-    Por cada cpe, primero la base local; solo si no da ninguna CVE para ese cpe y no basta (no conoce el producto o no
-    está completa), la consulta online (nunca con `sin_internet`). Un cpe sin versión se queda con sus TOPE_SIN_VERSION CVE de mayor CVSS. A cada CVE se le pone
-    su nivel de exploit: "confirmado" (KEV/Exploit-DB), "sin_verificar" (solo un PoC en GitHub, buscado únicamente si
-    no es confirmado, el cpe trae versión y hay salida a internet) o "ninguno".
-    Una CVE que sale por dos cpe se cuenta una vez, con el primero.
+    Por cada cpe, primero la base local; solo si no da ninguna CVE para ese cpe y no basta (no conoce el producto o
+    no está completa), la consulta online (nunca con `sin_internet`). Un cpe sin versión se queda con sus
+    TOPE_SIN_VERSION CVE de mayor CVSS. A cada CVE se le pone su nivel de exploit: "confirmado" (KEV/Exploit-DB),
+    "sin_verificar" (solo un PoC en GitHub, buscado únicamente si no es confirmado, el cpe trae versión y hay salida a
+    internet) o "ninguno". Una CVE que sale por dos cpe se cuenta una vez, con el primero.
 
     Devuelve {"estado", "vulns"}. `estado` es "sin_datos" cuando ningún cpe tuvo respuesta fiable: no hay CPE,
     o no hay base local completa (falta `config.nvd_actualizada`; que la tabla cve tenga filas no basta) y la consulta
     online no estuvo disponible (interruptor o fallo). Es distinto de "ok" con `vulns=[]`: eso es «se miró y no hay CVE».
-    Cada vuln: {cve, severidad (en mayúsculas, como la NVD), enlace, exploit_nivel, enlaces_exploit, origen_cpe, sin_version}.
+    Cada vuln: {cve, severidad (en mayúsculas, como la NVD), enlace, exploit_nivel, enlaces_exploit, origen_cpe (el cpe),
+    fuente_cpe (su fuente: "nmap" o "deteccion"), sin_version}.
 
     `memo` (ver Memo) se comparte entre los servicios de un mismo cruce; sin él, vale solo para esta llamada.
     """
     memo = Memo() if memo is None else memo
     vulns: dict[str, dict] = {}
     respondido = False
-    for cpe in cpes:
+    for fuente, cpe in cpes:
         if cpe not in memo.cpes:
             memo.cpes[cpe] = _cves_del_cpe(con, cpe, sin_internet)
         filas, sin_version, fiable = memo.cpes[cpe]
         respondido = respondido or fiable
         for fila in filas:
             if fila["id"] not in vulns:
-                vulns[fila["id"]] = _vuln(fila, cpe, sin_version, kev, edb, sin_internet, buscar_github, memo)
+                vulns[fila["id"]] = _vuln(fila, fuente, cpe, sin_version, kev, edb, sin_internet, buscar_github, memo)
     return {"estado": "ok" if respondido else "sin_datos", "vulns": list(vulns.values())}
 
 

@@ -181,7 +181,7 @@ CREATE TABLE cve_cpe (
 -- Lo que el cruce por CPE (ejecución 'vuln') halló en cada servicio. cve_id no es clave foránea:
 -- la base de CVE se puede renovar sin tocar los hallazgos de una auditoría.
 -- Una fila por CVE hallada. Un servicio sin ninguna CVE (o que no se pudo mirar) guarda UNA fila
--- centinela con cve_id = '' (y severidad, exploit_nivel, enlaces y origen_cpe vacíos) que lleva su
+-- centinela con cve_id = '' (y severidad, exploit_nivel, enlaces, origen_cpe y fuente_cpe vacíos) que lleva su
 -- estado: 'ok' = se miró y está limpio, 'sin_datos' = no se pudo mirar (sin CPE, o sin base local
 -- completa y sin consulta en línea). Todas las filas de un servicio llevan el mismo estado. Un servicio
 -- que no tiene ninguna fila no se cruzó (p. ej. porque estaba fuera de alcance al hacerlo). La centinela
@@ -194,9 +194,9 @@ CREATE TABLE vulnerabilidad (
   severidad     TEXT NOT NULL DEFAULT '', -- CRITICAL, HIGH, MEDIUM o LOW, en mayúsculas como la NVD
   exploit_nivel TEXT NOT NULL DEFAULT '', -- confirmado (CISA KEV / Exploit-DB) o PoC sin verificar (GitHub)
   enlaces       TEXT NOT NULL DEFAULT '[]', -- JSON: solo enlaces, nunca el exploit
-  origen_cpe    TEXT NOT NULL DEFAULT '',   -- «fuente|cpe»: el CPE que se cruzó y de dónde salió
-                                            -- (fuente: nmap, el que dio Nmap, o deteccion, el construido
-                                            -- con la detección de alta confianza); se parte en la lectura
+  origen_cpe    TEXT NOT NULL DEFAULT '',   -- el CPE que se cruzó
+  fuente_cpe    TEXT NOT NULL DEFAULT '',   -- de dónde salió: nmap, el que dio Nmap, o deteccion, el
+                                            -- construido con la detección de alta confianza
   estado        TEXT NOT NULL DEFAULT ''    -- 'ok' o 'sin_datos'
 );
 

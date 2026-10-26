@@ -224,8 +224,8 @@ ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
             con.execute("INSERT INTO cve_cpe (cve_id, parte, vendor, producto, v_ini, v_ini_incl, v_fin, v_fin_incl) "
                         "VALUES ('CVE-2026-0001', 'a', 'nginx', 'nginx', NULL, 1, '1.25.0', 0)")
             con.execute("INSERT INTO vulnerabilidad (ejecucion_id, servicio_id, cve_id, severidad, exploit_nivel, "
-                        "enlaces, origen_cpe, estado) VALUES ('x1', ?, 'CVE-2026-0001', 'ALTA', '', '[]', "
-                        "'cpe:/a:nginx:nginx:1.18', 'nueva')", (service,))
+                        "enlaces, origen_cpe, fuente_cpe, estado) VALUES ('x1', ?, 'CVE-2026-0001', 'ALTA', '', '[]', "
+                        "'cpe:/a:nginx:nginx:1.18', 'nmap', 'nueva')", (service,))
         with self.assertRaises(sqlite3.IntegrityError), con:
             con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, nombre, estado, creada) "
                         "VALUES ('x2', 'a1', 'inventado', 'x', 'en_cola', '2026-10-21T00:00:00Z')")

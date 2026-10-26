@@ -316,6 +316,7 @@ CREATE TABLE vulnerabilidad (
   exploit_nivel TEXT NOT NULL DEFAULT '',
   enlaces       TEXT NOT NULL DEFAULT '[]',
   origen_cpe    TEXT NOT NULL DEFAULT '',
+  fuente_cpe    TEXT NOT NULL DEFAULT '',
   estado        TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX vulnerabilidad_servicio ON vulnerabilidad (servicio_id);

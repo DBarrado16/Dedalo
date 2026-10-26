@@ -1073,7 +1073,7 @@ class PortalStore:
             with self.lock:
                 self.vuln_progress[job_id] = {"hechos": hechos, "total": total}
 
-        filas, respuestas = [], {}  # respuestas: lo ya cruzado por lista de CPE (varios servicios repiten el suyo)
+        filas, respuestas = [], {}  # respuestas: lo ya cruzado por sus pares (fuente, cpe); varios servicios repiten los suyos
         memo = vulnerabilidades.Memo()  # lo ya consultado fuera en este cruce, para no repetirlo entre servicios
         state, error = "completa", ""
         try:
@@ -1084,17 +1084,14 @@ class PortalStore:
                     error = "El portal se cerró antes de terminar el cruce." if self.closing else "Detenido desde el portal antes de terminar."
                     break
                 if vivo.status(servicio["ip"]) == targets.Scope.IN:
-                    fuentes = {cpe: fuente for fuente, cpe in
-                               vulnerabilidades.cpes_del_servicio(servicio["cpe"], servicio["lecturas"])}
-                    clave = tuple(fuentes)
-                    if clave not in respuestas:
+                    pares = tuple(vulnerabilidades.cpes_del_servicio(servicio["cpe"], servicio["lecturas"]))
+                    if pares not in respuestas:
                         with closing(self.database()) as con:
-                            respuestas[clave] = vulnerabilidades.cruzar_servicio(
-                                con, list(clave), kev, exploitdb, self.sin_internet, buscar_github=exploits.buscar_github,
+                            respuestas[pares] = vulnerabilidades.cruzar_servicio(
+                                con, list(pares), kev, exploitdb, self.sin_internet, buscar_github=exploits.buscar_github,
                                 memo=memo)
-                    respuesta = respuestas[clave]
-                    vulns = [v | {"origen_cpe": f"{fuentes[v['origen_cpe']]}|{v['origen_cpe']}"} for v in respuesta["vulns"]]
-                    filas.append({"servicio_id": servicio["servicio_id"], "estado": respuesta["estado"], "vulns": vulns})
+                    respuesta = respuestas[pares]
+                    filas.append({"servicio_id": servicio["servicio_id"], "estado": respuesta["estado"], "vulns": respuesta["vulns"]})
                 avance(hechos + 1, len(servicios))
         except Exception as exc:
             print(f"Error del portal: no se pudo cruzar vulnerabilidades en {job_id}: {exc}", file=sys.stderr)
