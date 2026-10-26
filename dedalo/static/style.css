@@ -208,7 +208,7 @@ tr:hover td { background: var(--selection); }
 .inventory-tools .model-hint { flex-basis: 100%; }
 .inventory-tools .actions { flex-shrink: 1; min-width: 0; }  /* con el desplegable de modelo, salta de línea en vez de desbordar */
 .priority-list { list-style: none; margin: 18px 0 0; padding: 0; border-top: 1px solid var(--line); }
-.priority-list li { display: grid; grid-template-columns: 28px minmax(0, 1fr); column-gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.priority-list > li { display: grid; grid-template-columns: 28px minmax(0, 1fr); column-gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); }
 .priority-rank { grid-row: span 3; color: var(--muted); font: 13px var(--font-data); text-align: right; padding-top: 3px; }
 .priority-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
 .priority-ip { font: 600 17px var(--font-data); overflow-wrap: anywhere; }
