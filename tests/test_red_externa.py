@@ -4,6 +4,7 @@ Las URL de los feeds y de las APIs son constantes de módulo; aquí se apuntan a
 """
 
 import gzip
+import io
 import json
 import os
 import socket
@@ -254,6 +255,17 @@ class ActualizarBaseTests(unittest.TestCase):
         # Las modificadas tendrán que cubrir desde el feed más viejo de la base, no desde hoy.
         self.assertEqual(datetime.fromisoformat(auditoria.get_config(self.con, "nvd_actualizada")), ahora - timedelta(days=2))
 
+    def test_un_feed_cortado_antes_de_su_content_length_no_se_importa(self):
+        auditoria.set_config(self.con, "nvd_actualizada", datetime.now(timezone.utc).isoformat())
+        cuerpo = feed(cve_nvd("CVE-2026-6666"))  # un gzip completo: solo el Content-Length delata que faltan bytes
+        respuesta = _Respuesta(cuerpo, cabeceras={"Content-Length": str(len(cuerpo) + 100)})
+        with mock.patch.object(internet, "peticion", return_value=respuesta):
+            mensajes = []
+            cve.actualizar_base(self.con, self.destino, False, log=mensajes.append)
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM cve").fetchone()[0], 0)
+        self.assertTrue(any("incompleta" in m for m in mensajes))
+        self.assertEqual(list(self.destino.glob("*")), [])
+
     def test_feed_roto_se_ignora(self):
         rutas = self._rutas_anuales(**{f"/feeds/nvdcve-2.0-{self.anio}.json.gz": (200, gzip.compress(b"{no es json"))})
         with _Servidor(rutas) as s, self._parchear(s):
@@ -366,10 +378,10 @@ EDB_PRUEBA = b'id,file,description,date_published,codes\r\n50383,exploits/multip
 
 
 class _Respuesta:
-    """Respuesta falsa de `internet.peticion`: sirve `cuerpo` y, si se pide, falla a mitad de la lectura."""
+    """Respuesta falsa de `internet.peticion`: sirve `cuerpo` con `cabeceras` y, si se pide, falla a mitad de la lectura."""
 
-    def __init__(self, cuerpo, falla_a_mitad=False):
-        self.cuerpo, self.falla_a_mitad = cuerpo, falla_a_mitad
+    def __init__(self, cuerpo, falla_a_mitad=False, cabeceras=None):
+        self.flujo, self.falla_a_mitad, self.headers = io.BytesIO(cuerpo), falla_a_mitad, cabeceras or {}
 
     def __enter__(self):
         return self
@@ -380,7 +392,7 @@ class _Respuesta:
     def read(self, n=-1):
         if self.falla_a_mitad:
             raise ConnectionResetError("se cortó la conexión a mitad de descarga")
-        return self.cuerpo[:n] if n >= 0 else self.cuerpo
+        return self.flujo.read(n)
 
 
 class ActualizarFuentesTests(unittest.TestCase):

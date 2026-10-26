@@ -273,22 +273,6 @@ def _items_de_json(texto: str) -> list[dict]:
     return [item for item in map(item_desde_nvd, vulnerabilidades) if item]
 
 
-def _descargar(url: str, ruta: Path) -> None:
-    """Baja `url` a `ruta` (por un fichero parcial) con tope de tamaño; OSError/ValueError si falla."""
-    parcial = ruta.with_name(ruta.name + ".descarga")
-    total = 0
-    try:
-        with internet.peticion(url, timeout=60) as respuesta, parcial.open("wb") as salida:
-            while trozo := respuesta.read(1 << 20):
-                total += len(trozo)
-                if total > MAX_DESCARGA:
-                    raise ValueError("el feed es mayor de lo esperado")
-                salida.write(trozo)
-        parcial.replace(ruta)
-    finally:
-        parcial.unlink(missing_ok=True)
-
-
 def _leer_feed(ruta: Path) -> list[dict]:
     """Items de un feed descargado, comprimido (gzip) o no, con o sin BOM."""
     with ruta.open("rb") as f:
@@ -345,7 +329,7 @@ def actualizar_base(con, destino: str | Path, sin_internet: bool, log=print) -> 
         ruta = carpeta / f"nvd-{nombre}.json.gz"
         log(f"Descargando el feed «{nombre}» de la NVD...")
         try:
-            _descargar(url, ruta)
+            internet.descargar(url, ruta, MAX_DESCARGA)
             items = _leer_feed(ruta)
         except (OSError, ValueError, EOFError, zlib.error, http.client.HTTPException) as exc:
             fallos += 1
@@ -372,8 +356,9 @@ def consultar_online(cpe: str, sin_internet: bool) -> list[dict] | None:
     Devuelve `[]` solo si la consulta fue correcta y la NVD no dio ninguna CVE, o si `sin_internet` está
     activo (no se consulta nada: tampoco hay datos). Así quien llama distingue «sin datos» de «sin vulnerabilidades».
 
-    Es el respaldo cuando la base local no tiene el producto. Consulta por `virtualMatchString`, que también
-    casa con los rangos de versión. Quien llama decide el alcance antes: el CPE de un activo excluido no debe llegar aquí.
+    Es el respaldo cuando la base local no basta (no tiene el producto o no está completa). Consulta por
+    `virtualMatchString`, que también casa con los rangos de versión. Quien llama decide el alcance antes: el CPE
+    de un activo excluido no debe llegar aquí.
     """
     if sin_internet:
         return []
@@ -384,14 +369,7 @@ def consultar_online(cpe: str, sin_internet: bool) -> list[dict] | None:
     parte = (re.match(r"cpe:(?:2\.3:|/)([aoh])\b", cpe.strip().lower()) or [None, "a"])[1]
     consulta = urllib.parse.urlencode({"virtualMatchString": f"cpe:2.3:{parte}:{vendor or '*'}:{producto}:{version or '*'}",
                                        "resultsPerPage": 500})
-    try:
-        with internet.peticion(f"{NVD_API_URL}?{consulta}", timeout=30) as respuesta:
-            crudo = respuesta.read(MAX_RESPUESTA_API + 1)
-        if len(crudo) > MAX_RESPUESTA_API:
-            return None
-        datos = json.loads(crudo.decode("utf-8-sig"))
-    except (OSError, ValueError, http.client.HTTPException):
-        return None
+    datos = internet.leer_json(f"{NVD_API_URL}?{consulta}", MAX_RESPUESTA_API)
     vulnerabilidades = datos.get("vulnerabilities") if isinstance(datos, dict) else None
     if not isinstance(vulnerabilidades, list):
         return None
