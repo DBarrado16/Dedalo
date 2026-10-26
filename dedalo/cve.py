@@ -205,7 +205,8 @@ def _regla_nvd(coincidencia):
 
     Con rango (`versionStart*`/`versionEnd*`) se copia tal cual. Con una versión concreta en el CPE y sin
     rango, la regla es el rango cerrado `v_ini = v_fin = versión`: sin rango, `cves_de` la leería como
-    «todas las versiones del producto». Con `*` o `-` de versión y sin rango sí vale para todas.
+    «todas las versiones del producto». Esa versión lleva pegado el campo update, como la escribe Nmap
+    (`openssh:9.3:p1` -> «9.3p1»). Con `*` o `-` de versión y sin rango sí vale para todas.
     """
     if not isinstance(coincidencia, dict) or coincidencia.get("vulnerable") is not True:
         return None
@@ -221,7 +222,7 @@ def _regla_nvd(coincidencia):
         regla["v_ini"], regla["v_ini_incl"] = (ini_incl, 1) if ini_incl else (ini_excl, 0)
         regla["v_fin"], regla["v_fin_incl"] = (fin_incl, 1) if fin_incl else (fin_excl, 0)
     elif _sin_comodin(campos[5]):
-        regla["v_ini"] = regla["v_fin"] = _sin_comodin(campos[5])
+        regla["v_ini"] = regla["v_fin"] = _sin_comodin(campos[5]) + (_sin_comodin(campos[6]) if len(campos) > 6 else "")
         regla["v_ini_incl"] = regla["v_fin_incl"] = 1
     return regla
 

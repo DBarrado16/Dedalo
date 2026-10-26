@@ -93,6 +93,19 @@ class NormalizarNvdTests(unittest.TestCase):
             self.assertEqual(cve.cves_de(con, "cpe:/a:apache:http_server:2.4.48"), [])
             con.close()
 
+    def test_el_update_de_una_version_exacta_va_pegado_a_ella_como_la_da_nmap(self):
+        # La NVD parte las versiones de OpenSSH en versión y update (9.3 y p1); Nmap da 9.3p1.
+        criterios = [{"vulnerable": True, "criteria": "cpe:2.3:a:openbsd:openssh:9.3:p1:*:*:*:*:*:*"},
+                     {"vulnerable": True, "criteria": "cpe:2.3:a:openbsd:openssh:9.2:-:*:*:*:*:*:*"}]
+        item = cve.item_desde_nvd(cve_nvd(criterios=criterios))
+        self.assertEqual([(r["v_ini"], r["v_fin"]) for r in item["cpes"]], [("9.3p1", "9.3p1"), ("9.2", "9.2")])
+        with tempfile.TemporaryDirectory() as d:
+            con = db.connect(d)
+            cve.guardar_cves(con, [item])
+            self.assertEqual([c["id"] for c in cve.cves_de(con, "cpe:/a:openbsd:openssh:9.3p1")], ["CVE-2021-0001"])
+            self.assertEqual(cve.cves_de(con, "cpe:/a:openbsd:openssh:9.3p2"), [])
+            con.close()
+
     def test_rangos_con_sus_extremos(self):
         criterios = [
             {"vulnerable": True, "criteria": "cpe:2.3:a:apache:http_server:*:*:*:*:*:*:*:*",
