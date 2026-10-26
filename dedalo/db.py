@@ -262,6 +262,66 @@ CREATE TABLE deteccion (
 );
 CREATE INDEX deteccion_servicio ON deteccion (servicio_id);
 """,
+    # Cruce de vulnerabilidades por CPE: tipo de ejecución `vuln`, base local de CVE
+    # (`cve` + reglas de aplicabilidad `cve_cpe`) y lo que el cruce halla por servicio
+    # (`vulnerabilidad`). La fecha de la última actualización de la base NVD va en
+    # `config` (clave `nvd_actualizada`; la de cada feed anual, en `nvd_feed_<año>`).
+    6: """
+CREATE TABLE nueva_ejecucion (
+  id           TEXT PRIMARY KEY,
+  auditoria_id TEXT NOT NULL REFERENCES auditoria(id) ON DELETE CASCADE,
+  tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'descubrimiento', 'analisis', 'credenciales', 'version', 'vuln')),
+  origen_id    TEXT REFERENCES ejecucion(id) ON DELETE CASCADE,
+  nombre       TEXT NOT NULL,
+  estado       TEXT NOT NULL CHECK (estado IN ('preparada', 'en_cola', 'en_curso', 'deteniendo', 'completa',
+                                               'parcial', 'error', 'cancelada', 'interrumpida')),
+  opciones     TEXT NOT NULL DEFAULT '{}',
+  creada       TEXT NOT NULL,
+  iniciada     TEXT,
+  terminada    TEXT,
+  error        TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO nueva_ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada, iniciada, terminada, error)
+  SELECT id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada, iniciada, terminada, error FROM ejecucion;
+DROP TABLE ejecucion;
+ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
+CREATE INDEX ejecucion_auditoria ON ejecucion (auditoria_id);
+CREATE INDEX ejecucion_origen ON ejecucion (origen_id);
+CREATE TABLE cve (
+  id        TEXT PRIMARY KEY,
+  publicada TEXT NOT NULL DEFAULT '',
+  severidad TEXT NOT NULL DEFAULT '',
+  cvss      REAL,
+  resumen   TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE cve_cpe (
+  id         INTEGER PRIMARY KEY,
+  cve_id     TEXT NOT NULL REFERENCES cve(id) ON DELETE CASCADE,
+  parte      TEXT NOT NULL DEFAULT '',
+  vendor     TEXT NOT NULL DEFAULT '',
+  producto   TEXT NOT NULL,
+  v_ini      TEXT,
+  v_ini_incl INTEGER NOT NULL DEFAULT 0,
+  v_fin      TEXT,
+  v_fin_incl INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX cve_cpe_producto ON cve_cpe (producto);
+CREATE INDEX cve_cpe_cve ON cve_cpe (cve_id);
+CREATE TABLE vulnerabilidad (
+  id            INTEGER PRIMARY KEY,
+  ejecucion_id  TEXT NOT NULL REFERENCES ejecucion(id) ON DELETE CASCADE,
+  servicio_id   INTEGER NOT NULL REFERENCES servicio(id) ON DELETE CASCADE,
+  cve_id        TEXT NOT NULL,
+  severidad     TEXT NOT NULL DEFAULT '',
+  exploit_nivel TEXT NOT NULL DEFAULT '',
+  enlaces       TEXT NOT NULL DEFAULT '[]',
+  origen_cpe    TEXT NOT NULL DEFAULT '',
+  fuente_cpe    TEXT NOT NULL DEFAULT '',
+  estado        TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX vulnerabilidad_servicio ON vulnerabilidad (servicio_id);
+CREATE INDEX vulnerabilidad_ejecucion ON vulnerabilidad (ejecucion_id);
+""",
 }
 
 

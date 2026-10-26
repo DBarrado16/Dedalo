@@ -10,7 +10,8 @@ LATEST = max(db.MIGRATIONS)
 NEXT = LATEST + 1  # número para migraciones de prueba
 TABLES = {"auditoria", "alcance", "ejecucion", "activo", "servicio", "observacion_activo",
           "observacion", "evidencia", "captura", "prioridad",
-          "config", "credencial_catalogo", "credencial_resultado", "deteccion"}
+          "config", "credencial_catalogo", "credencial_resultado", "deteccion",
+          "cve", "cve_cpe", "vulnerabilidad"}
 
 
 class DatabaseTests(unittest.TestCase):
@@ -184,7 +185,7 @@ ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
 
     def test_migration_5_adds_detection_table_and_type(self):
         con = self.con
-        self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], 5)
+        self.assertGreaterEqual(con.execute("PRAGMA user_version").fetchone()[0], 5)
         tablas = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertIn("deteccion", tablas)
         indices = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='index'")}
@@ -205,6 +206,58 @@ ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
         with con:
             con.execute("DELETE FROM ejecucion WHERE id = 'v1'")
         self.assertEqual(con.execute("SELECT COUNT(*) FROM deteccion").fetchone()[0], 0)
+
+    def test_migration_6_adds_cve_tables_and_vuln_type(self):
+        con = self.con
+        self.assertGreaterEqual(con.execute("PRAGMA user_version").fetchone()[0], 6)
+        tablas = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertLessEqual({"cve", "cve_cpe", "vulnerabilidad"}, tablas)
+        indices = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        # Por ejecución: vuln_results lee por ella y borrarla borra en cascada sus vulnerabilidades.
+        self.assertLessEqual({"cve_cpe_producto", "vulnerabilidad_servicio", "vulnerabilidad_ejecucion"}, indices)
+        _, service = self.audit()
+        with con:
+            con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, creada) "
+                        "VALUES ('x1', 'a1', 'vuln', 'e1', 'Nmap lunes', 'completa', '2026-10-21T00:00:00Z')")
+            con.execute("INSERT INTO cve (id, publicada, severidad, cvss, resumen) "
+                        "VALUES ('CVE-2026-0001', '2026-01-01', 'ALTA', 7.5, 'x')")
+            con.execute("INSERT INTO cve_cpe (cve_id, parte, vendor, producto, v_ini, v_ini_incl, v_fin, v_fin_incl) "
+                        "VALUES ('CVE-2026-0001', 'a', 'nginx', 'nginx', NULL, 1, '1.25.0', 0)")
+            con.execute("INSERT INTO vulnerabilidad (ejecucion_id, servicio_id, cve_id, severidad, exploit_nivel, "
+                        "enlaces, origen_cpe, fuente_cpe, estado) VALUES ('x1', ?, 'CVE-2026-0001', 'ALTA', '', '[]', "
+                        "'cpe:/a:nginx:nginx:1.18', 'nmap', 'nueva')", (service,))
+        with self.assertRaises(sqlite3.IntegrityError), con:
+            con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, nombre, estado, creada) "
+                        "VALUES ('x2', 'a1', 'inventado', 'x', 'en_cola', '2026-10-21T00:00:00Z')")
+        # Borrar la CVE se lleva sus reglas; borrar la ejecución, sus vulnerabilidades.
+        with con:
+            con.execute("DELETE FROM cve")
+            con.execute("DELETE FROM ejecucion WHERE id = 'x1'")
+        for tabla in ("cve_cpe", "vulnerabilidad"):
+            self.assertEqual(con.execute(f"SELECT COUNT(*) FROM {tabla}").fetchone()[0], 0)
+
+    def test_version_five_database_is_upgraded_keeping_its_data(self):
+        self.con.close()
+        path = Path(self.temp.name) / db.FILENAME
+        path.unlink()
+        old = sqlite3.connect(path)
+        script = "".join(f"{db.MIGRATIONS[v]}\n" for v in range(1, 6))
+        old.executescript(f"BEGIN; {script} PRAGMA user_version = 5; COMMIT;")
+        old.execute("PRAGMA foreign_keys = ON")
+        _, service = self.audit(old)
+        old.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, creada) "
+                    "VALUES ('v1', 'a1', 'version', 'e1', 'x', 'completa', '2026-10-21T00:00:00Z')")
+        old.execute("INSERT INTO deteccion (ejecucion_id, servicio_id, origen, producto) VALUES ('v1', ?, 'ia', 'nginx')",
+                    (service,))
+        old.commit()
+        old.close()
+        self.con = db.connect(self.temp.name)
+        self.assertEqual(self.con.execute("PRAGMA user_version").fetchone()[0], LATEST)
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM ejecucion").fetchone()[0], 2)
+        self.assertEqual(self.con.execute("SELECT producto FROM deteccion").fetchone()[0], "nginx")
+        self.assertEqual(self.con.execute("SELECT producto FROM observacion").fetchone()[0], "nginx")
+        indexes = {row[0] for row in self.con.execute("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ejecucion'")}
+        self.assertLessEqual({"ejecucion_auditoria", "ejecucion_origen"}, indexes)
 
     def test_refuses_database_from_newer_version(self):
         self.con.execute("PRAGMA user_version = 99")

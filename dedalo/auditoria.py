@@ -273,7 +273,7 @@ def close_interrupted_analyses(con: sqlite3.Connection) -> None:
     with con:
         con.execute("UPDATE ejecucion SET estado = 'interrumpida', terminada = ?, "
                     "error = 'El portal se cerró antes de terminar el análisis.' "
-                    "WHERE tipo IN ('analisis', 'credenciales', 'descubrimiento', 'version') AND estado IN ('en_cola', 'en_curso', 'deteniendo')", (now(),))
+                    "WHERE tipo IN ('analisis', 'credenciales', 'descubrimiento', 'version', 'vuln') AND estado IN ('en_cola', 'en_curso', 'deteniendo')", (now(),))
 
 
 def finish_analysis(con: sqlite3.Connection, analysis_id: str, rows: list[dict]) -> None:
@@ -393,6 +393,118 @@ def version_readings(con: sqlite3.Connection, import_id: str) -> dict[str, list[
             {"origen": fila["origen"], "producto": fila["producto"], "version": fila["version"],
              "confianza": fila["confianza"]})
     return salida
+
+
+def start_vuln(con, import_id: str, options: dict, created: str | None = None) -> str:
+    """Crea en cola un cruce de vulnerabilidades; el último completo se conserva hasta que este termine bien."""
+    source = con.execute("SELECT auditoria_id, nombre FROM ejecucion WHERE id = ? AND tipo = 'importacion'",
+                         (import_id,)).fetchone()
+    if source is None:
+        raise FileNotFoundError("Importación no encontrada")
+    vuln_id = uuid.uuid4().hex
+    with con:
+        con.execute("DELETE FROM ejecucion WHERE origen_id = ? AND tipo = 'vuln' AND estado <> 'completa'", (import_id,))
+        con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada) "
+                    "VALUES (?, ?, 'vuln', ?, ?, 'en_cola', ?, ?)",
+                    (vuln_id, source["auditoria_id"], import_id, source["nombre"],
+                     json.dumps(options, ensure_ascii=False), created or now()))
+    return vuln_id
+
+
+def begin_vuln(con, vuln_id: str) -> bool:
+    """Pasa a en curso un cruce que sigue en cola; False si entretanto se canceló o se sustituyó."""
+    with con:
+        return _set_state(con, vuln_id, "en_curso", only_from="en_cola")
+
+
+def stop_vuln(con, import_id: str) -> str | None:
+    """Cancela el cruce en cola de una importación o pide que pare el que está en curso."""
+    row = _derived(con, import_id, "vuln")
+    if row is None:
+        return None
+    with con:
+        if _set_state(con, row["id"], "cancelada", "Se canceló antes de empezar.", only_from="en_cola"):
+            return "cancelada"
+        if _set_state(con, row["id"], "deteniendo", only_from="en_curso"):
+            return "deteniendo"
+    return None
+
+
+def vuln_status(con, import_id: str) -> dict | None:
+    """Estado y error del último cruce pedido de una importación, o None si no se pidió ninguno."""
+    row = _derived(con, import_id, "vuln")
+    return {"estado": row["estado"], "error": row["error"]} if row else None
+
+
+def vuln_services(con, import_id: str) -> list[dict]:
+    """Los servicios que vio una importación, con lo que hace falta para sacar sus CPE.
+
+    {servicio_id, ip, protocolo, puerto, cpe (los de Nmap), lecturas}. `lecturas` son las de la última detección
+    de versión completa ({producto, version, confianza}); qué confianza basta lo decide quien llama. No mira el
+    alcance: eso lo recomprueba en vivo quien vaya a conectar.
+    """
+    lecturas: dict[int, list[dict]] = {}
+    for row in con.execute(
+            "SELECT d.servicio_id, d.producto, d.version, d.confianza FROM deteccion d JOIN ejecucion e ON e.id = d.ejecucion_id "
+            "WHERE e.origen_id = ? AND e.tipo = 'version' AND e.estado = 'completa' ORDER BY d.id", (import_id,)):
+        lecturas.setdefault(row["servicio_id"], []).append(
+            {"producto": row["producto"], "version": row["version"], "confianza": row["confianza"]})
+    servicios = []
+    for row in con.execute(
+            "SELECT s.id, a.ip, s.protocolo, s.puerto, o.cpe FROM observacion o JOIN servicio s ON s.id = o.servicio_id "
+            "JOIN activo a ON a.id = s.activo_id WHERE o.ejecucion_id = ? ORDER BY a.ip, s.protocolo, s.puerto", (import_id,)):
+        servicios.append({"servicio_id": row["id"], "ip": row["ip"], "protocolo": row["protocolo"], "puerto": row["puerto"],
+                          "cpe": json.loads(row["cpe"]), "lecturas": lecturas.get(row["id"], [])})
+    return servicios
+
+
+def finish_vuln(con, vuln_id: str, filas: list[dict]) -> None:
+    """Guarda lo hallado en cada servicio, da el cruce por completo y solo entonces sustituye al anterior.
+
+    `filas` = [{servicio_id, estado ("ok" | "sin_datos"), vulns: [{cve, severidad, exploit_nivel, enlaces_exploit,
+    origen_cpe, fuente_cpe}]}]. Un servicio sin CVE (o sin datos) guarda una fila con `cve_id` vacío que lleva su `estado`:
+    así «se miró y está limpio» (ok) no se confunde con «no se pudo mirar» (sin_datos) ni con «no se cruzó» (sin filas).
+    Todo en una transacción; un servicio que no es de su auditoría se ignora (el JOIN no casa).
+    """
+    insert = ("INSERT INTO vulnerabilidad (ejecucion_id, servicio_id, cve_id, severidad, exploit_nivel, enlaces, origen_cpe, "
+              "fuente_cpe, estado) SELECT e.id, s.id, ?, ?, ?, ?, ?, ?, ? FROM ejecucion e JOIN servicio s ON s.id = ? "
+              "JOIN activo a ON a.id = s.activo_id AND a.auditoria_id = e.auditoria_id WHERE e.id = ?")
+    vacia = {"cve": "", "severidad": "", "exploit_nivel": "", "enlaces_exploit": [], "origen_cpe": "", "fuente_cpe": ""}
+    with con:
+        for fila in filas:
+            for vuln in fila.get("vulns") or [vacia]:
+                con.execute(insert, (vuln["cve"], vuln.get("severidad", ""), vuln.get("exploit_nivel", ""),
+                                     json.dumps(vuln.get("enlaces_exploit", []), ensure_ascii=False),
+                                     vuln.get("origen_cpe", ""), vuln.get("fuente_cpe", ""), fila["estado"],
+                                     fila["servicio_id"], vuln_id))
+        _set_state(con, vuln_id, "completa")
+        con.execute("DELETE FROM ejecucion WHERE tipo = 'vuln' AND id <> ? "
+                    "AND origen_id = (SELECT origen_id FROM ejecucion WHERE id = ?)", (vuln_id, vuln_id))
+
+
+def vuln_results(con, import_id: str) -> list[dict]:
+    """Lo que dio el último cruce de una importación, por servicio; solo activos en el alcance vigente.
+
+    {ip, protocolo, puerto, estado ("ok" | "sin_datos"), vulns: [{cve, severidad, exploit_nivel, enlaces_exploit,
+    cpe, fuente_cpe}]}, con `cpe` el que se cruzó y `fuente_cpe` de dónde salió (nmap o deteccion). Un servicio que no
+    se cruzó no aparece.
+    """
+    servicios: dict[int, dict] = {}
+    for row in con.execute(
+            "SELECT v.servicio_id, a.ip, s.protocolo, s.puerto, v.cve_id, v.severidad, v.exploit_nivel, v.enlaces, "
+            "v.origen_cpe, v.fuente_cpe, v.estado FROM vulnerabilidad v JOIN ejecucion e ON e.id = v.ejecucion_id "
+            "JOIN servicio s ON s.id = v.servicio_id JOIN activo a ON a.id = s.activo_id "
+            "WHERE e.origen_id = ? AND e.tipo = 'vuln' ORDER BY v.id", (import_id,)):
+        servicio = servicios.setdefault(row["servicio_id"], {
+            "ip": row["ip"], "protocolo": row["protocolo"], "puerto": row["puerto"], "estado": row["estado"], "vulns": []})
+        if row["cve_id"]:
+            servicio["vulns"].append({"cve": row["cve_id"], "severidad": row["severidad"], "exploit_nivel": row["exploit_nivel"],
+                                      "enlaces_exploit": json.loads(row["enlaces"]), "cpe": row["origen_cpe"],
+                                      "fuente_cpe": row["fuente_cpe"]})
+    if not servicios:
+        return []
+    current = scope(con, audit_of(con, import_id))
+    return [s for s in servicios.values() if current.status(s["ip"]) == current.IN]
 
 
 def start_credential_test(con, import_id: str, options: dict, created: str | None = None) -> str:

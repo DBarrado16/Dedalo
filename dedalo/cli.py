@@ -95,6 +95,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Dominio que el descubrimiento usa para sondear servidores DNS (modo servidores)")
     portal.add_argument("--catalogo", type=Path,
                         help="Fichero del catálogo de credenciales compartido; por defecto el del repo")
+    portal.add_argument("--sin-internet", action="store_true",
+                        help="Apagar las salidas a internet del cruce de vulnerabilidades (NVD, CISA KEV, Exploit-DB, "
+                             "GitHub): solo datos locales; también con DEDALO_SIN_INTERNET=1")
 
     show = subcommands.add_parser("ver", help="Abrir el visor de una subred, un rango o todo")
     show.add_argument("salida", help="Carpeta de una ejecución")

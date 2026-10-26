@@ -242,14 +242,15 @@ function render() {
   $("run-description").textContent = description;
   updateFilters();
   document.querySelectorAll("[data-tab]").forEach(button => button.setAttribute("aria-selected", String(button.dataset.tab === activeTab)));
-  $("filters").hidden = activeTab === "logs" || activeTab === "priority" || activeTab === "credentials" || activeTab === "discovery";
+  $("filters").hidden = activeTab === "logs" || activeTab === "priority" || activeTab === "vulns" || activeTab === "credentials" || activeTab === "discovery";
   $("results").hidden = activeTab === "logs";
   $("logs").hidden = activeTab !== "logs";
   $("inventory-tools").hidden = activeTab !== "inventory";
   $("priority-tools").hidden = activeTab !== "priority";
+  $("vuln-tools").hidden = activeTab !== "vulns";
   $("credential-tools").hidden = activeTab !== "credentials";
   $("discovery-tools").hidden = activeTab !== "discovery";
-  document.querySelector(".tab-actions").hidden = activeTab === "logs" || activeTab === "priority" || activeTab === "credentials" || activeTab === "discovery";
+  document.querySelector(".tab-actions").hidden = activeTab === "logs" || activeTab === "priority" || activeTab === "vulns" || activeTab === "credentials" || activeTab === "discovery";
   const analysis = current.analisis, analysing = activeStates.has(analysis?.estado), progress = analysis?.progreso;
   const chosenModel = $("model-select").value;
   $("analyze-job").disabled = mutating || running || analysing || !chosenModel;
@@ -261,6 +262,14 @@ function render() {
   $("stop-analysis").hidden = !analysing;
   $("stop-analysis").disabled = mutating || analysis?.estado === "deteniendo";
   $("stop-analysis").textContent = analysis?.estado === "en_cola" ? "Cancelar análisis" : analysis?.estado === "deteniendo" ? "Parada solicitada…" : "Detener tras este host";
+  const cruce = current.vuln, crossing = activeStates.has(cruce?.estado), vulnProgress = cruce?.progreso;
+  $("cross-vulns").disabled = mutating || running || crossing;
+  $("cross-vulns").textContent = crossing ? (vulnProgress ? `Cruzando ${vulnProgress.hechos} de ${vulnProgress.total}…` : "Cruzando…")
+    : cruce ? "Volver a cruzar" : "Cruzar vulnerabilidades";
+  $("cross-vulns").title = running ? "Espera a que termine la captura" : "";
+  $("stop-vulns").hidden = !crossing;
+  $("stop-vulns").disabled = mutating || cruce?.estado === "deteniendo";
+  $("stop-vulns").textContent = cruce?.estado === "en_cola" ? "Cancelar cruce" : cruce?.estado === "deteniendo" ? "Parada solicitada…" : "Detener tras este servicio";
   const prueba = current.credenciales, testing = activeStates.has(prueba?.estado), credProgress = prueba?.progreso;
   $("test-credentials").disabled = mutating || running || testing;
   $("test-credentials").textContent = testing ? (credProgress ? `Probando ${credProgress.hechos} de ${credProgress.total}…` : "Probando…")
@@ -399,6 +408,62 @@ function renderCredentials() {
     ${item.estado === "entrada" ? `<p class="priority-reason"><strong>Entró con</strong> ${escapeHtml(item.usuario)} / ${escapeHtml(item.clave)}</p>` : item.detalle ? `<p class="priority-reason">${escapeHtml(item.detalle)}</p>` : ""}
   </li>`).join("") + "</ol>";
 }
+// Vulnerabilidades: CVE, severidad (en mayúsculas, como la NVD) y nivel de exploit. Los enlaces vienen de fuentes
+// públicas y de la NVD: todo pasa por escapeHtml y solo se enlaza http(s).
+const SEVERIDAD_LABEL = {CRITICAL: "Crítica", HIGH: "Alta", MEDIUM: "Media", LOW: "Baja"};
+const EXPLOIT_LABEL = {confirmado: "Exploit confirmado", sin_verificar: "PoC sin verificar"};
+const PRIORIDAD_LABEL = ["exploit confirmado", "CVE crítica", "con CVE", "PoC sin verificar", "sin hallazgos"];
+const safeHref = (url) => /^https?:\/\//i.test(String(url)) ? String(url) : "";
+function externalLink(url, text) {
+  const href = safeHref(url);
+  return href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(text)}</a>` : "";
+}
+function hostOf(url) { try { return new URL(url).hostname; } catch { return "enlace"; } }
+function vulnLine(v) {
+  const sev = SEVERIDAD_LABEL[v.severidad] ? `<span class="badge sev-${escapeHtml(v.severidad.toLowerCase())}">${SEVERIDAD_LABEL[v.severidad]}</span>` : "";
+  const exploit = EXPLOIT_LABEL[v.exploit_nivel] ? `<span class="badge exploit-${escapeHtml(v.exploit_nivel)}">${EXPLOIT_LABEL[v.exploit_nivel]}</span>` : "";
+  const links = (v.enlaces_exploit || []).map(url => externalLink(url, "Exploit en " + hostOf(url))).filter(Boolean).join(" ");
+  const sinVersion = v.sin_version ? '<span class="badge sin_version" title="El CPE no trae versión: puede no afectar a este servicio.">Sin versión</span>' : "";
+  return `<li><span class="cve-id">${externalLink(v.enlace, v.cve) || escapeHtml(v.cve)}</span>${sinVersion}${sev}${exploit}${links}</li>`;
+}
+// Las CVE de un CPE sin versión se listan pero no suben la prioridad: con solo esas, el servicio queda en 4.
+const priorityText = (servicio) => servicio.prioridad === 4 && servicio.vulns.length ? "solo CVE sin versión" : PRIORIDAD_LABEL[servicio.prioridad] || "";
+function vulnSummary(servicio) {
+  // Para la columna del inventario: qué se sabe de este servicio, sin confundir «sin datos» con «limpio».
+  if (!servicio) return "—";
+  if (servicio.estado === "sin_datos") return '<span class="badge sin_datos" title="No se pudo mirar: falta CPE o la base de la NVD no está completa. No significa que esté limpio.">Sin datos</span>';
+  if (!servicio.vulns.length) return '<span class="badge sin_vulnerabilidades">Sin vulnerabilidades</span>';
+  const worst = servicio.vulns[0];  // la lista llega ordenada: lo más urgente (y con versión), primero
+  const tone = worst.sin_version ? "sin_version" : worst.exploit_nivel === "confirmado" ? "exploit-confirmado" : "sev-" + String(worst.severidad).toLowerCase();
+  return `<span class="badge ${escapeHtml(tone)}">${servicio.vulns.length} CVE · ${escapeHtml(priorityText(servicio))}</span>` +
+    `<details><summary>Ver CVE</summary><ul class="vuln-lines">${servicio.vulns.map(vulnLine).join("")}</ul></details>`;
+}
+const vulnKey = (ip, protocolo, puerto) => ip + "|" + protocolo + "|" + puerto;
+function renderVulns() {
+  const cruce = current.vuln, items = current.vulnerabilidades || [];
+  $("more").hidden = true;
+  const con = items.filter(r => r.vulns.length).length, sinDatos = items.filter(r => r.estado === "sin_datos").length;
+  $("result-count").textContent = items.length ? `${con} con vulnerabilidades, de ${items.length} servicio(s)` + (sinDatos ? `; ${sinDatos} sin datos` : "") : "";
+  const key = JSON.stringify(["vulns", currentId, cruce, items]);
+  if (key === renderKey) return;
+  renderKey = key;
+  let message = "";
+  if (!cruce) message = "Esta ejecución no se ha cruzado todavía. Pulsa «Cruzar vulnerabilidades» para buscar las CVE y los exploits de sus servicios en alcance.";
+  else if (cruce.estado === "en_cola") message = "El cruce empezará cuando termine el trabajo anterior.";
+  else if (cruce.estado === "deteniendo") message = "Deteniendo: termina el servicio en curso y no empieza más.";
+  else if (cruce.estado === "en_curso") message = "Cruzando los servicios en alcance" +
+    (cruce.progreso ? ` (${cruce.progreso.hechos} de ${cruce.progreso.total} servicios)` : "") + ". Puedes seguir usando el portal.";
+  else if (cruce.estado !== "completa") message = (labels[cruce.estado] || cruce.estado) + ": " + (cruce.error || "el cruce no terminó.");
+  else if (!items.length) message = "No se cruzó ningún servicio: ninguno de los de esta ejecución está en el alcance de la ficha.";
+  if (message && !items.length) { $("results").innerHTML = `<div class="empty-results">${escapeHtml(message)}</div>`; return; }
+  const previous = message ? `<div class="notice">${escapeHtml(message + " Se muestra el último cruce completo.")}</div>` : "";
+  $("results").innerHTML = previous + '<ol class="priority-list">' + items.map((item, index) => `<li>
+    <span class="priority-rank">${index + 1}</span>
+    <div class="priority-head"><span class="priority-ip">${escapeHtml(item.ip)}:${escapeHtml(String(item.puerto))}</span><span class="priority-role">${escapeHtml(item.protocolo.toUpperCase())}${item.prioridad != null ? " · " + escapeHtml(priorityText(item)) : ""}</span>${item.estado === "sin_datos" ? '<span class="badge sin_datos">Sin datos</span>' : item.vulns.length ? "" : '<span class="badge sin_vulnerabilidades">Sin vulnerabilidades</span>'}</div>
+    ${item.estado === "sin_datos" ? '<p class="priority-reason">No se pudo mirar este servicio: no tiene CPE, o la base local de la NVD no está completa y no hubo consulta en línea. No significa que esté limpio.</p>' : ""}
+    ${item.vulns.length ? `<ul class="vuln-lines">${item.vulns.map(vulnLine).join("")}</ul>` : ""}
+  </li>`).join("") + "</ol>";
+}
 function renderDiscovery() {
   // Lo que anuncia el equipo (nombre, detalle del servidor DNS) puede venir influido por él: todo pasa por escapeHtml.
   const disc = current.descubrimiento, items = current.descubrimiento_resultados || [];
@@ -439,6 +504,7 @@ function renderResults() {
   if (!current || activeTab === "logs") { $("more").hidden = true; return; }
   if (activeTab === "inventory") { renderInventory(); return; }
   if (activeTab === "priority") { renderPriority(); return; }
+  if (activeTab === "vulns") { renderVulns(); return; }
   if (activeTab === "credentials") { renderCredentials(); return; }
   if (activeTab === "discovery") { renderDiscovery(); return; }
   const filtered = rows(), visible = filtered.slice(0, shown);
@@ -485,7 +551,8 @@ function renderInventory() {
   $("result-count").textContent = `${new Set(filtered.map(row => row.asset.ip)).size} activos / ${filtered.filter(row => row.port).length} servicios`;
   $("more").hidden = filtered.length <= shown;
   $("more").textContent = "Mostrar más (" + Math.max(0, filtered.length - shown) + " restantes)";
-  const key = JSON.stringify(["inventory", visible, currentId, [...captures.values()].map(t => [t.key, t.imagen, t.estado])]);
+  const cruzados = new Map((current.vulnerabilidades || []).map(s => [vulnKey(s.ip, s.protocolo, s.puerto), s]));
+  const key = JSON.stringify(["inventory", visible, currentId, [...captures.values()].map(t => [t.key, t.imagen, t.estado]), current.vulnerabilidades || []]);
   if (key === renderKey) return;
   renderKey = key;
   if (!filtered.length) {
@@ -498,11 +565,11 @@ function renderInventory() {
     if (!grouped.has(groupKey)) grouped.set(groupKey, []);
     grouped.get(groupKey).push(row);
   }
-  $("results").innerHTML = [...grouped.values()].map(items => `<section class="network-section"><header class="network-heading"><div><h3>Subred <span>${escapeHtml(items[0].asset.subred)}</span></h3><p>${escapeHtml(rangeText(items[0].asset.rango))}</p></div></header><div class="table-wrap"><table class="inventory-table"><thead><tr><th>IP / Nombre</th><th>Puerto</th><th>Servicio</th><th>Producto / Versión</th><th>Captura web</th></tr></thead><tbody>${items.map(({asset, port}) => {
+  $("results").innerHTML = [...grouped.values()].map(items => `<section class="network-section"><header class="network-heading"><div><h3>Subred <span>${escapeHtml(items[0].asset.subred)}</span></h3><p>${escapeHtml(rangeText(items[0].asset.rango))}</p></div></header><div class="table-wrap"><table class="inventory-table"><thead><tr><th>IP / Nombre</th><th>Puerto</th><th>Servicio</th><th>Producto / Versión</th><th>Vulnerabilidades</th><th>Captura web</th></tr></thead><tbody>${items.map(({asset, port}) => {
     const capture = port?.protocolo === "tcp" ? captures.get(asset.ip + ":" + port.puerto) : null;
     const scripts = [...asset.scripts, ...(port?.scripts || [])];
     const details = [port?.detalle, ...(port?.cpe || []), ...scripts.map(s => s.id + ": " + s.output)].filter(Boolean).join("\n\n");
-    return `<tr><td>${escapeHtml(asset.ip)}${scopeTag(asset.alcance)}${asset.nombres.length ? `<small>${escapeHtml(asset.nombres.join(", "))}</small>` : ""}</td><td>${port ? port.puerto + "/" + escapeHtml(port.protocolo.toUpperCase()) : "—"}</td><td>${port ? escapeHtml((port.tunel ? port.tunel + "/" : "") + (port.servicio || "Sin identificar")) : "Sin puertos abiertos"}</td><td class="service-data">${escapeHtml([port?.producto, port?.version].filter(Boolean).join(" ") || "—")}${details ? `<details><summary>Datos Nmap</summary><pre>${escapeHtml(details)}</pre></details>` : ""}${port ? `<button class="link-button" data-add-catalog data-producto="${escapeHtml(port.producto||"")}" data-version="${escapeHtml(port.version||"")}" data-servicio="${escapeHtml(port.servicio||"")}">+ catálogo</button>` : ""}${port ? versionTags(asset.ip, port.puerto) : ""}</td><td>${capture?.imagen ? `<button class="secondary" data-image="${capture.key}">Ver captura</button>` : capture ? escapeHtml(labels[capture.estado] || capture.estado) : "—"}</td></tr>`;
+    return `<tr><td>${escapeHtml(asset.ip)}${scopeTag(asset.alcance)}${asset.nombres.length ? `<small>${escapeHtml(asset.nombres.join(", "))}</small>` : ""}</td><td>${port ? port.puerto + "/" + escapeHtml(port.protocolo.toUpperCase()) : "—"}</td><td>${port ? escapeHtml((port.tunel ? port.tunel + "/" : "") + (port.servicio || "Sin identificar")) : "Sin puertos abiertos"}</td><td class="service-data">${escapeHtml([port?.producto, port?.version].filter(Boolean).join(" ") || "—")}${details ? `<details><summary>Datos Nmap</summary><pre>${escapeHtml(details)}</pre></details>` : ""}${port ? `<button class="link-button" data-add-catalog data-producto="${escapeHtml(port.producto||"")}" data-version="${escapeHtml(port.version||"")}" data-servicio="${escapeHtml(port.servicio||"")}">+ catálogo</button>` : ""}${port ? versionTags(asset.ip, port.puerto) : ""}</td><td class="vuln-cell">${port ? vulnSummary(cruzados.get(vulnKey(asset.ip, port.protocolo, port.puerto))) : "—"}</td><td>${capture?.imagen ? `<button class="secondary" data-image="${capture.key}">Ver captura</button>` : capture ? escapeHtml(labels[capture.estado] || capture.estado) : "—"}</td></tr>`;
   }).join("")}</tbody></table></div></section>`).join("");
 }
 async function loadLogs() {
@@ -730,6 +797,8 @@ $("test-credentials").addEventListener("click", () => {
   if (confirm("Esto intentará entrar en los servicios en alcance de esta ejecución con sus contraseñas de fábrica. ¿Seguir?")) action("probar-credenciales");
 });
 $("stop-credentials").addEventListener("click", () => action("detener-credenciales"));
+$("cross-vulns").addEventListener("click", () => action("cruzar-vulnerabilidades"));
+$("stop-vulns").addEventListener("click", () => action("detener-vulnerabilidades"));
 $("discover-job").addEventListener("click", () => action("descubrir", {modo: $("discovery-mode").value}));
 $("stop-discovery").addEventListener("click", () => action("detener-descubrimiento"));
 async function detectNetworks(fill) {
