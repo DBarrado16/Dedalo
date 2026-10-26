@@ -327,15 +327,16 @@ class BuscarGithubTests(unittest.TestCase):
             exploits.buscar_github("CVE-2021-41773", False, token="ghp_prueba")
             self.assertEqual(s.peticiones[0][1].get("Authorization"), "Bearer ghp_prueba")
 
-    def test_limite_agotado_o_fallo_degrada_a_vacio(self):
+    def test_limite_agotado_o_fallo_da_none_y_no_rompe(self):
+        # None es «no se pudo consultar» (quien llama deja de preguntar); [] es «consultado, sin PoC».
         for codigo in (403, 429, 500):
             with _Servidor({"/search": (codigo, b'{"message": "rate limit"}')}) as s, \
                     mock.patch.object(exploits, "GITHUB_BUSQUEDA_URL", s.base + "/search"):
-                self.assertEqual(exploits.buscar_github("CVE-2021-41773", False), [])
+                self.assertIsNone(exploits.buscar_github("CVE-2021-41773", False), codigo)
         with _Servidor({"/search": (200, b"no json")}) as s, mock.patch.object(exploits, "GITHUB_BUSQUEDA_URL", s.base + "/search"):
-            self.assertEqual(exploits.buscar_github("CVE-2021-41773", False), [])
+            self.assertIsNone(exploits.buscar_github("CVE-2021-41773", False))
         with mock.patch.object(exploits, "GITHUB_BUSQUEDA_URL", "http://127.0.0.1:1/search"):
-            self.assertEqual(exploits.buscar_github("CVE-2021-41773", False), [])
+            self.assertIsNone(exploits.buscar_github("CVE-2021-41773", False))
 
 
 KEV_PRUEBA = json.dumps({"vulnerabilities": [{"cveID": "CVE-2021-41773"}, {"cveID": "cve-2022-0847"}, {"cveID": "basura"}]}).encode("utf-8")

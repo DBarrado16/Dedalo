@@ -138,6 +138,22 @@ class CruzarServicioTests(BaseTemporal):
         github.assert_not_called()
         self.assertEqual(vulnerabilidades.TOPE_SIN_VERSION, 20)
 
+    def test_si_github_no_responde_no_se_le_vuelve_a_preguntar_en_el_cruce(self):
+        cve.guardar_cves(self.con, [item("CVE-2026-0001", [regla("http_server")]), item("CVE-2026-0002", [regla("http_server")])])
+        github = mock.Mock(return_value=None)  # 403/429 o fallo de red: no se pudo consultar
+        res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, False, github)
+        self.assertEqual(github.call_count, 1)
+        self.assertEqual({v["exploit_nivel"] for v in res["vulns"]}, {"ninguno"})
+
+    def test_una_cve_se_busca_en_github_una_sola_vez_por_cruce(self):
+        cve.guardar_cves(self.con, [item("CVE-2026-0001", [regla("http_server"), regla("nginx", vendor="f5")])])
+        github = mock.Mock(return_value=["https://github.com/x/poc"])
+        memo = vulnerabilidades.Memo()
+        for cpe in (CPE_HTTPD, "cpe:/a:f5:nginx:1.0"):  # dos servicios del mismo cruce con la misma CVE
+            res = vulnerabilidades.cruzar_servicio(self.con, [cpe], set(), {}, False, github, memo=memo)
+            self.assertEqual(res["vulns"][0]["enlaces_exploit"], ["https://github.com/x/poc"])
+        github.assert_called_once_with("CVE-2026-0001", False)
+
 
 class OrdenTests(unittest.TestCase):
     def vuln(self, severidad="HIGH", nivel="ninguno"):

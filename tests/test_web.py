@@ -2054,6 +2054,20 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(consultar.call_count, 1)
         self.assertEqual({(r["ip"], r["puerto"]) for r in results if r["estado"] == "ok"}, {("10.10.5.10", 22), ("10.10.6.20", 80)})
 
+    def test_vuln_run_asks_github_once_per_cve_and_not_again_once_it_fails(self):
+        job_id = self.vuln_job()
+        with patch("dedalo.web.cve.actualizar_base"), \
+                patch("dedalo.web.cve.consultar_online", return_value=[{"id": "CVE-2026-1111", "severidad": "HIGH"}]), \
+                patch("dedalo.web.exploits.buscar_github", return_value=["https://github.com/x/poc"]) as github:
+            self.run_vuln(job_id)
+        self.assertEqual(github.call_count, 1)  # la misma CVE en los dos servicios: una sola búsqueda
+        online = {self.CPE_SSH: "CVE-2026-1111", self.CPE_WEB: "CVE-2026-2222"}
+        with patch("dedalo.web.cve.actualizar_base"), \
+                patch("dedalo.web.cve.consultar_online", side_effect=lambda cpe, sin: [{"id": online[cpe], "severidad": "HIGH"}]), \
+                patch("dedalo.web.exploits.buscar_github", return_value=None) as github:
+            self.run_vuln(job_id)
+        self.assertEqual(github.call_count, 1)  # GitHub no respondió: no se le pregunta por la otra CVE
+
     def test_a_stopped_vuln_run_is_interrupted_and_keeps_the_previous_good_result(self):
         job_id = self.vuln_job()
         with patch("dedalo.web.cve.actualizar_base"), patch("dedalo.web.cve.consultar_online", return_value=[]), \

@@ -58,13 +58,38 @@ def cpes_del_servicio(cpe_nmap: list, lecturas: list[dict]) -> list[tuple[str, s
     return [(fuente, cpe) for cpe, fuente in cpes.items()]
 
 
-def _vuln(fila: dict, cpe: str, sin_version: bool, kev, edb, sin_internet: bool, buscar_github) -> dict:
+class Memo:
+    """Lo ya consultado en un mismo cruce, compartido entre sus servicios para no repetir salidas a internet.
+
+    `github`: CVE -> enlaces a PoC. `github_caido`: GitHub no respondió (límite agotado o fallo de red) y ya no
+    se le pregunta más en este cruce.
+    """
+
+    def __init__(self):
+        self.github: dict[str, list[str]] = {}
+        self.github_caido = False
+
+
+def _poc(cve_id: str, sin_internet: bool, buscar_github, memo: Memo) -> list[str]:
+    """Enlaces a PoC de GitHub de la CVE: una sola búsqueda por CVE en el cruce, y ninguna más si GitHub ya falló."""
+    if sin_internet or memo.github_caido:
+        return []
+    if cve_id not in memo.github:
+        enlaces = buscar_github(cve_id, sin_internet)
+        if enlaces is None:
+            memo.github_caido = True
+            return []
+        memo.github[cve_id] = enlaces
+    return memo.github[cve_id]
+
+
+def _vuln(fila: dict, cpe: str, sin_version: bool, kev, edb, sin_internet: bool, buscar_github, memo: Memo) -> dict:
     cve_id = fila["id"]
     exploit = exploits.exploit_de(cve_id, kev, edb)
     nivel, enlaces = exploit["nivel"], list(exploit["enlaces"])
     # Sin versión no se sabe si la CVE afecta al servicio: no se busca su PoC (serían búsquedas a ciegas).
-    if nivel != CONFIRMADO and not sin_internet and not sin_version:
-        poc = buscar_github(cve_id, sin_internet)
+    if nivel != CONFIRMADO and not sin_version:
+        poc = _poc(cve_id, sin_internet, buscar_github, memo)
         if poc:
             nivel, enlaces = SIN_VERIFICAR, list(poc)
     severidad = fila.get("severidad")
@@ -98,7 +123,8 @@ def _cves_del_cpe(con, cpe: str, sin_internet: bool) -> tuple[list[dict], bool, 
     return filas, sin_version, fiable
 
 
-def cruzar_servicio(con, cpes: list[str], kev, edb, sin_internet: bool, buscar_github=exploits.buscar_github) -> dict:
+def cruzar_servicio(con, cpes: list[str], kev, edb, sin_internet: bool, buscar_github=exploits.buscar_github,
+                    memo: Memo | None = None) -> dict:
     """Reúne las vulnerabilidades de un servicio a partir de sus CPE.
 
     Por cada cpe, primero la base local; solo si no da ninguna CVE para ese cpe, la consulta online (nunca con
@@ -111,7 +137,10 @@ def cruzar_servicio(con, cpes: list[str], kev, edb, sin_internet: bool, buscar_g
     o no hay base local completa (falta `config.nvd_actualizada`; que la tabla cve tenga filas no basta) y la consulta
     online no estuvo disponible (interruptor o fallo). Es distinto de "ok" con `vulns=[]`: eso es «se miró y no hay CVE».
     Cada vuln: {cve, severidad (en mayúsculas, como la NVD), enlace, exploit_nivel, enlaces_exploit, origen_cpe, sin_version}.
+
+    `memo` (ver Memo) se comparte entre los servicios de un mismo cruce; sin él, vale solo para esta llamada.
     """
+    memo = Memo() if memo is None else memo
     vulns: dict[str, dict] = {}
     respondido = False
     for cpe in cpes:
@@ -119,7 +148,7 @@ def cruzar_servicio(con, cpes: list[str], kev, edb, sin_internet: bool, buscar_g
         respondido = respondido or fiable
         for fila in filas:
             if fila["id"] not in vulns:
-                vulns[fila["id"]] = _vuln(fila, cpe, sin_version, kev, edb, sin_internet, buscar_github)
+                vulns[fila["id"]] = _vuln(fila, cpe, sin_version, kev, edb, sin_internet, buscar_github, memo)
     return {"estado": "ok" if respondido else "sin_datos", "vulns": list(vulns.values())}
 
 

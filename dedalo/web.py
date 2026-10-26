@@ -1088,6 +1088,7 @@ class PortalStore:
                 self.vuln_progress[job_id] = {"hechos": hechos, "total": total}
 
         filas, respuestas = [], {}  # respuestas: lo ya cruzado por lista de CPE (varios servicios repiten el suyo)
+        memo = vulnerabilidades.Memo()  # lo ya consultado fuera en este cruce, para no repetirlo entre servicios
         state, error = "completa", ""
         try:
             avance(0, len(servicios))
@@ -1103,7 +1104,8 @@ class PortalStore:
                     if clave not in respuestas:
                         with closing(self.database()) as con:
                             respuestas[clave] = vulnerabilidades.cruzar_servicio(
-                                con, list(clave), kev, exploitdb, self.sin_internet, buscar_github=exploits.buscar_github)
+                                con, list(clave), kev, exploitdb, self.sin_internet, buscar_github=exploits.buscar_github,
+                                memo=memo)
                     respuesta = respuestas[clave]
                     vulns = [v | {"origen_cpe": f"{fuentes[v['origen_cpe']]}|{v['origen_cpe']}"} for v in respuesta["vulns"]]
                     filas.append({"servicio_id": servicio["servicio_id"], "estado": respuesta["estado"], "vulns": vulns})
