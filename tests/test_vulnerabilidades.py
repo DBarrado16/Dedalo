@@ -124,6 +124,20 @@ class CruzarServicioTests(BaseTemporal):
         res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD, CPE_SIN_VERSION], set(), {}, False, sin_github)
         self.assertEqual([v["cve"] for v in res["vulns"]], ["CVE-2026-0001"])
 
+    def test_cpe_sin_version_se_queda_con_las_de_mayor_cvss_y_no_busca_en_github(self):
+        # Nmap pone cpe:/o:linux:linux_kernel en cada servicio de un Linux: sin versión casan todas las del producto.
+        cve.guardar_cves(self.con, [item(f"CVE-2026-{n:04d}", [regla("http_server")], cvss=n / 10) for n in range(1, 51)])
+        github = mock.Mock(return_value=["https://github.com/x/poc"])
+        res = vulnerabilidades.cruzar_servicio(self.con, [CPE_SIN_VERSION], set(), {}, False, github)
+        self.assertEqual({v["cve"] for v in res["vulns"]}, {f"CVE-2026-{n:04d}" for n in range(31, 51)})
+        # Lo mismo si las da la consulta en línea.
+        online = [item(f"CVE-2026-{n:04d}", [regla("openssh", vendor="openbsd")], cvss=n / 10) for n in range(1, 31)]
+        with mock.patch.object(cve, "consultar_online", return_value=online):
+            res = vulnerabilidades.cruzar_servicio(self.con, ["cpe:/a:openbsd:openssh"], set(), {}, False, github)
+        self.assertEqual({v["cve"] for v in res["vulns"]}, {f"CVE-2026-{n:04d}" for n in range(11, 31)})
+        github.assert_not_called()
+        self.assertEqual(vulnerabilidades.TOPE_SIN_VERSION, 20)
+
 
 class OrdenTests(unittest.TestCase):
     def vuln(self, severidad="HIGH", nivel="ninguno"):

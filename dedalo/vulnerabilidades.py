@@ -17,6 +17,10 @@ from .auditoria import get_config
 # Las de gowitness llegan sin confianza y no cuentan; el umbral de la propia detección (MIN_CONFIANZA) es más bajo.
 CONFIANZA_ALTA = 80
 
+# CVE que se quedan de un CPE sin versión (las de mayor CVSS). Sin versión casan TODAS las del producto, y Nmap
+# pone `cpe:/o:linux:linux_kernel` en cada servicio de un Linux: sin tope serían cientos por servicio.
+TOPE_SIN_VERSION = 20
+
 _TOKEN_VERSION = re.compile(r"[vV]?(\d[\w.+~-]*)")
 
 URL_CVE = "https://nvd.nist.gov/vuln/detail/{id}"
@@ -58,7 +62,8 @@ def _vuln(fila: dict, cpe: str, sin_version: bool, kev, edb, sin_internet: bool,
     cve_id = fila["id"]
     exploit = exploits.exploit_de(cve_id, kev, edb)
     nivel, enlaces = exploit["nivel"], list(exploit["enlaces"])
-    if nivel != CONFIRMADO and not sin_internet:
+    # Sin versión no se sabe si la CVE afecta al servicio: no se busca su PoC (serían búsquedas a ciegas).
+    if nivel != CONFIRMADO and not sin_internet and not sin_version:
         poc = buscar_github(cve_id, sin_internet)
         if poc:
             nivel, enlaces = SIN_VERIFICAR, list(poc)
@@ -68,26 +73,38 @@ def _vuln(fila: dict, cpe: str, sin_version: bool, kev, edb, sin_internet: bool,
             "origen_cpe": cpe, "sin_version": sin_version}
 
 
-def _cves_del_cpe(con, cpe: str, sin_internet: bool) -> tuple[list[tuple[dict, bool]], bool]:
-    """(CVE del cpe, si esa respuesta es fiable). Cada CVE va con su `sin_version`."""
-    local = cve.cves_de(con, cpe)
-    if local:
-        return [(fila, bool(fila.get("sin_version"))) for fila in local], True
-    online = None if sin_internet else cve.consultar_online(cpe, sin_internet)
-    if online is not None:  # consultado: [] es «0 CVE», no «sin datos»
-        partes = cve._parsear_cpe(cpe)
-        sin_version = partes is None or not partes[2]
-        return [(fila, sin_version) for fila in online], True
-    # Sin consulta posible: la base local solo vale como respuesta «0 CVE» si está completa (marca de la NVD).
-    return [], get_config(con, "nvd_actualizada") is not None
+def _por_cvss(fila: dict) -> tuple:
+    """De más a menos grave, como `cve.cves_de`: CVSS de mayor a menor (sin CVSS al final) y luego por id."""
+    cvss = fila.get("cvss")
+    return (cvss is None, -(cvss or 0), fila["id"])
+
+
+def _cves_del_cpe(con, cpe: str, sin_internet: bool) -> tuple[list[dict], bool, bool]:
+    """(CVE del cpe, si el cpe no trae versión, si esa respuesta es fiable).
+
+    Sin versión se quedan solo las TOPE_SIN_VERSION de mayor CVSS.
+    """
+    partes = cve._parsear_cpe(cpe)
+    sin_version = partes is None or not partes[2]
+    filas, fiable = cve.cves_de(con, cpe), True
+    if not filas:
+        online = None if sin_internet else cve.consultar_online(cpe, sin_internet)
+        if online is not None:  # consultado: [] es «0 CVE», no «sin datos»
+            filas = online
+        else:  # sin consulta posible: la base local solo vale como «0 CVE» si está completa (marca de la NVD)
+            fiable = get_config(con, "nvd_actualizada") is not None
+    if sin_version:
+        filas = sorted(filas, key=_por_cvss)[:TOPE_SIN_VERSION]
+    return filas, sin_version, fiable
 
 
 def cruzar_servicio(con, cpes: list[str], kev, edb, sin_internet: bool, buscar_github=exploits.buscar_github) -> dict:
     """Reúne las vulnerabilidades de un servicio a partir de sus CPE.
 
     Por cada cpe, primero la base local; solo si no da ninguna CVE para ese cpe, la consulta online (nunca con
-    `sin_internet`). A cada CVE se le pone su nivel de exploit: "confirmado" (KEV/Exploit-DB), "sin_verificar"
-    (solo un PoC en GitHub, buscado únicamente si no es confirmado y hay salida a internet) o "ninguno".
+    `sin_internet`). Un cpe sin versión se queda con sus TOPE_SIN_VERSION CVE de mayor CVSS. A cada CVE se le pone
+    su nivel de exploit: "confirmado" (KEV/Exploit-DB), "sin_verificar" (solo un PoC en GitHub, buscado únicamente si
+    no es confirmado, el cpe trae versión y hay salida a internet) o "ninguno".
     Una CVE que sale por dos cpe se cuenta una vez, con el primero.
 
     Devuelve {"estado", "vulns"}. `estado` es "sin_datos" cuando ningún cpe tuvo respuesta fiable: no hay CPE,
@@ -98,9 +115,9 @@ def cruzar_servicio(con, cpes: list[str], kev, edb, sin_internet: bool, buscar_g
     vulns: dict[str, dict] = {}
     respondido = False
     for cpe in cpes:
-        filas, fiable = _cves_del_cpe(con, cpe, sin_internet)
+        filas, sin_version, fiable = _cves_del_cpe(con, cpe, sin_internet)
         respondido = respondido or fiable
-        for fila, sin_version in filas:
+        for fila in filas:
             if fila["id"] not in vulns:
                 vulns[fila["id"]] = _vuln(fila, cpe, sin_version, kev, edb, sin_internet, buscar_github)
     return {"estado": "ok" if respondido else "sin_datos", "vulns": list(vulns.values())}
