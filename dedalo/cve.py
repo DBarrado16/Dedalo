@@ -177,6 +177,14 @@ def cves_de(con, cpe: str) -> list[dict]:
     return list(salida.values())
 
 
+def producto_conocido(con, cpe: str) -> bool:
+    """Si la base local tiene alguna regla para el producto del CPE (sea cual sea su versión o su vendor)."""
+    partes = _parsear_cpe(cpe)
+    if partes is None:
+        return False
+    return con.execute("SELECT 1 FROM cve_cpe WHERE producto = ? LIMIT 1", (partes[1],)).fetchone() is not None
+
+
 # --- Salidas a internet: formato 2.0 de la NVD -> formato de `guardar_cves` ---
 
 def _campos_cpe23(criterio: str) -> list[str]:

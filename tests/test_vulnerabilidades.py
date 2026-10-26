@@ -85,6 +85,28 @@ class CruzarServicioTests(BaseTemporal):
         res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, True, sin_github)
         self.assertEqual(res, {"estado": "ok", "vulns": []})
 
+    def test_base_completa_que_conoce_el_producto_no_sale_si_la_version_no_esta_afectada(self):
+        cve.guardar_cves(self.con, [item("CVE-2026-0001", [regla("http_server", v_fin="2.4.50")])])
+        online = mock.Mock(return_value=None)
+        with mock.patch.object(cve, "consultar_online", online):
+            # Base incompleta: conocer el producto no basta, se pregunta.
+            vulnerabilidades.cruzar_servicio(self.con, ["cpe:/a:apache:http_server:2.4.60"], set(), {}, False, sin_github)
+            online.assert_called_once()
+            online.reset_mock()
+            set_config(self.con, "nvd_actualizada", "2026-10-20T00:00:00+00:00")
+            res = vulnerabilidades.cruzar_servicio(self.con, ["cpe:/a:apache:http_server:2.4.60"], set(), {}, False, sin_github)
+        self.assertEqual(res, {"estado": "ok", "vulns": []})
+        online.assert_not_called()
+
+    def test_un_cpe_se_consulta_una_sola_vez_por_cruce(self):
+        online = mock.Mock(return_value=[item("CVE-2026-0001", [regla("http_server")])])
+        memo = vulnerabilidades.Memo()
+        with mock.patch.object(cve, "consultar_online", online):
+            for _ in range(2):  # dos servicios del mismo cruce con el mismo CPE
+                res = vulnerabilidades.cruzar_servicio(self.con, [CPE_HTTPD], set(), {}, False, sin_github, memo=memo)
+                self.assertEqual([v["cve"] for v in res["vulns"]], ["CVE-2026-0001"])
+        online.assert_called_once()
+
     def test_sin_cpes_no_hay_nada_que_cruzar(self):
         res = vulnerabilidades.cruzar_servicio(self.con, [], set(), {}, False, sin_github)
         self.assertEqual(res, {"estado": "sin_datos", "vulns": []})
