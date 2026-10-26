@@ -103,6 +103,16 @@ class CruzarServicioTests(BaseTemporal):
         self.assertEqual(res, {"estado": "ok", "vulns": []})
         online.assert_not_called()
 
+    def test_base_completa_y_vendor_de_nmap_distinto_del_de_la_nvd_no_sale_limpio(self):
+        # nginx: Nmap da igor_sysoev; la NVD, f5. vsftpd: Nmap da vsftpd; la NVD, beasts.
+        cve.guardar_cves(self.con, [item("CVE-2026-0001", [regla("nginx", vendor="f5", v_fin="1.25.0")]),
+                                    item("CVE-2026-0002", [regla("vsftpd", vendor="beasts", v_fin="3.0.0")])])
+        set_config(self.con, "nvd_actualizada", "2026-10-20T00:00:00+00:00")
+        for cpe, esperada in (("cpe:/a:igor_sysoev:nginx:1.20.0", "CVE-2026-0001"), ("cpe:/a:vsftpd:vsftpd:2.3.4", "CVE-2026-0002")):
+            with self.subTest(cpe=cpe):
+                res = vulnerabilidades.cruzar_servicio(self.con, nmap(cpe), set(), {}, True, sin_github)
+                self.assertEqual([v["cve"] for v in res["vulns"]], [esperada])
+
     def test_un_cpe_se_consulta_una_sola_vez_por_cruce(self):
         online = mock.Mock(return_value=[item("CVE-2026-0001", [regla("http_server")])])
         memo = vulnerabilidades.Memo()

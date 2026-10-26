@@ -107,6 +107,10 @@ class CvesDeTests(unittest.TestCase):
         # ...y un cpe sin vendor casa solo por producto.
         self.assertIn("CVE-2026-0008", self.ids(cve.cves_de(self.con, "cpe:/a::http_server:2.4.59")))
 
+    def test_un_vendor_que_la_nvd_no_tiene_para_el_producto_casa_solo_por_producto(self):
+        # Nmap llama igor_sysoev al vendor de nginx; la NVD, f5. Con el filtro estricto, nginx saldría limpio.
+        self.assertEqual(self.ids(cve.cves_de(self.con, "cpe:/a:igor_sysoev:nginx:1.20.0")), ["CVE-2026-0007"])
+
     def test_mayusculas_no_importan(self):
         filas = cve.cves_de(self.con, "cpe:/a:Apache:HTTP_Server:2.4.59")
         self.assertEqual(len(filas), 3)

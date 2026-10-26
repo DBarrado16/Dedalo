@@ -155,8 +155,10 @@ def _en_rango(version: str, regla) -> bool:
 def cves_de(con, cpe: str) -> list[dict]:
     """CVE que afectan al CPE: casan por producto (y vendor si el cpe lo trae) y la versión cae en el rango.
 
-    Un CPE sin versión devuelve todas las CVE del producto con `sin_version=True`. Salen sin
-    repetir, de más a menos grave. Un CPE que no se entiende no devuelve nada.
+    El vendor solo filtra si la base lo conoce para ese producto: Nmap y la NVD no siempre lo llaman igual
+    (nginx: `igor_sysoev` frente a `f5`; vsftpd: `vsftpd` frente a `beasts`), y uno que la NVD no tiene casa
+    entonces solo por producto. Un CPE sin versión devuelve todas las CVE del producto con `sin_version=True`.
+    Salen sin repetir, de más a menos grave. Un CPE que no se entiende no devuelve nada.
     """
     partes = _parsear_cpe(cpe)
     if partes is None:
@@ -165,7 +167,8 @@ def cves_de(con, cpe: str) -> list[dict]:
     sql = ("SELECT c.id, c.publicada, c.severidad, c.cvss, c.resumen, r.v_ini, r.v_ini_incl, r.v_fin, r.v_fin_incl "
            "FROM cve_cpe r JOIN cve c ON c.id = r.cve_id WHERE r.producto = ?")
     parametros = [producto]
-    if vendor:
+    if vendor and con.execute("SELECT 1 FROM cve_cpe WHERE producto = ? AND vendor = ? LIMIT 1",
+                              (producto, vendor)).fetchone():
         sql += " AND (r.vendor = ? OR r.vendor = '')"
         parametros.append(vendor)
     salida: dict[str, dict] = {}
