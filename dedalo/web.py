@@ -806,7 +806,7 @@ class PortalStore:
                 return  # se canceló mientras esperaba en la cola, o otro lo sustituyó
             current = auditoria.scope(con, auditoria.audit_of(con, job_id))
             observed = auditoria.observed_hosts(con, job_id)
-            cruce = vulnerabilidades.ordenar_servicios(auditoria.vuln_results(con, job_id))  # lo ya cruzado, si se hizo
+            cruce = auditoria.vuln_results(con, job_id)  # lo ya cruzado, si se hizo
 
         def generate(prompt):
             return modelo.generate(prompt, model, self.model_host, schema=prioridad.ESQUEMA)
@@ -826,13 +826,10 @@ class PortalStore:
 
         try:
             # Solo lo que está en alcance (el siguiente paso sugerido no debe proponerse fuera de él)
-            # y tiene algún puerto abierto: sin servicios, el modelo no tiene nada que valorar.
-            hosts = [a for a in inventory.build(observed, [])["activos"]
+            # y tiene algún puerto abierto: sin servicios, el modelo no tiene nada que valorar. Como en el
+            # inventario, cada servicio lleva lo que ya se sabe de sus vulnerabilidades (si hubo cruce).
+            hosts = [a for a in inventory.add_vulns(inventory.build(observed, []), cruce)["activos"]
                      if a["servicios"] and current.status(a["ip"]) == current.IN]
-            vulns = {(s["ip"], s["protocolo"], s["puerto"]): s["vulns"] for s in cruce}
-            for activo in hosts:  # como la detección: a cada servicio, lo que ya se sabe de él (si hubo cruce)
-                for servicio in activo["servicios"]:
-                    servicio["vulns"] = vulns.get((activo["ip"], servicio["protocolo"], servicio["puerto"]), [])
             rows = prioridad.analizar(hosts, generate, parar=stopping, avance=progress)
             state, error = "completa", ""
         except prioridad.Interrumpido:

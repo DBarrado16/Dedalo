@@ -62,11 +62,12 @@ def _service(servicio: dict) -> dict:
 
 
 def _vulns(servicio: dict) -> dict:
-    """Las vulnerabilidades ya cruzadas del servicio (`servicio["vulns"]`, de más a menos urgentes), como dato acotado.
+    """Las vulnerabilidades ya cruzadas del servicio (`servicio["vulnerabilidades"]`, como las deja
+    `inventory.add_vulns`: de más a menos urgentes), como dato acotado.
 
     Lo que viene de la NVD no se fía: solo pasan los CVE con forma de CVE y las severidades conocidas.
     """
-    vulns = [v for v in servicio.get("vulns", []) if exploits.es_cve(v.get("cve"))]
+    vulns = [v for v in servicio.get("vulnerabilidades", []) if exploits.es_cve(v.get("cve"))]
     if not vulns:
         return {}
 
@@ -110,7 +111,7 @@ class Interrumpido(Exception):
 
 def _urgencia_vulns(activo: dict) -> int:
     """Lo más urgente que traen sus servicios (`vulnerabilidades.orden`: 0 confirmado ... 4 nada); 4 si no hay cruce."""
-    return min((vulnerabilidades.orden(s.get("vulns", [])) for s in activo.get("servicios", [])), default=4)
+    return min((vulnerabilidades.orden(s.get("vulnerabilidades", [])) for s in activo.get("servicios", [])), default=4)
 
 
 def analizar(activos: list[dict], generate, parar=lambda: False, avance=lambda hechos, total: None) -> list[dict]:
