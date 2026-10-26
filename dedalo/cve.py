@@ -296,15 +296,20 @@ def _marca(con, clave: str) -> datetime | None:
 
 
 def _marca_reciente(con, clave: str, ahora: datetime, vigencia: timedelta) -> bool:
-    """Si la fecha de `config.<clave>` es de hace `vigencia` o menos (una fecha futura no vale)."""
+    """Si la fecha de `config.<clave>` es de hace menos de `vigencia` (una fecha futura no vale)."""
     fecha = _marca(con, clave)
-    return fecha is not None and timedelta(0) <= ahora - fecha <= vigencia
+    return fecha is not None and timedelta(0) <= ahora - fecha < vigencia
+
+
+def base_reciente(con, ahora: datetime, vigencia: timedelta) -> bool:
+    """Si la base local de la NVD se completó hace menos de `vigencia` (marca `config.nvd_actualizada`)."""
+    return _marca_reciente(con, "nvd_actualizada", ahora, vigencia)
 
 
 def actualizar_base(con, destino: str | Path, sin_internet: bool, log=print) -> None:
     """Descarga los feeds de la NVD a `destino`, los vuelca en la base y anota `config.nvd_actualizada`.
 
-    Con `sin_internet` no hace nada (ni crea `destino`). Con una actualización de hace una semana o menos, solo baja
+    Con `sin_internet` no hace nada (ni crea `destino`). Con una actualización de hace menos de una semana, solo baja
     el feed de modificadas; si no, los feeds anuales de los últimos 10 años. Cada feed anual importado bien queda
     anotado en `config.nvd_feed_<año>`, y un reintento dentro de esa semana no lo vuelve a bajar. Un feed que falla
     se salta (y se cuenta en `log`): lo bueno queda guardado, pero la base no se marca como actualizada hasta tenerlos
@@ -317,7 +322,7 @@ def actualizar_base(con, destino: str | Path, sin_internet: bool, log=print) -> 
     vigencia = timedelta(days=DIAS_INCREMENTAL)
     carpeta = Path(destino)
     carpeta.mkdir(parents=True, exist_ok=True)
-    incremental = _marca_reciente(con, "nvd_actualizada", ahora, vigencia)
+    incremental = base_reciente(con, ahora, vigencia)
     anuales = [str(anio) for anio in range(ahora.year - ANIOS_BASE + 1, ahora.year + 1)]
     if incremental:
         feeds = [("modificadas", NVD_FEED_MODIFICADA)]

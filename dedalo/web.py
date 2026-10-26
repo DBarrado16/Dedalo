@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import closing
 import copy
 import csv
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import errno
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
@@ -45,11 +45,8 @@ STATIC_FILES = {
 MAX_BODY = 32 * 1024 * 1024
 ACTIVE = {"en_cola", "en_curso", "deteniendo"}
 # Datos del cruce de vulnerabilidades, dentro de la carpeta de datos del portal: los feeds de la NVD
-# (temporales), y los ficheros públicos de exploits ya descargados (CISA KEV y files_exploits.csv de Exploit-DB).
+# (temporales), y los ficheros públicos de exploits ya descargados (exploits.KEV_FICHERO y EXPLOITDB_FICHERO).
 CARPETA_VULNS = "vulnerabilidades"
-KEV_FICHERO = "kev.json"
-EXPLOITDB_FICHERO = "files_exploits.csv"
-NVD_VIGENCIA = timedelta(days=1)  # una base NVD actualizada hace menos no se vuelve a bajar al cruzar
 
 
 class Conflict(ValueError):
@@ -985,25 +982,17 @@ class PortalStore:
             else:
                 auditoria.set_state(con, version_id, state, error)
 
-    def _nvd_reciente(self, con) -> bool:
-        """Si la base local de la NVD se actualizó hace menos de NVD_VIGENCIA."""
-        try:
-            ultima = datetime.fromisoformat(auditoria.get_config(con, "nvd_actualizada") or "")
-        except ValueError:
-            return False
-        ultima = ultima if ultima.tzinfo else ultima.replace(tzinfo=timezone.utc)
-        return timedelta(0) <= datetime.now(timezone.utc) - ultima < NVD_VIGENCIA
-
     def actualizar_nvd(self):
         """Pone al día la base local de CVE (feeds de la NVD) y los ficheros de exploits (CISA KEV y Exploit-DB).
 
-        Cada una se salta si es reciente y las dos respetan `sin_internet`. Un fallo no se propaga: el cruce
-        sigue con lo que haya (la NVD incompleta se marca «sin datos»; sin KEV ni Exploit-DB no hay nivel «confirmado»).
+        Cada una se salta si se bajó hace menos de exploits.VIGENCIA_FUENTES y las dos respetan `sin_internet`. Un fallo
+        no se propaga: el cruce sigue con lo que haya (la NVD incompleta se marca «sin datos»; sin KEV ni Exploit-DB no
+        hay nivel «confirmado»).
         """
         with self.nvd_lock:
             try:
                 with closing(self.database()) as con:
-                    if not self._nvd_reciente(con):
+                    if not cve.base_reciente(con, datetime.now(timezone.utc), exploits.VIGENCIA_FUENTES):
                         cve.actualizar_base(con, self.root / CARPETA_VULNS / "nvd", self.sin_internet,
                                             log=lambda texto: print(texto, flush=True))
             except Exception as exc:
@@ -1072,8 +1061,8 @@ class PortalStore:
             servicios = auditoria.vuln_services(con, job_id)
         self.actualizar_nvd()  # antes de cruzar, para no usar una base vieja (no hace nada con sin_internet)
         datos = self.root / CARPETA_VULNS
-        kev = exploits.cargar_kev(datos / KEV_FICHERO)
-        exploitdb = exploits.cargar_exploitdb(datos / EXPLOITDB_FICHERO)
+        kev = exploits.cargar_kev(datos / exploits.KEV_FICHERO)
+        exploitdb = exploits.cargar_exploitdb(datos / exploits.EXPLOITDB_FICHERO)
         vivo = _AlcanceVivo(self, audit_id)
 
         def parar():
