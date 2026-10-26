@@ -128,9 +128,10 @@ class PortalStore:
         self.root = Path(root).resolve()
         # Interruptor de las salidas a internet del cruce de vulnerabilidades (NVD, CISA KEV, Exploit-DB, GitHub):
         # el cruce lo consulta antes de cada una. No cubre la autodescarga de gowitness ni el motor Claude de la
-        # detección de versión. Orden: argumento (--sin-internet), DEDALO_SIN_INTERNET, False.
+        # detección de versión. Orden: argumento (--sin-internet), DEDALO_SIN_INTERNET, False. Quien pone la variable
+        # no quiere salidas: solo la apagan el vacío, 0, no, false y off; cualquier otro valor la enciende.
         self.sin_internet = bool(sin_internet) if sin_internet is not None else \
-            os.environ.get("DEDALO_SIN_INTERNET", "").strip().lower() in ("1", "true", "sí", "si")
+            os.environ.get("DEDALO_SIN_INTERNET", "").strip().lower() not in ("", "0", "no", "false", "off")
         self.dns_dominio = dns_dominio
         # Fichero del catálogo de credenciales (compartido por el repo); configurable para apuntar
         # al del equipo. Se vuelca a la base al arrancar y cada vez que se amplía desde el portal.

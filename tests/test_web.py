@@ -2382,9 +2382,15 @@ class SinInternetTests(unittest.TestCase):
                 self.assertIs(self.store({"DEDALO_SIN_INTERNET": value}), True)
 
     def test_empty_or_zero_in_the_environment_stays_off(self):
-        for value in ("", "0", "no"):
+        for value in ("", "0", "no", "false", "OFF", " 0 "):
             with self.subTest(value=value):
                 self.assertIs(self.store({"DEDALO_SIN_INTERNET": value}), False)
+
+    def test_any_other_value_in_the_environment_turns_it_on(self):
+        # Quien la pone es porque no quiere salidas: un valor que no se reconoce falla en cerrado, no en abierto.
+        for value in ("yes", "on", "y", "verdadero", "2"):
+            with self.subTest(value=value):
+                self.assertIs(self.store({"DEDALO_SIN_INTERNET": value}), True)
 
     def test_the_flag_wins_over_the_environment(self):
         self.assertIs(self.store(sin_internet=True), True)
