@@ -310,6 +310,24 @@ class ConsultarOnlineTests(unittest.TestCase):
             self.assertEqual(cve.consultar_online("cpe:/a:*:nginx:*", False), [])
             self.assertIn("virtualMatchString=cpe%3A2.3%3Aa%3A%2A%3Anginx%3A%2A", s.peticiones[0][0])
 
+    def test_si_el_vendor_de_nmap_no_da_ninguna_cve_se_repite_con_vendor_comodin(self):
+        # Con red real (2026-10-26) la API da 0 CVE a igor_sysoev:nginx y a vsftpd:vsftpd; la NVD los llama f5 y beasts.
+        respuestas = [{"totalResults": 0, "vulnerabilities": []},
+                      {"totalResults": 1, "vulnerabilities": [cve_nvd("CVE-2021-23017", criterios=[
+                          {"vulnerable": True, "criteria": "cpe:2.3:a:f5:nginx:*:*:*:*:*:*:*:*", "versionEndExcluding": "1.21.0"}])]}]
+        with mock.patch.object(internet, "leer_json", side_effect=respuestas) as leer:
+            items = cve.consultar_online("cpe:/a:igor_sysoev:nginx:1.18.0", False)
+        self.assertEqual([i["id"] for i in items], ["CVE-2021-23017"])
+        urls = [llamada.args[0] for llamada in leer.call_args_list]
+        self.assertIn("cpe%3A2.3%3Aa%3Aigor_sysoev%3Anginx%3A1.18.0", urls[0])
+        self.assertIn("cpe%3A2.3%3Aa%3A%2A%3Anginx%3A1.18.0", urls[1])
+
+    def test_con_alguna_cve_o_sin_respuesta_no_se_repite_la_consulta(self):
+        for respuesta in ({"vulnerabilities": [cve_nvd("CVE-2021-41773")]}, None):
+            with self.subTest(respuesta=respuesta), mock.patch.object(internet, "leer_json", return_value=respuesta) as leer:
+                cve.consultar_online("cpe:/a:apache:http_server:2.4.49", False)
+            leer.assert_called_once()
+
     def test_cpe_ilegible_no_sale_a_la_red_y_da_none(self):
         with mock.patch.object(internet, "peticion", side_effect=AssertionError("tocó la red")):
             self.assertIsNone(cve.consultar_online("esto no es un cpe", False))

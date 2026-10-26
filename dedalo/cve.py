@@ -366,8 +366,9 @@ def consultar_online(cpe: str, sin_internet: bool) -> list[dict] | None:
     activo (no se consulta nada: tampoco hay datos). Así quien llama distingue «sin datos» de «sin vulnerabilidades».
 
     Es el respaldo cuando la base local no basta (no tiene el producto o no está completa). Consulta por
-    `virtualMatchString`, que también casa con los rangos de versión. Quien llama decide el alcance antes: el CPE
-    de un activo excluido no debe llegar aquí.
+    `virtualMatchString`, que también casa con los rangos de versión. Si con el vendor del CPE no sale ninguna CVE,
+    se repite con vendor `*`: como en `cves_de`, Nmap y la NVD no siempre lo llaman igual (`igor_sysoev` frente a
+    `f5` en nginx). Quien llama decide el alcance antes: el CPE de un activo excluido no debe llegar aquí.
     """
     if sin_internet:
         return []
@@ -376,13 +377,18 @@ def consultar_online(cpe: str, sin_internet: bool) -> list[dict] | None:
         return None
     vendor, producto, version = partes
     parte = (re.match(r"cpe:(?:2\.3:|/)([aoh])\b", cpe.strip().lower()) or [None, "a"])[1]
-    consulta = urllib.parse.urlencode({"virtualMatchString": f"cpe:2.3:{parte}:{vendor or '*'}:{producto}:{version or '*'}",
-                                       "resultsPerPage": 500})
-    datos = internet.leer_json(f"{NVD_API_URL}?{consulta}", MAX_RESPUESTA_API)
-    vulnerabilidades = datos.get("vulnerabilities") if isinstance(datos, dict) else None
-    if not isinstance(vulnerabilidades, list):
-        return None
-    total = datos.get("totalResults")
-    if isinstance(total, int) and not isinstance(total, bool) and total > len(vulnerabilidades):
-        return None  # la NVD tiene más CVE de las que devolvió: un resultado truncado no vale como respuesta
-    return [item for item in map(item_desde_nvd, vulnerabilidades) if item]
+
+    def consultar(vendor_cpe: str) -> list[dict] | None:
+        consulta = urllib.parse.urlencode({"virtualMatchString": f"cpe:2.3:{parte}:{vendor_cpe}:{producto}:{version or '*'}",
+                                           "resultsPerPage": 500})
+        datos = internet.leer_json(f"{NVD_API_URL}?{consulta}", MAX_RESPUESTA_API)
+        vulnerabilidades = datos.get("vulnerabilities") if isinstance(datos, dict) else None
+        if not isinstance(vulnerabilidades, list):
+            return None
+        total = datos.get("totalResults")
+        if isinstance(total, int) and not isinstance(total, bool) and total > len(vulnerabilidades):
+            return None  # la NVD tiene más CVE de las que devolvió: un resultado truncado no vale como respuesta
+        return [item for item in map(item_desde_nvd, vulnerabilidades) if item]
+
+    items = consultar(vendor or "*")
+    return consultar("*") if items == [] and vendor else items
