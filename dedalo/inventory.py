@@ -49,7 +49,7 @@ def csv_bytes(data):
     output = io.StringIO(newline="")
     writer = csv.writer(output)
     writer.writerow(["ip", "nombres", "rango", "subred", "protocolo", "puerto", "servicio",
-                     "tunel", "producto", "version", "detalle", "cpe", "alcance", *vulnerabilidades.COLUMNAS_EXPORTACION])
+                     "tunel", "producto", "version", "detalle", "cpe", "alcance", *report.COLUMNAS_VULN])
     for asset in data["activos"]:
         for service in asset["servicios"] or [{}]:
             row = [asset["ip"], "; ".join(asset["nombres"]), asset["rango"], asset["subred"]]
@@ -57,6 +57,6 @@ def csv_bytes(data):
             row += ["; ".join(service.get("cpe", [])), asset.get("alcance", "")]
             vulns = vulnerabilidades.campos_exportacion(service.get("vuln_estado", ""), service.get("vuln_prioridad"),
                                                         service.get("vulnerabilidades", []))
-            row += [vulns[column] for column in vulnerabilidades.COLUMNAS_EXPORTACION]
+            row += [vulns[column] for column in report.COLUMNAS_VULN]
             writer.writerow([report.csv_text(value) for value in row])
     return output.getvalue().encode("utf-8-sig")

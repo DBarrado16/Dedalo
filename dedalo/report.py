@@ -12,11 +12,11 @@ import time
 from . import gowitness
 
 MANIFEST = "ejecucion.json"
-# Las seis últimas son lo que dio el cruce de vulnerabilidades (= vulnerabilidades.COLUMNAS_EXPORTACION, que un test
-# comprueba; aquí no se importa para no cerrar un ciclo con auditoria); en blanco hasta que se haga el cruce.
+# Lo que dio el cruce de vulnerabilidades (`vulnerabilidades.campos_exportacion`), al final del índice de capturas y
+# del CSV del inventario; en blanco hasta que se haga el cruce.
+COLUMNAS_VULN = ["vuln_estado", "vuln_prioridad", "vuln_cves", "vuln_severidades", "vuln_exploits", "vuln_enlaces"]
 COLUMNS = ["rango", "subred", "ip", "puerto", "url", "estado", "codigo_http",
-           "titulo", "url_final", "captura", "error",
-           "vuln_estado", "vuln_prioridad", "vuln_cves", "vuln_severidades", "vuln_exploits", "vuln_enlaces"]
+           "titulo", "url_final", "captura", "error"] + COLUMNAS_VULN
 
 
 def _resolved(path: Path) -> Path:

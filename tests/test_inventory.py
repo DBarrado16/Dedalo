@@ -155,9 +155,6 @@ class VulnerabilitiesInTheCaptureIndexTests(unittest.TestCase):
         columnas = vulnerabilidades.columnas_tcp(resultados)
         return {(r["ip"], r["puerto"]): r for r in csv.DictReader(io.StringIO(report.index_bytes(self.manifest(), columnas).decode("utf-8-sig")))}
 
-    def test_the_columns_are_the_ones_the_inventory_exports(self):
-        self.assertEqual(report.COLUMNS[-6:], vulnerabilidades.COLUMNAS_EXPORTACION)
-
     def test_each_target_shows_its_vulnerabilities_and_no_data_is_not_clean(self):
         filas = self.index([
             {"ip": "192.0.2.2", "protocolo": "tcp", "puerto": 80, "estado": "ok",
@@ -182,4 +179,4 @@ class VulnerabilitiesInTheCaptureIndexTests(unittest.TestCase):
             report.write_index(Path(folder), self.manifest())
             texto = (Path(folder) / "indice.csv").read_text(encoding="utf-8-sig")
         self.assertEqual(list(csv.DictReader(io.StringIO(texto)))[0]["estado"], "pendiente")
-        self.assertEqual(texto.splitlines()[0].split(",")[-6:], vulnerabilidades.COLUMNAS_EXPORTACION)
+        self.assertEqual(texto.splitlines()[0].split(",")[-6:], report.COLUMNAS_VULN)

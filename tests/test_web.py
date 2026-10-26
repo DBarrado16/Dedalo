@@ -2204,7 +2204,7 @@ class PortalTests(unittest.TestCase):
         root.mkdir()
         report.write_index(root, {"version": 1, "grupos": self.store.jobs[job_id]["grupos"]})
         antes = (root / "indice.csv").read_bytes()
-        columnas = report.COLUMNS[-6:]
+        columnas = report.COLUMNAS_VULN
         # 10.10.6.20:80 es objetivo web y salió «sin_vulnerabilidades»: antes de excluirlo, la columna tiene valor.
         filas = {(r["ip"], r["puerto"]): r for r in csv.DictReader(io.StringIO(self.request("/api/jobs/" + job_id + "/download/csv")[1].decode("utf-8-sig")))}
         self.assertEqual(filas[("10.10.6.20", "80")]["vuln_estado"], "sin_vulnerabilidades")

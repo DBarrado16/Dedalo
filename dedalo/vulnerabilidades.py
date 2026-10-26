@@ -230,12 +230,8 @@ def estado_servicio(servicio: dict | None) -> str:
     return "con_vulnerabilidades" if servicio["vulns"] else "sin_vulnerabilidades"
 
 
-# Columnas con que las exportaciones (CSV del inventario e índice de capturas) cuentan el resultado del cruce.
-COLUMNAS_EXPORTACION = ["vuln_estado", "vuln_prioridad", "vuln_cves", "vuln_severidades", "vuln_exploits", "vuln_enlaces"]
-
-
 def campos_exportacion(estado: str, prioridad: int | None, vulns: list[dict]) -> dict[str, str]:
-    """Las `COLUMNAS_EXPORTACION` de un servicio: `estado` (ver `estado_servicio`), su prioridad y sus `vulns` ya ordenadas.
+    """Las `report.COLUMNAS_VULN` de un servicio: `estado` (ver `estado_servicio`), su prioridad y sus `vulns` ya ordenadas.
 
     Las listas van alineadas (el CVE n-ésimo, su severidad n-ésima y su nivel de exploit n-ésimo), separadas por «; ».
     Los enlaces son los del exploit o PoC de cualquiera de ellas, sin repetir; solo se enlazan, nunca se descargan.
