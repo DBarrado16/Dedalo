@@ -126,8 +126,9 @@ class PortalStore:
     def __init__(self, root, binary=None, chrome=None, model=modelo.DEFAULT_MODEL, ollama=modelo.OLLAMA,
                  dns_dominio="example.com", catalogo_ruta=catalogo.RUTA, sin_internet=None):
         self.root = Path(root).resolve()
-        # Interruptor global de salidas a internet (NVD, GitHub…): el resto del código lo consulta antes
-        # de cualquier conexión a internet. Orden: argumento (--sin-internet), DEDALO_SIN_INTERNET, False.
+        # Interruptor de las salidas a internet del cruce de vulnerabilidades (NVD, CISA KEV, Exploit-DB, GitHub):
+        # el cruce lo consulta antes de cada una. No cubre la autodescarga de gowitness ni el motor Claude de la
+        # detección de versión. Orden: argumento (--sin-internet), DEDALO_SIN_INTERNET, False.
         self.sin_internet = bool(sin_internet) if sin_internet is not None else \
             os.environ.get("DEDALO_SIN_INTERNET", "").strip().lower() in ("1", "true", "sí", "si")
         self.dns_dominio = dns_dominio
