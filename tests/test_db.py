@@ -213,7 +213,8 @@ ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
         tablas = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertLessEqual({"cve", "cve_cpe", "vulnerabilidad"}, tablas)
         indices = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='index'")}
-        self.assertLessEqual({"cve_cpe_producto", "vulnerabilidad_servicio"}, indices)
+        # Por ejecución: vuln_results lee por ella y borrarla borra en cascada sus vulnerabilidades.
+        self.assertLessEqual({"cve_cpe_producto", "vulnerabilidad_servicio", "vulnerabilidad_ejecucion"}, indices)
         _, service = self.audit()
         with con:
             con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, creada) "

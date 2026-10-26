@@ -319,6 +319,7 @@ CREATE TABLE vulnerabilidad (
   estado        TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX vulnerabilidad_servicio ON vulnerabilidad (servicio_id);
+CREATE INDEX vulnerabilidad_ejecucion ON vulnerabilidad (ejecucion_id);
 """,
 }
 
