@@ -232,6 +232,28 @@ class ActualizarBaseTests(unittest.TestCase):
         self.assertEqual(self.con.execute("SELECT COUNT(*) FROM cve").fetchone()[0], 1)  # lo bueno sí se guardó
         self.assertTrue(any("503" in m or "No se pudo" in m for m in mensajes))
 
+    def test_un_reintento_solo_baja_los_feeds_que_fallaron(self):
+        caido = f"/feeds/nvdcve-2.0-{self.anio - 1}.json.gz"
+        with _Servidor(self._rutas_anuales(**{caido: (503, b"")})) as s, self._parchear(s):
+            cve.actualizar_base(self.con, self.destino, False, log=lambda *_: None)
+            self.assertIsNone(auditoria.get_config(self.con, "nvd_actualizada"))
+            s.rutas[caido] = (200, feed(cve_nvd("CVE-2025-5555")))
+            s.peticiones.clear()
+            cve.actualizar_base(self.con, self.destino, False, log=lambda *_: None)
+            self.assertEqual(s.rutas_pedidas(), [caido])
+        self.assertIsNotNone(auditoria.get_config(self.con, "nvd_actualizada"))
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM cve WHERE id = 'CVE-2025-5555'").fetchone()[0], 1)
+
+    def test_una_marca_de_feed_vieja_no_cuenta_y_la_base_se_fecha_por_su_feed_mas_viejo(self):
+        ahora = datetime.now(timezone.utc).replace(microsecond=0)
+        auditoria.set_config(self.con, f"nvd_feed_{self.anio}", (ahora - timedelta(days=2)).isoformat())
+        auditoria.set_config(self.con, f"nvd_feed_{self.anio - 1}", (ahora - timedelta(days=30)).isoformat())
+        with _Servidor(self._rutas_anuales()) as s, self._parchear(s):
+            cve.actualizar_base(self.con, self.destino, False, log=lambda *_: None)
+            self.assertEqual(len(s.peticiones), 9)  # el de hace dos días no se repite; el de hace un mes, sí
+        # Las modificadas tendrán que cubrir desde el feed más viejo de la base, no desde hoy.
+        self.assertEqual(datetime.fromisoformat(auditoria.get_config(self.con, "nvd_actualizada")), ahora - timedelta(days=2))
+
     def test_feed_roto_se_ignora(self):
         rutas = self._rutas_anuales(**{f"/feeds/nvdcve-2.0-{self.anio}.json.gz": (200, gzip.compress(b"{no es json"))})
         with _Servidor(rutas) as s, self._parchear(s):

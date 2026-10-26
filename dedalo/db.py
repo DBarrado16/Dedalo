@@ -265,7 +265,7 @@ CREATE INDEX deteccion_servicio ON deteccion (servicio_id);
     # Cruce de vulnerabilidades por CPE: tipo de ejecución `vuln`, base local de CVE
     # (`cve` + reglas de aplicabilidad `cve_cpe`) y lo que el cruce halla por servicio
     # (`vulnerabilidad`). La fecha de la última actualización de la base NVD va en
-    # `config` (clave `nvd_actualizada`).
+    # `config` (clave `nvd_actualizada`; la de cada feed anual, en `nvd_feed_<año>`).
     6: """
 CREATE TABLE nueva_ejecucion (
   id           TEXT PRIMARY KEY,

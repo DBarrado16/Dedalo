@@ -297,36 +297,51 @@ def _leer_feed(ruta: Path) -> list[dict]:
         crudo = f.read(MAX_DESCOMPRIMIDO + 1)
     if len(crudo) > MAX_DESCOMPRIMIDO:
         raise ValueError("el feed descomprimido es mayor de lo esperado")
-    return _items_de_json(crudo.decode("utf-8-sig"))
+    texto = crudo.decode("utf-8-sig")
+    del crudo  # los bytes ya no hacen falta: que no sigan en memoria mientras se parsea el JSON
+    return _items_de_json(texto)
 
 
-def _feeds_pendientes(con, ahora: datetime) -> list[tuple[str, str]]:
-    """(nombre, url) de lo que toca bajar: solo las modificadas si la base se actualizó hace poco, si no los últimos 10 años."""
+def _marca(con, clave: str) -> datetime | None:
+    """La fecha guardada en `config.<clave>` (en UTC si no trae zona); None si falta o no se entiende."""
     try:
-        ultima = datetime.fromisoformat(get_config(con, "nvd_actualizada") or "")
-        ultima = ultima if ultima.tzinfo else ultima.replace(tzinfo=timezone.utc)
+        fecha = datetime.fromisoformat(get_config(con, clave) or "")
     except ValueError:
-        ultima = None
-    if ultima is not None and timedelta(0) <= ahora - ultima <= timedelta(days=DIAS_INCREMENTAL):
-        return [("modificadas", NVD_FEED_MODIFICADA)]
-    return [(str(anio), NVD_FEED_ANUAL.format(anio=anio)) for anio in range(ahora.year - ANIOS_BASE + 1, ahora.year + 1)]
+        return None
+    return fecha if fecha.tzinfo else fecha.replace(tzinfo=timezone.utc)
+
+
+def _marca_reciente(con, clave: str, ahora: datetime, vigencia: timedelta) -> bool:
+    """Si la fecha de `config.<clave>` es de hace `vigencia` o menos (una fecha futura no vale)."""
+    fecha = _marca(con, clave)
+    return fecha is not None and timedelta(0) <= ahora - fecha <= vigencia
 
 
 def actualizar_base(con, destino: str | Path, sin_internet: bool, log=print) -> None:
     """Descarga los feeds de la NVD a `destino`, los vuelca en la base y anota `config.nvd_actualizada`.
 
-    Con `sin_internet` no hace nada (ni crea `destino`). Sin datos previos baja los últimos 10 años; con una
-    actualización de hace menos de una semana, solo el feed de modificadas. Un feed que falla se salta (y se
-    cuenta en `log`): lo bueno queda guardado, pero la base no se marca como actualizada para reintentarlo.
+    Con `sin_internet` no hace nada (ni crea `destino`). Con una actualización de hace una semana o menos, solo baja
+    el feed de modificadas; si no, los feeds anuales de los últimos 10 años. Cada feed anual importado bien queda
+    anotado en `config.nvd_feed_<año>`, y un reintento dentro de esa semana no lo vuelve a bajar. Un feed que falla
+    se salta (y se cuenta en `log`): lo bueno queda guardado, pero la base no se marca como actualizada hasta tenerlos
+    todos, y entonces con la fecha del feed más viejo (desde ahí tendrán que cubrir las modificadas).
     Los ficheros descargados se borran al terminar.
     """
     if sin_internet:
         return
     ahora = datetime.now(timezone.utc)
+    vigencia = timedelta(days=DIAS_INCREMENTAL)
     carpeta = Path(destino)
     carpeta.mkdir(parents=True, exist_ok=True)
+    incremental = _marca_reciente(con, "nvd_actualizada", ahora, vigencia)
+    anuales = [str(anio) for anio in range(ahora.year - ANIOS_BASE + 1, ahora.year + 1)]
+    if incremental:
+        feeds = [("modificadas", NVD_FEED_MODIFICADA)]
+    else:  # menos los que ya se bajaron bien hace poco: un reintento tras un fallo no repite los buenos
+        feeds = [(anio, NVD_FEED_ANUAL.format(anio=anio)) for anio in anuales
+                 if not _marca_reciente(con, f"nvd_feed_{anio}", ahora, vigencia)]
     fallos = 0
-    for nombre, url in _feeds_pendientes(con, ahora):
+    for nombre, url in feeds:
         ruta = carpeta / f"nvd-{nombre}.json.gz"
         log(f"Descargando el feed «{nombre}» de la NVD...")
         try:
@@ -339,11 +354,14 @@ def actualizar_base(con, destino: str | Path, sin_internet: bool, log=print) -> 
         finally:
             ruta.unlink(missing_ok=True)
         guardar_cves(con, items)
+        if not incremental:
+            set_config(con, f"nvd_feed_{nombre}", ahora.isoformat(timespec="seconds"))
         log(f"Feed «{nombre}»: {len(items)} CVE guardadas.")
     if fallos:
         log("Actualización de la NVD incompleta; se reintentará la próxima vez.")
         return
-    set_config(con, "nvd_actualizada", ahora.isoformat(timespec="seconds"))
+    desde = ahora if incremental else min(_marca(con, f"nvd_feed_{anio}") for anio in anuales)
+    set_config(con, "nvd_actualizada", desde.isoformat(timespec="seconds"))
 
 
 def consultar_online(cpe: str, sin_internet: bool) -> list[dict] | None:

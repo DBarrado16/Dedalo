@@ -153,8 +153,9 @@ CREATE TABLE deteccion (
   detalle      TEXT NOT NULL DEFAULT ''
 );
 
--- Base local de CVE (la rellena la actualización de la NVD; la fecha de la última va en config,
--- clave 'nvd_actualizada'). cve_cpe guarda cómo se aplica cada CVE: producto (y vendor) y un rango
+-- Base local de CVE (la rellena la actualización de la NVD; la fecha de la última completa va en config,
+-- clave 'nvd_actualizada', y la de cada feed anual importado, en 'nvd_feed_<año>', para que un reintento
+-- no repita los que ya bajaron bien). cve_cpe guarda cómo se aplica cada CVE: producto (y vendor) y un rango
 -- de versiones. v_ini/v_fin vacíos (NULL) = sin límite por ese lado; *_incl dice si el límite entra.
 -- Sin rango en ningún lado = todas las versiones del producto. vendor y producto en minúsculas.
 CREATE TABLE cve (
