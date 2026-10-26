@@ -65,9 +65,10 @@ def _vulns(servicio: dict) -> dict:
     """Las vulnerabilidades ya cruzadas del servicio (`servicio["vulnerabilidades"]`, como las deja
     `inventory.add_vulns`: de más a menos urgentes), como dato acotado.
 
-    Lo que viene de la NVD no se fía: solo pasan los CVE con forma de CVE y las severidades conocidas.
+    Lo que viene de la NVD no se fía: solo pasan los CVE con forma de CVE y las severidades conocidas. Las de un CPE
+    sin versión no pasan: no se sabe si afectan al servicio y no deben subir su prioridad.
     """
-    vulns = [v for v in servicio.get("vulnerabilidades", []) if exploits.es_cve(v.get("cve"))]
+    vulns = [v for v in servicio.get("vulnerabilidades", []) if exploits.es_cve(v.get("cve")) and not v.get("sin_version")]
     if not vulns:
         return {}
 

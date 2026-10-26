@@ -423,16 +423,19 @@ function vulnLine(v) {
   const sev = SEVERIDAD_LABEL[v.severidad] ? `<span class="badge sev-${escapeHtml(v.severidad.toLowerCase())}">${SEVERIDAD_LABEL[v.severidad]}</span>` : "";
   const exploit = EXPLOIT_LABEL[v.exploit_nivel] ? `<span class="badge exploit-${escapeHtml(v.exploit_nivel)}">${EXPLOIT_LABEL[v.exploit_nivel]}</span>` : "";
   const links = (v.enlaces_exploit || []).map(url => externalLink(url, "Exploit en " + hostOf(url))).filter(Boolean).join(" ");
-  return `<li><span class="cve-id">${externalLink(v.enlace, v.cve) || escapeHtml(v.cve)}</span>${sev}${exploit}${links}</li>`;
+  const sinVersion = v.sin_version ? '<span class="badge sin_version" title="El CPE no trae versión: puede no afectar a este servicio.">Sin versión</span>' : "";
+  return `<li><span class="cve-id">${externalLink(v.enlace, v.cve) || escapeHtml(v.cve)}</span>${sinVersion}${sev}${exploit}${links}</li>`;
 }
+// Las CVE de un CPE sin versión se listan pero no suben la prioridad: con solo esas, el servicio queda en 4.
+const priorityText = (servicio) => servicio.prioridad === 4 && servicio.vulns.length ? "solo CVE sin versión" : PRIORIDAD_LABEL[servicio.prioridad] || "";
 function vulnSummary(servicio) {
   // Para la columna del inventario: qué se sabe de este servicio, sin confundir «sin datos» con «limpio».
   if (!servicio) return "—";
   if (servicio.estado === "sin_datos") return '<span class="badge sin_datos" title="No se pudo mirar: falta CPE o la base de la NVD no está completa. No significa que esté limpio.">Sin datos</span>';
   if (!servicio.vulns.length) return '<span class="badge sin_vulnerabilidades">Sin vulnerabilidades</span>';
-  const worst = servicio.vulns[0];  // la lista llega ordenada: lo más urgente, primero
-  const tone = worst.exploit_nivel === "confirmado" ? "exploit-confirmado" : "sev-" + String(worst.severidad).toLowerCase();
-  return `<span class="badge ${escapeHtml(tone)}">${servicio.vulns.length} CVE · ${escapeHtml(PRIORIDAD_LABEL[servicio.prioridad] || "")}</span>` +
+  const worst = servicio.vulns[0];  // la lista llega ordenada: lo más urgente (y con versión), primero
+  const tone = worst.sin_version ? "sin_version" : worst.exploit_nivel === "confirmado" ? "exploit-confirmado" : "sev-" + String(worst.severidad).toLowerCase();
+  return `<span class="badge ${escapeHtml(tone)}">${servicio.vulns.length} CVE · ${escapeHtml(priorityText(servicio))}</span>` +
     `<details><summary>Ver CVE</summary><ul class="vuln-lines">${servicio.vulns.map(vulnLine).join("")}</ul></details>`;
 }
 const vulnKey = (ip, protocolo, puerto) => ip + "|" + protocolo + "|" + puerto;
@@ -456,7 +459,7 @@ function renderVulns() {
   const previous = message ? `<div class="notice">${escapeHtml(message + " Se muestra el último cruce completo.")}</div>` : "";
   $("results").innerHTML = previous + '<ol class="priority-list">' + items.map((item, index) => `<li>
     <span class="priority-rank">${index + 1}</span>
-    <div class="priority-head"><span class="priority-ip">${escapeHtml(item.ip)}:${escapeHtml(String(item.puerto))}</span><span class="priority-role">${escapeHtml(item.protocolo.toUpperCase())}${item.prioridad != null ? " · " + escapeHtml(PRIORIDAD_LABEL[item.prioridad] || "") : ""}</span>${item.estado === "sin_datos" ? '<span class="badge sin_datos">Sin datos</span>' : item.vulns.length ? "" : '<span class="badge sin_vulnerabilidades">Sin vulnerabilidades</span>'}</div>
+    <div class="priority-head"><span class="priority-ip">${escapeHtml(item.ip)}:${escapeHtml(String(item.puerto))}</span><span class="priority-role">${escapeHtml(item.protocolo.toUpperCase())}${item.prioridad != null ? " · " + escapeHtml(priorityText(item)) : ""}</span>${item.estado === "sin_datos" ? '<span class="badge sin_datos">Sin datos</span>' : item.vulns.length ? "" : '<span class="badge sin_vulnerabilidades">Sin vulnerabilidades</span>'}</div>
     ${item.estado === "sin_datos" ? '<p class="priority-reason">No se pudo mirar este servicio: no tiene CPE, o la base local de la NVD no está completa y no hubo consulta en línea. No significa que esté limpio.</p>' : ""}
     ${item.vulns.length ? `<ul class="vuln-lines">${item.vulns.map(vulnLine).join("")}</ul>` : ""}
   </li>`).join("") + "</ol>";

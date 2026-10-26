@@ -116,6 +116,14 @@ class VulnerabilitySignalTests(unittest.TestCase):
         sin_vulns = prioridad.analizar([FILES, dict(con_exploit, servicios=[service(445, "microsoft-ds")])], lambda prompt: answer("media"))
         self.assertEqual([r["ip"] for r in sin_vulns], ["10.0.0.2", "10.0.0.7"])  # sin vulns, manda lo de siempre
 
+    def test_the_vulnerabilities_of_a_cpe_without_version_neither_reach_the_model_nor_raise_the_host(self):
+        # Las del kernel o Windows sin versión que Nmap pone en casi todo: no se sabe si aplican (diseño, punto 12).
+        kernel = vuln("CVE-2026-0001", "CRITICAL", "confirmado") | {"sin_version": True}
+        host = {"ip": "10.0.0.7", "nombres": [], "servicios": [dict(service(445, "microsoft-ds"), vulnerabilidades=[kernel])]}
+        self.assertNotIn("vulnerabilidades", prioridad.build_prompt(host))
+        rows = prioridad.analizar([FILES, host], lambda prompt: answer("media"))
+        self.assertEqual([r["ip"] for r in rows], ["10.0.0.2", "10.0.0.7"])  # como sin vulns: manda el de más servicios
+
     def test_the_level_the_model_gives_still_comes_before_the_vulnerabilities(self):
         con_exploit = {"ip": "10.0.0.7", "nombres": [], "servicios": [dict(service(445, "microsoft-ds"), vulnerabilidades=[vuln("CVE-2026-0001", "HIGH", "confirmado")])]}
         rows = prioridad.analizar([con_exploit, DC], by_ip({"10.0.0.7": answer("baja"), "10.0.0.1": answer("alta")}))

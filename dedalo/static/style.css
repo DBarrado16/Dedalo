@@ -116,7 +116,7 @@ main { margin-left: 260px; padding: 18px 32px 24px; max-width: 2100px; }
 /* Vulnerabilidades: el color nunca va solo, cada marca lleva su texto (Crítica, Exploit confirmado, Sin datos…). */
 .badge.sev-critical, .badge.sev-high, .badge.exploit-confirmado { color: var(--bad); }
 .badge.sev-medium, .badge.exploit-sin_verificar { color: var(--warning); }
-.badge.sev-low, .badge.sin_datos { color: var(--muted); }
+.badge.sev-low, .badge.sin_datos, .badge.sin_version { color: var(--muted); }
 .badge.sin_vulnerabilidades { color: var(--good); }
 .vuln-lines { list-style: none; margin: 8px 0 0; padding: 0; }
 .vuln-lines li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; padding: 4px 0; font-size: 13px; }

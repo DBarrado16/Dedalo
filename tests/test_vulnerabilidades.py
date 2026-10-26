@@ -214,6 +214,12 @@ class OrdenTests(unittest.TestCase):
         mixto = [self.vuln("LOW"), self.vuln("LOW", "confirmado")]
         self.assertEqual(vulnerabilidades.orden(mixto), vulnerabilidades.orden([self.vuln("LOW", "confirmado")]))
 
+    def test_las_cve_de_un_cpe_sin_version_no_suben_la_prioridad(self):
+        # Diseño, punto 12: sin versión no se sabe si la CVE afecta al servicio; se marca y no sube la prioridad.
+        kernel = self.vuln("CRITICAL", "confirmado") | {"sin_version": True}
+        self.assertEqual(vulnerabilidades.orden([kernel]), vulnerabilidades.orden([]))
+        self.assertEqual(vulnerabilidades.orden([kernel, self.vuln("LOW")]), vulnerabilidades.orden([self.vuln("LOW")]))
+
 
 class CpesDelServicioTests(unittest.TestCase):
     def lectura(self, producto, version, confianza):
@@ -261,8 +267,18 @@ class OrdenarServiciosTests(unittest.TestCase):
         return {"ip": ip, "protocolo": "tcp", "puerto": puerto, "estado": estado, "vulns": list(vulns)}
 
     @staticmethod
-    def vuln(cve_id, severidad="HIGH", nivel="ninguno"):
-        return {"cve": cve_id, "severidad": severidad, "exploit_nivel": nivel, "enlaces_exploit": [], "cpe": "c", "fuente_cpe": "nmap"}
+    def vuln(cve_id, severidad="HIGH", nivel="ninguno", cpe="c"):
+        return {"cve": cve_id, "severidad": severidad, "exploit_nivel": nivel, "enlaces_exploit": [], "cpe": cpe, "fuente_cpe": "nmap"}
+
+    def test_the_cves_of_a_cpe_without_version_are_marked_go_last_and_do_not_raise_the_priority(self):
+        # Lo que vuelve de la base: el cpe guardado dice si traía versión.
+        kernel = self.vuln("CVE-2026-0001", "CRITICAL", "confirmado", "cpe:/o:linux:linux_kernel")
+        openssh = self.vuln("CVE-2026-0002", "LOW", cpe="cpe:/a:openbsd:openssh:9.6p1")
+        solo_kernel, mixto = vulnerabilidades.ordenar_servicios([self.servicio("10.0.0.1", 80, "ok", kernel),
+                                                                 self.servicio("10.0.0.1", 22, "ok", kernel, openssh)])[::-1]
+        self.assertEqual(solo_kernel["prioridad"], 4)
+        self.assertEqual(mixto["prioridad"], 2)
+        self.assertEqual([(v["cve"], v["sin_version"]) for v in mixto["vulns"]], [("CVE-2026-0002", False), ("CVE-2026-0001", True)])
 
     def test_sorts_by_priority_then_numeric_ip_and_port(self):
         servicios = [

@@ -39,6 +39,12 @@ def normalizar_severidad(valor) -> str:
     return valor.upper() if isinstance(valor, str) else ""
 
 
+def cpe_sin_version(cpe) -> bool:
+    """Si el CPE se entiende y no trae versión: casa con todas las CVE del producto, apliquen o no al servicio."""
+    partes = cve._parsear_cpe(cpe)
+    return partes is not None and not partes[2]
+
+
 def _token_version(version) -> str:
     """El primer token numérico de una versión: «2.4.59 (Debian)» -> «2.4.59»; sin número, cadena vacía."""
     encontrado = _TOKEN_VERSION.match(version.strip()) if isinstance(version, str) else None
@@ -119,8 +125,7 @@ def _cves_del_cpe(con, cpe: str, sin_internet: bool) -> tuple[list[dict], bool, 
     La consulta en línea solo se hace si la base local no basta: no tiene el producto o no está completa (sin la
     marca `config.nvd_actualizada`). Sin versión se quedan solo las TOPE_SIN_VERSION de mayor CVSS.
     """
-    partes = cve._parsear_cpe(cpe)
-    sin_version = partes is None or not partes[2]
+    sin_version = cpe_sin_version(cpe)
     filas, fiable = cve.cves_de(con, cpe), True
     completa = get_config(con, "nvd_actualizada") is not None
     if not filas and not (completa and cve.producto_conocido(con, cpe)):  # conocido y completa: esta versión, 0 CVE
@@ -171,8 +176,10 @@ def orden(vulns: list[dict]) -> int:
 
     0 exploit confirmado, 1 CVE crítica (severidad CRITICAL), 2 alguna CVE, 3 solo PoC sin verificar, 4 nada.
     Cuenta lo peor del servicio. Como un PoC solo se busca para una CVE, el 3 solo sale si se le pasan
-    vulnerabilidades sin CVE reconocible; una CVE con PoC cuenta como CVE (2) o crítica (1).
+    vulnerabilidades sin CVE reconocible; una CVE con PoC cuenta como CVE (2) o crítica (1). Las de un CPE sin
+    versión (`sin_version`) no cuentan: no se sabe si afectan al servicio, se listan pero no suben la prioridad.
     """
+    vulns = [v for v in vulns if not v.get("sin_version")]
     if any(v.get("exploit_nivel") == CONFIRMADO for v in vulns):
         return 0
     if any(normalizar_severidad(v.get("severidad")) == "CRITICAL" for v in vulns):
@@ -189,8 +196,9 @@ _EXPLOIT = {CONFIRMADO: 0, SIN_VERIFICAR: 1}
 
 
 def _clave_vuln(vuln: dict) -> tuple:
-    """Dentro de un servicio: primero lo que tiene exploit confirmado, luego PoC, luego por severidad y por CVE."""
-    return (_EXPLOIT.get(vuln.get("exploit_nivel"), 2), _SEVERIDAD.get(normalizar_severidad(vuln.get("severidad")), 4),
+    """Dentro de un servicio: las de un CPE con versión antes que las de uno sin ella; luego lo que tiene exploit
+    confirmado, luego PoC, luego por severidad y por CVE."""
+    return (bool(vuln.get("sin_version")), _EXPLOIT.get(vuln.get("exploit_nivel"), 2), _SEVERIDAD.get(normalizar_severidad(vuln.get("severidad")), 4),
             vuln.get("cve", ""))
 
 
@@ -207,13 +215,13 @@ def ordenar_servicios(servicios: list[dict]) -> list[dict]:
     """Los resultados de `auditoria.vuln_results` en orden determinista y con su prioridad (ver `orden`), sin tocar la entrada.
 
     Cada servicio sale con `prioridad` (0-4; `None` si no hubo datos: no se sabe si es limpio) y sus `vulns` ordenadas
-    de más a menos urgentes, cada una con el `enlace` a su ficha en la NVD. Entre servicios: prioridad, luego IP
-    (numérica), protocolo y puerto.
+    de más a menos urgentes, cada una con el `enlace` a su ficha en la NVD y `sin_version` (su `cpe` no traía versión).
+    Entre servicios: prioridad, luego IP (numérica), protocolo y puerto.
     """
     salida = []
     for servicio in servicios:
-        vulns = [v | {"enlace": URL_CVE.format(id=v["cve"]) if exploits.es_cve(v.get("cve")) else ""}
-                 for v in sorted(servicio["vulns"], key=_clave_vuln)]
+        vulns = sorted((v | {"enlace": URL_CVE.format(id=v["cve"]) if exploits.es_cve(v.get("cve")) else "",
+                             "sin_version": cpe_sin_version(v.get("cpe"))} for v in servicio["vulns"]), key=_clave_vuln)
         prioridad = None if servicio["estado"] == "sin_datos" else orden(vulns)
         salida.append(servicio | {"vulns": vulns, "prioridad": prioridad})
     return sorted(salida, key=_clave_servicio)
