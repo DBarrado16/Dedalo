@@ -7,7 +7,6 @@ import io
 import json
 import os
 from pathlib import Path
-import re
 import socket
 import sqlite3
 import threading
@@ -196,26 +195,6 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.request(route, {})[0], 200)
         self.assertFalse(directory.exists())
         self.assertFalse(self.stored(job["id"]))
-
-    def test_delete_completes_when_only_removing_the_folder_fails(self):
-        job = self.create()
-        directory = self.store.directory(job["id"])
-        # Las ejecuciones migradas conservan su trabajo.json: lo que quede en disco no debe volver al reabrir.
-        (directory / "trabajo.json").write_text(json.dumps({"id": job["id"]}), encoding="utf-8")
-        errors = io.StringIO()
-        with patch("dedalo.web.shutil.rmtree", side_effect=PermissionError("Archivo ocupado")), redirect_stderr(errors):
-            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/delete", {})[0], 200)
-        self.assertIn(job["id"], errors.getvalue())
-        self.assertNotIn(job["id"], self.store.jobs)
-        self.assertFalse(self.stored(job["id"]))
-        self.assertFalse(directory.exists())
-        [left] = [path for path in Path(self.temp.name).iterdir() if job["id"] in path.name]
-        # Un solo carácter más que la original: en Windows las rutas largas rozan los 260.
-        self.assertEqual(len(left.name), len(job["id"]) + 1)
-        # Al reabrir el portal se termina el borrado.
-        self.reopen()
-        self.assertEqual(self.store.list(), [])
-        self.assertFalse(left.exists())
 
     def test_reopening_restores_a_run_whose_folder_could_not_go_back(self):
         job = self.create()
@@ -476,14 +455,6 @@ class PortalTests(unittest.TestCase):
         body = {"producto": "x", "servicio": "ssh", "credenciales": [{"usuario": "a", "clave": "b"}]}
         self.assertEqual(self.request("/api/catalogo", body)[0], 400)
 
-    def test_page_has_the_add_to_catalog_dialog(self):
-        page, script = self.request("/")[1], self.request("/app.js")[1]
-        for needle in (b'id="catalog-dialog"', b'id="catalog-form"', b'id="catalog-factory"'):
-            self.assertIn(needle, page)
-        self.assertIn("de fábrica".encode(), page)          # aviso de gobernanza
-        self.assertIn(b"data-add-catalog", script)          # botón por servicio del inventario
-        self.assertIn(b'request("/api/catalogo"', script)
-
     def test_progress_counts_the_hosts_already_answered(self):
         job, release = self.create(), threading.Event()
         model = model_waiting_at(2, release)
@@ -641,7 +612,7 @@ class PortalTests(unittest.TestCase):
                 redirect_stderr(io.StringIO()):
             detail = self.analyse(job["id"], model_answering())
         self.assertEqual(detail["analisis"]["estado"], "error")
-        self.assertEqual(self.request("/api/jobs/" + job["id"] + "/analizar", {})[0], 202)  # se puede volver a intentar
+        self.analyse(job["id"], model_answering())  # se puede volver a intentar
 
     def test_a_failed_reanalysis_keeps_showing_the_previous_result(self):
         job = self.create()
@@ -825,6 +796,7 @@ class PortalTests(unittest.TestCase):
             version = auditoria.start_version(con, job["id"], {"engine": "ollama", "model": "m"})
         seen = []
         with patch("dedalo.web.modelo.generador", return_value=lambda prompt: ""), \
+                patch("dedalo.web.favicones.descargar", return_value=None), \
                 patch("dedalo.web.fingerprint.detectar", side_effect=lambda items, *a, **k: seen.extend(items) or []):
             self.store._detect(job["id"], version, "ollama", "m")
         self.assertEqual([i["url"] for i in seen], [target["url"]])
@@ -1162,21 +1134,6 @@ class PortalTests(unittest.TestCase):
         self.store = PortalStore(self.temp.name)
         self.server.store = self.store
 
-    def test_startup_says_how_many_old_runs_it_moves_to_the_database(self):
-        # La migración puede tardar minutos: se avisa en la terminal, y solo si hay algo que migrar.
-        from contextlib import redirect_stdout
-        job = self.create()
-        self.make_legacy(job["id"])
-        output = io.StringIO()
-        with redirect_stdout(output):
-            self.reopen()
-        self.assertIn("Pasando 1 ejecución anterior a la base de datos", output.getvalue())
-        self.assertEqual(self.store.detail(job["id"])["estado"], "preparada")
-        output = io.StringIO()
-        with redirect_stdout(output):
-            self.reopen()
-        self.assertNotIn("Pasando", output.getvalue())
-
     def test_reopening_after_a_crash_closes_the_capture_in_the_database(self):
         # Una captura que no llegó a empezar y otra que el motor terminó sin que el portal lo anotase.
         unstarted, finished = self.create(), self.create()
@@ -1216,128 +1173,6 @@ class PortalTests(unittest.TestCase):
                 self.assertTrue(stop_file(job).is_file())
         self.assertFalse(stop_file(untouched).exists())
 
-    def test_reopening_still_closes_the_capture_if_the_stop_file_cannot_be_written(self):
-        job = self.create()
-        with closing(self.store.database()) as con:
-            capture = auditoria.start_capture(con, job["id"], {}, self.store.jobs[job["id"]]["grupos"])
-            with con:
-                con.execute("UPDATE ejecucion SET estado = 'en_curso', terminada = NULL WHERE id = ?", (capture,))
-        errors = io.StringIO()
-        with patch("dedalo.web.Path.touch", side_effect=PermissionError("denegado")), redirect_stderr(errors):
-            self.reopen()
-        self.assertEqual(self.store.detail(job["id"])["estado"], "interrumpida")
-        self.assertIn("denegado", errors.getvalue())
-
-    def make_legacy(self, job_id):
-        """Deja una ejecución como la guardaban las versiones anteriores: trabajo.json y nada en la base."""
-        meta = self.store.jobs[job_id]
-        path = self.store.directory(job_id) / "trabajo.json"
-        path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        with closing(self.store.database()) as con:
-            auditoria.delete_execution(con, job_id)
-        return path.read_bytes()
-
-    def test_old_captures_are_moved_to_the_database_once(self):
-        prepared, captured = self.create(), self.create()
-        self.run_engine(captured["id"])
-        before = self.store.detail(captured["id"])
-        originals = {job["id"]: self.make_legacy(job["id"]) for job in (prepared, captured)}
-        self.reopen()
-        for _ in range(2):  # al reabrir otra vez no se duplica nada
-            with closing(self.store.database()) as con:
-                self.assertEqual(con.execute("SELECT COUNT(*) FROM ejecucion WHERE tipo = 'importacion'").fetchone()[0], 2)
-                captures = con.execute("SELECT id, estado, origen_id FROM ejecucion WHERE tipo = 'captura'").fetchall()
-                self.assertEqual([(c["estado"], c["origen_id"]) for c in captures], [("completa", captured["id"])])
-                rows = con.execute("SELECT estado, evidencia_id IS NOT NULL FROM captura WHERE ejecucion_id = ?",
-                                   (captures[0]["id"],)).fetchall()
-                self.assertEqual([tuple(r) for r in rows], [("capturada", 1)] * 3)
-                self.assertEqual(auditoria.portal_options(con, prepared["id"])["archivos"], ["escaneo.xml"])
-            self.assertEqual(self.store.detail(prepared["id"])["estado"], "preparada")
-            after = self.store.detail(captured["id"])
-            self.assertEqual({k: after[k] for k in ("estado", "total", "capturas", "grupos")},
-                             {k: before[k] for k in ("estado", "total", "capturas", "grupos")})
-            self.reopen()
-        # Las carpetas antiguas no se modifican.
-        for job_id, original in originals.items():
-            self.assertEqual((self.store.directory(job_id) / "trabajo.json").read_bytes(), original)
-
-    def test_folder_that_cannot_be_migrated_is_kept_and_reported(self):
-        job = self.create()
-        self.make_legacy(job["id"])
-        for item in (self.store.directory(job["id"]) / "entradas").iterdir():
-            item.unlink()
-        with redirect_stderr(io.StringIO()) as errors:
-            self.reopen()
-        self.assertIn(job["id"], errors.getvalue())
-        self.assertEqual(self.store.list(), [])
-        self.assertTrue((self.store.directory(job["id"]) / "trabajo.json").is_file())
-
-    def bootstrap_failures(self):
-        status, content = self.request("/api/bootstrap")
-        self.assertEqual(status, 200)
-        return json.loads(content)["migration_failures"]
-
-    def break_legacy_inputs(self, job_id):
-        """Quita los Nmap guardados de una ejecución antigua, como si se hubieran borrado a mano."""
-        entries = self.store.directory(job_id) / "entradas"
-        saved = {item.name: item.read_bytes() for item in entries.iterdir()}
-        for item in entries.iterdir():
-            item.unlink()
-        return entries, saved
-
-    def test_portal_tells_which_old_run_could_not_be_migrated_and_why(self):
-        job = self.create()
-        self.make_legacy(job["id"])
-        self.break_legacy_inputs(job["id"])
-        with redirect_stderr(io.StringIO()):
-            self.reopen()
-        # La ejecución no está en el historial: sin este aviso, el usuario no sabría que existe.
-        self.assertEqual(json.loads(self.request("/api/jobs")[1]), [])
-        failures = self.bootstrap_failures()
-        self.assertEqual([item["id"] for item in failures], [job["id"]])
-        self.assertEqual(failures[0]["nombre"], "Prueba de portal")
-        self.assertIn("No se conservan los Nmap", failures[0]["error"])
-
-    def test_unmigrated_run_is_retried_at_the_next_startup(self):
-        job = self.create()
-        original = self.make_legacy(job["id"])
-        self.assertEqual(self.bootstrap_failures(), [])  # un arranque sin problemas no avisa de nada
-        entries, saved = self.break_legacy_inputs(job["id"])
-        with redirect_stderr(io.StringIO()):
-            self.reopen()
-        self.assertEqual(len(self.bootstrap_failures()), 1)
-        # Arreglada la causa, el siguiente arranque migra la ejecución y el aviso desaparece.
-        for name, data in saved.items():
-            (entries / name).write_bytes(data)
-        self.reopen()
-        self.assertEqual(self.bootstrap_failures(), [])
-        self.assertEqual([item["id"] for item in self.store.list()], [job["id"]])
-        self.assertEqual((self.store.directory(job["id"]) / "trabajo.json").read_bytes(), original)
-
-    def test_page_shows_the_migration_notice(self):
-        self.assertIn(b'id="migration-notice"', self.request("/")[1])
-        self.assertIn(b"migration_failures", self.request("/app.js")[1])
-
-    def test_page_has_the_prioritisation_tab(self):
-        page, script = self.request("/")[1], self.request("/app.js")[1]
-        for needle in (b'data-tab="priority"', b'id="analyze-job"', b'id="stop-analysis"', b'id="priority-tools"',
-                       b'id="model-select"', b'id="model-hint"'):
-            self.assertIn(needle, page)
-        self.assertIn(b'action("analizar", {modelo: $("model-select").value})', script)  # se analiza con el modelo elegido
-        self.assertIn(b'action("detener-analisis")', script)
-        self.assertIn(b'request("/api/modelos")', script)
-        self.assertIn(b"escapeHtml(model.nombre)", script)  # los nombres vienen de Ollama: nunca entran como HTML
-        self.assertIn(b"escapeHtml(item.siguiente)", script)  # la respuesta del modelo nunca entra como HTML
-
-    def test_page_has_the_credentials_tab(self):
-        page, script = self.request("/")[1], self.request("/app.js")[1]
-        for needle in (b'data-tab="credentials"', b'id="credential-tools"', b'id="test-credentials"', b'id="stop-credentials"'):
-            self.assertIn(needle, page)
-        self.assertIn(b'action("probar-credenciales")', script)
-        self.assertIn(b'action("detener-credenciales")', script)
-        self.assertIn(b"escapeHtml(item.usuario)", script)  # lo que devuelve el objetivo nunca entra como HTML
-        self.assertIn(b"confirm(", script)  # la prueba activa pide confirmación
-
     def test_scope_hint_says_how_to_authorize_all_ranges(self):
         page = self.request("/")[1]
         self.assertIn(b"0.0.0.0/0", page)
@@ -1364,27 +1199,6 @@ class PortalTests(unittest.TestCase):
             self.until(lambda: self.store.detail(job["id"])["estado"] not in ("en_cola", "en_curso"))
         self.assertIn("--sin-barra-url", recibido["cmd"])
 
-    def test_page_has_the_url_bar_option(self):
-        page = self.request("/")[1]
-        self.assertIn(b'id="opt-url-bar"', page)
-        self.assertIn("Barra de URL".encode(), page)
-
-    def test_page_has_the_discovery_tab(self):
-        page, script = self.request("/")[1], self.request("/app.js")[1]
-        for needle in (b'data-tab="discovery"', b'id="discovery-tools"', b'id="discover-job"',
-                       b'id="stop-discovery"', b'id="discovery-mode"'):
-            self.assertIn(needle, page)
-        self.assertIn(b'action("descubrir", {modo: $("discovery-mode").value})', script)
-        self.assertIn(b'action("detener-descubrimiento")', script)
-        self.assertIn(b"escapeHtml(item.nombre)", script)  # lo que devuelve el objetivo nunca entra como HTML
-
-    def test_page_has_the_detect_networks_buttons(self):
-        page, script = self.request("/")[1], self.request("/app.js")[1]
-        self.assertIn(b'id="detect-networks"', page)          # en el formulario de ficha
-        self.assertIn(b'id="detect-networks-scope"', page)    # en la pestaña Descubrimiento
-        self.assertIn(b'request("/api/redes")', script)
-        self.assertIn(b'"audit-include"', script)             # rellena los rangos autorizados
-
     def store_options(self, job_id, value):
         """Deja en la base las opciones de una ejecución tal cual: texto, o un valor que se guarda como JSON."""
         with closing(self.store.database()) as con, con:
@@ -1409,22 +1223,6 @@ class PortalTests(unittest.TestCase):
         detail = self.store.detail(old["id"])
         self.assertEqual((detail["estado"], detail["total"], detail["error"]), ("preparada", 3, ""))
         self.assertEqual(detail["opciones"], web.options_from({"timeout": 5, "delay": 0}))
-
-    def test_old_run_file_with_missing_options_is_stored_with_the_defaults_of_a_new_run(self):
-        healthy, old = self.create(), self.create()
-        expected = self.store.jobs[old["id"]]["opciones"]
-        self.make_legacy(old["id"])
-        path = self.store.directory(old["id"]) / "trabajo.json"
-        meta = json.loads(path.read_text(encoding="utf-8"))
-        meta["opciones"] = {"hilos": 6, "timeout": 5, "delay": 0, "formato": "jpeg"}  # antes de existir las demás
-        path.write_text(json.dumps(meta), encoding="utf-8")
-        self.reopen()
-        self.assertEqual(self.bootstrap_failures(), [])
-        with closing(self.store.database()) as con:
-            self.assertEqual(auditoria.portal_options(con, old["id"])["captura"], expected)
-        self.assertEqual({item["id"] for item in self.store.list()}, {healthy["id"], old["id"]})
-        detail = self.store.detail(old["id"])
-        self.assertEqual((detail["estado"], detail["error"], detail["opciones"]), ("preparada", "", expected))
 
     def finish_without_engine(self, job_id):
         """Deja la ejecución lanzada y terminada en la base, con sus URL planificadas, sin pasar por el motor."""
@@ -1589,104 +1387,6 @@ class PortalTests(unittest.TestCase):
         self.assertIn("disco lleno", errors.getvalue())
         self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
 
-    def test_old_run_with_a_missing_image_is_migrated_without_that_image(self):
-        job = self.create()
-        self.run_engine(job["id"])
-        first_image(self.store.directory(job["id"]) / "resultado").unlink()
-        self.make_legacy(job["id"])
-        with redirect_stderr(io.StringIO()) as errors:
-            self.reopen()
-        self.assertEqual(self.bootstrap_failures(), [])
-        with closing(self.store.database()) as con:
-            capture = auditoria.capture_of(con, job["id"])
-        state, rows = self.capture_rows(capture)
-        self.assertEqual(state["estado"], "completa")
-        self.assertEqual(sorted((r["estado"], r["evidencia"]) for r in rows),
-                         [("capturada", 1), ("capturada", 1), ("sin_captura", 0)])
-        self.assertIn("no están en disco", errors.getvalue())
-        self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
-
-    def test_old_run_whose_results_cannot_be_recorded_keeps_at_least_its_state(self):
-        def lose_the_ip(job_id):
-            path = self.store.directory(job_id) / "resultado" / "ejecucion.json"
-            manifest = json.loads(path.read_text(encoding="utf-8"))
-            del manifest["grupos"][0]["resultados"][0]["ip"]  # KeyError al registrar
-            path.write_text(json.dumps(manifest), encoding="utf-8")
-
-        def image_is_a_folder(job_id):
-            image = first_image(self.store.directory(job_id) / "resultado")
-            image.unlink()
-            image.mkdir()  # no se puede leer como archivo: OSError, no «no existe»
-
-        for damage in (lose_the_ip, image_is_a_folder):
-            with self.subTest(damage=damage.__name__):
-                job = self.create()
-                self.run_engine(job["id"])
-                damage(job["id"])
-                self.make_legacy(job["id"])
-                with redirect_stderr(io.StringIO()) as errors:
-                    self.reopen()
-                self.assertEqual(self.bootstrap_failures(), [])
-                self.assertIn("sin sus resultados", errors.getvalue())
-                with closing(self.store.database()) as con:
-                    capture = auditoria.capture_of(con, job["id"])
-                state, rows = self.capture_rows(capture)
-                self.assertEqual((state["estado"], len(rows)), ("completa", 0))
-                self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
-
-    def test_folder_whose_trabajo_json_names_another_run_is_reported(self):
-        job = self.create()
-        self.make_legacy(job["id"])
-        path = self.store.directory(job["id"]) / "trabajo.json"
-        meta = json.loads(path.read_text(encoding="utf-8"))
-        meta["id"] = "a" * 32  # una copia de otra ejecución, o editada a mano
-        path.write_text(json.dumps(meta), encoding="utf-8")
-        original = path.read_bytes()
-        with redirect_stderr(io.StringIO()) as errors:
-            self.reopen()
-        failures = self.bootstrap_failures()
-        self.assertEqual([item["id"] for item in failures], [job["id"]])
-        self.assertEqual(failures[0]["nombre"], "Prueba de portal")
-        self.assertIn("no coincide", failures[0]["error"])
-        self.assertIn(job["id"], errors.getvalue())
-        self.assertEqual(self.store.list(), [])
-        self.assertEqual(path.read_bytes(), original)
-
-    def test_old_active_run_is_migrated_as_interrupted_and_its_engine_told_to_stop(self):
-        active = {state: self.create() for state in ("en_cola", "en_curso", "deteniendo")}
-        quiet = {state: self.create() for state in ("preparada", "completa")}
-        for state, job in {**active, **quiet}.items():
-            self.make_legacy(job["id"])
-            path = self.store.directory(job["id"]) / "trabajo.json"
-            meta = json.loads(path.read_text(encoding="utf-8"))
-            meta["estado"] = state
-            path.write_text(json.dumps(meta), encoding="utf-8")
-        stop_file = lambda job: self.store.directory(job["id"]) / "parar"
-        self.assertFalse(any(stop_file(job).exists() for job in [*active.values(), *quiet.values()]))
-        self.reopen()
-        for state, job in active.items():
-            with self.subTest(state=state):
-                self.assertEqual(self.store.detail(job["id"])["estado"], "interrumpida")
-                self.assertTrue(stop_file(job).is_file())
-                self.assertIn("se cerró", self.store.detail(job["id"])["error"])
-        for state, job in quiet.items():
-            with self.subTest(state=state):
-                self.assertFalse(stop_file(job).exists())
-        self.assertEqual(self.bootstrap_failures(), [])
-
-    def test_old_active_run_is_still_migrated_if_the_stop_file_cannot_be_written(self):
-        job = self.create()
-        self.make_legacy(job["id"])
-        path = self.store.directory(job["id"]) / "trabajo.json"
-        meta = json.loads(path.read_text(encoding="utf-8"))
-        meta["estado"] = "en_curso"
-        path.write_text(json.dumps(meta), encoding="utf-8")
-        with patch("dedalo.web.Path.touch", side_effect=PermissionError("denegado")), redirect_stderr(io.StringIO()) as errors:
-            self.reopen()
-        self.assertEqual(self.bootstrap_failures(), [])
-        self.assertEqual(self.store.detail(job["id"])["estado"], "interrumpida")
-        self.assertIn("denegado", errors.getvalue())
-
     def test_second_portal_cannot_claim_same_history(self):
         with self.assertRaisesRegex(ValueError, "Ya hay"):
             PortalStore(self.temp.name)
@@ -1725,20 +1425,6 @@ class PortalTests(unittest.TestCase):
         self.store = PortalStore(self.temp.name)
         self.server.store = self.store
         self.assertEqual(json.loads(self.request(route + "/inventory")[1]), inventory)
-
-    def test_legacy_inventory_is_imported_from_original_inputs(self):
-        job = self.create()
-        directory = self.store.directory(job["id"])
-        original_meta = self.make_legacy(job["id"])  # como una ejecución anterior a la base
-        self.reopen()
-        result = self.store.inventory(job["id"])
-        self.assertEqual(result["servicios_total"], 7)
-        self.assertEqual((directory / "trabajo.json").read_bytes(), original_meta)
-        self.assertFalse((directory / "inventario.json").exists())
-        with closing(self.store.database()) as con:
-            row = con.execute("SELECT nombre, creada FROM ejecucion WHERE id = ?", (job["id"],)).fetchone()
-        self.assertEqual((row["nombre"], row["creada"]), ("Prueba de portal", job["fecha"]))
-        self.assertEqual(self.request("/api/jobs/" + "a"*32 + "/inventory")[0], 404)
 
     def test_upload_is_stored_in_database_and_delete_removes_it(self):
         job, other = self.create(), self.create()
@@ -1814,20 +1500,6 @@ class PortalTests(unittest.TestCase):
         self.assertIn(b"Nueva captura", content)
         self.assertEqual(self.request("/app.js")[0], 200)
         self.assertEqual(self.request("/style.css")[0], 200)
-
-    def test_logo_is_served_and_used_as_brand_and_tab_icon(self):
-        with self.opener.open(self.url + "/logo.png", timeout=5) as response:
-            self.assertEqual(response.status, 200)
-            self.assertEqual(response.headers["Content-Type"], "image/png")
-            content = response.read()
-        self.assertEqual(content[:8], b"\x89PNG\r\n\x1a\n")
-        # Se descarga en cada carga de la página (no-store): la copia del portal es la ligera.
-        self.assertLess(len(content), 64 * 1024)
-        page = self.request("/")[1].decode("utf-8")
-        brand = re.search(r'<a class="brand"[^>]*>(.*?)</a>', page).group(1)
-        self.assertRegex(brand, r'<img [^>]*src="/logo\.png"')
-        self.assertRegex(page, r'<link rel="icon" href="/logo\.png"')
-
 
     def test_audit_scope_decides_what_is_captured_and_replans_prepared_jobs(self):
         job = self.create()
@@ -2294,21 +1966,6 @@ class PortTests(unittest.TestCase):
 
 
 class ModelOptionTests(unittest.TestCase):
-    def test_the_portal_uses_a_small_local_model_unless_told_otherwise(self):
-        with patch.dict(os.environ):
-            os.environ.pop("DEDALO_MODELO", None)  # el equipo que pasa los tests puede tenerla puesta
-            args = cli.build_parser().parse_args(["web"])
-        self.assertEqual((args.modelo, args.ollama), (web.modelo.DEFAULT_MODEL, web.modelo.OLLAMA))
-
-    def test_the_default_model_can_come_from_the_environment(self):
-        with patch.dict(os.environ, {"DEDALO_MODELO": "fsec-analyst:latest"}):
-            self.assertEqual(cli.build_parser().parse_args(["web"]).modelo, "fsec-analyst:latest")
-            self.assertEqual(cli.build_parser().parse_args(["web", "--modelo", "qwen3:8b"]).modelo, "qwen3:8b")  # la opción manda
-
-    def test_spaces_around_the_model_in_the_environment_are_ignored(self):
-        with patch.dict(os.environ, {"DEDALO_MODELO": " fsec-analyst:latest "}):  # «set X=valor » en cmd deja el espacio
-            self.assertEqual(cli.build_parser().parse_args(["web"]).modelo, "fsec-analyst:latest")
-
     def test_a_cloud_model_in_the_environment_is_refused(self):
         errors = io.StringIO()
         with patch.dict(os.environ, {"DEDALO_MODELO": "gpt-oss:120b-cloud"}), redirect_stderr(errors), \

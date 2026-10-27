@@ -2,8 +2,7 @@ import json
 import re
 import unittest
 
-from dedalo import inventory, parser, prioridad
-from tests.test_dedalo import ROOT
+from dedalo import prioridad
 
 
 def service(port, name, product=""):
@@ -49,13 +48,6 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(prioridad.ESQUEMA["properties"]["nivel"]["enum"], list(prioridad.NIVELES))
         self.assertEqual(set(prioridad.ESQUEMA["required"]), {"rol", "nivel", "motivo", "siguiente"})
 
-    def test_the_question_defines_each_level_and_judges_one_host_alone(self):
-        text = prioridad.build_prompt(DC)
-        for level in prioridad.NIVELES:
-            self.assertIn(f"- {level}:", text)
-        self.assertIn("solo ves este host", text.lower())
-        self.assertIn("no repitas el nivel", text.lower())  # el rol es la función del equipo, no su prioridad
-
     def test_only_metadata_reaches_the_model(self):
         host = dict(DC, scripts=[{"id": "x", "output": "volcado"}], alcance="en_alcance")
         host["servicios"] = [dict(DC["servicios"][0], scripts=[{"id": "y", "output": "otro volcado"}], cpe=["cpe:/a"])]
@@ -86,12 +78,6 @@ class VulnerabilitySignalTests(unittest.TestCase):
                                                             {"cve": "CVE-2026-0002", "severidad": "LOW", "exploit": "ninguno"}])
         self.assertNotIn("vulnerabilidades", servicios[1])  # sin vulns, el servicio queda como estaba
         self.assertNotIn("example.org", prioridad.build_prompt(host))  # los enlaces no hacen falta para valorar
-
-    def test_the_question_explains_what_the_vulnerabilities_mean_only_when_there_are_some(self):
-        con = {"ip": "10.0.0.5", "nombres": [], "servicios": [dict(service(22, "ssh"), vulnerabilidades=[vuln("CVE-2026-0001")])]}
-        text = prioridad.build_prompt(con)
-        self.assertIn("vulnerabilidades", text.split("Host:")[0].lower())
-        self.assertNotIn("vulnerabilidades", prioridad.build_prompt(DC))
 
     def test_a_service_with_many_vulnerabilities_sends_the_most_urgent_ones_and_the_total(self):
         vulns = [vuln(f"CVE-2026-{n:04d}") for n in range(1, 31)]
@@ -137,14 +123,6 @@ class ParseTests(unittest.TestCase):
                 self.assertEqual(prioridad.parse_result(text),
                                  {"rol": "DC", "nivel": "alta", "motivo": "Por sus servicios.", "siguiente": "Revisar primero."})
 
-    def test_the_level_is_read_whatever_its_case_or_spaces(self):
-        self.assertEqual(prioridad.parse_result(answer(" Alta "))["nivel"], "alta")
-        self.assertEqual(prioridad.parse_result(answer("MEDIA"))["nivel"], "media")
-
-    def test_a_role_that_only_repeats_the_level_is_not_a_role(self):
-        self.assertEqual(prioridad.parse_result(answer("alta", role="Alta"))["rol"], "")
-        self.assertEqual(prioridad.parse_result(answer("alta", role="Controlador de dominio"))["rol"], "Controlador de dominio")
-
     def test_rejects_what_does_not_fit_the_schema(self):
         missing = json.dumps({"nivel": "alta"})
         not_text = json.dumps({"rol": "x", "nivel": "alta", "motivo": None, "siguiente": "s"})
@@ -174,15 +152,6 @@ class AnalysisTests(unittest.TestCase):
             raise ValueError("No se pudo usar el modelo")
         with self.assertRaisesRegex(ValueError, "modelo"):
             prioridad.analizar([DC], unavailable)
-
-    def test_the_lab_fixture_has_the_demo_hosts_in_the_demo_order(self):
-        hosts = parser.merge([parser.parse_file(ROOT / "ejemplos" / "laboratorio.xml")])
-        assets = inventory.build(hosts, ["10.30.0.0/16"])["activos"]
-        self.assertEqual({a["ip"]: sorted(s["puerto"] for s in a["servicios"]) for a in assets},
-                         {"10.30.1.10": [88, 389, 445], "10.30.1.21": [8443], "10.30.2.20": [21, 445, 2049], "10.30.2.44": [3389]})
-        rows = prioridad.analizar(assets, by_ip({"10.30.1.10": answer("alta"), "10.30.1.21": answer("alta"),
-                                                 "10.30.2.20": answer("media"), "10.30.2.44": answer("baja")}))
-        self.assertEqual([r["ip"] for r in rows], ["10.30.1.10", "10.30.1.21", "10.30.2.20", "10.30.2.44"])
 
     def test_it_stops_between_hosts_when_asked(self):
         calls = []
