@@ -106,6 +106,23 @@ class NormalizarNvdTests(unittest.TestCase):
             self.assertEqual(cve.cves_de(con, "cpe:/a:openbsd:openssh:9.3p2"), [])
             con.close()
 
+    def test_un_update_de_nmap_en_campo_aparte_casa_con_la_regla_exacta(self):
+        # Nmap no siempre pega el update a la versión: `sql_server:2008:sp3` lo trae en su propio campo, y tiene que
+        # leerse igual que la regla de la NVD, que lo guarda pegado («2008sp3»).
+        criterios = [{"vulnerable": True, "criteria": "cpe:2.3:a:microsoft:sql_server:2008:sp3:*:*:*:*:*:*"}]
+        with tempfile.TemporaryDirectory() as d:
+            con = db.connect(d)
+            cve.guardar_cves(con, [cve.item_desde_nvd(cve_nvd(criterios=criterios))])
+            self.assertEqual([c["id"] for c in cve.cves_de(con, "cpe:/a:microsoft:sql_server:2008:sp3")], ["CVE-2021-0001"])
+            self.assertEqual([c["id"] for c in cve.cves_de(con, "cpe:2.3:a:microsoft:sql_server:2008:sp3:*:*:*:*:*:*")],
+                             ["CVE-2021-0001"])
+            self.assertEqual(cve.cves_de(con, "cpe:/a:microsoft:sql_server:2008:sp2"), [])
+            con.close()
+
+    def test_un_update_sin_version_sigue_siendo_un_cpe_sin_version(self):
+        # `windows_7::sp1` no trae versión: el update solo no la convierte en una.
+        self.assertEqual(cve._parsear_cpe("cpe:/o:microsoft:windows_7::sp1"), ("microsoft", "windows_7", ""))
+
     def test_rangos_con_sus_extremos(self):
         criterios = [
             {"vulnerable": True, "criteria": "cpe:2.3:a:apache:http_server:*:*:*:*:*:*:*:*",
@@ -304,6 +321,13 @@ class ConsultarOnlineTests(unittest.TestCase):
         self.assertEqual([i["id"] for i in items], ["CVE-2021-41773"])
         self.assertEqual(items[0]["cpes"][0]["v_ini"], "2.4.49")
         self.assertIn("virtualMatchString=cpe%3A2.3%3Aa%3Aapache%3Ahttp_server%3A2.4.49", consulta)
+
+    def test_el_update_de_nmap_va_en_su_propio_campo_en_la_consulta(self):
+        # En local la versión y el update se comparan pegados; la API de la NVD los quiere en campos separados.
+        with _Servidor({"/api": (200, b'{"totalResults": 0, "vulnerabilities": []}')}) as s, \
+                mock.patch.object(cve, "NVD_API_URL", s.base + "/api"):
+            cve.consultar_online("cpe:/a:microsoft:sql_server:2008:sp3", False)
+            self.assertIn("virtualMatchString=cpe%3A2.3%3Aa%3Amicrosoft%3Asql_server%3A2008%3Asp3&", s.peticiones[0][0])
 
     def test_cpe_con_vendor_comodin_y_sin_version(self):
         with _Servidor({"/api": (200, b'{"vulnerabilities": []}')}) as s, mock.patch.object(cve, "NVD_API_URL", s.base + "/api"):

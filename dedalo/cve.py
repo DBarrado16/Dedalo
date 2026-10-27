@@ -57,10 +57,10 @@ def comparar_versiones(a: str, b: str) -> int:
     return 0
 
 
-def _parsear_cpe(cpe: str):
-    """(vendor, producto, versión) de un CPE 2.2 (`cpe:/a:v:p:ver`) o 2.3 (`cpe:2.3:a:v:p:ver:...`); None si no sirve.
+def _campos_cpe(cpe: str):
+    """(vendor, producto, versión, update) de un CPE 2.2 (`cpe:/a:v:p:ver:upd`) o 2.3 (`cpe:2.3:a:v:p:ver:upd:...`).
 
-    Una versión ausente, `*` o `-` sale como cadena vacía.
+    None si no sirve. Un campo ausente, `*` o `-` sale como cadena vacía.
     """
     if not isinstance(cpe, str):
         return None
@@ -71,11 +71,25 @@ def _parsear_cpe(cpe: str):
         campos = [unquote(c) for c in texto[len("cpe:/"):].split(":")]
     else:
         return None
-    campos += [""] * (4 - len(campos))
-    vendor, producto, version = (c.strip().lower() for c in campos[1:4])
-    if not producto or producto in ("*", "-"):
+    campos += [""] * (5 - len(campos))
+    vendor, producto, version, update = ("" if c in ("*", "-") else c for c in (c.strip().lower() for c in campos[1:5]))
+    if not producto:
         return None
-    return ("" if vendor in ("*", "-") else vendor), producto, ("" if version in ("*", "-") else version)
+    return vendor, producto, version, update
+
+
+def _parsear_cpe(cpe: str):
+    """(vendor, producto, versión) de un CPE 2.2 o 2.3; None si no sirve. Una versión ausente, `*` o `-` sale vacía.
+
+    La versión lleva pegado el update, como la guarda `_regla_nvd` para comparar las dos igual: Nmap unas veces lo
+    pega (`openssh:9.3p1`) y otras lo da en su campo (`sql_server:2008:sp3` -> «2008sp3»). Sin versión, el update
+    solo no la convierte en una.
+    """
+    campos = _campos_cpe(cpe)
+    if campos is None:
+        return None
+    vendor, producto, version, update = campos
+    return vendor, producto, version + update if version else ""
 
 
 def cpe_desde_deteccion(producto: str, version: str) -> str | None:
@@ -372,14 +386,16 @@ def consultar_online(cpe: str, sin_internet: bool) -> list[dict] | None:
     """
     if sin_internet:
         return []
-    partes = _parsear_cpe(cpe)
-    if partes is None:
+    campos = _campos_cpe(cpe)
+    if campos is None:
         return None
-    vendor, producto, version = partes
+    vendor, producto, version, update = campos
     parte = (re.match(r"cpe:(?:2\.3:|/)([aoh])\b", cpe.strip().lower()) or [None, "a"])[1]
+    # La API quiere el update en su propio campo (no pegado a la versión, como se compara en local).
+    version_cpe = f"{version}:{update}" if version and update else version or "*"
 
     def consultar(vendor_cpe: str) -> list[dict] | None:
-        consulta = urllib.parse.urlencode({"virtualMatchString": f"cpe:2.3:{parte}:{vendor_cpe}:{producto}:{version or '*'}",
+        consulta = urllib.parse.urlencode({"virtualMatchString": f"cpe:2.3:{parte}:{vendor_cpe}:{producto}:{version_cpe}",
                                            "resultsPerPage": 500})
         datos = internet.leer_json(f"{NVD_API_URL}?{consulta}", MAX_RESPUESTA_API)
         vulnerabilidades = datos.get("vulnerabilities") if isinstance(datos, dict) else None
