@@ -347,7 +347,7 @@ class ConsultarOnlineTests(unittest.TestCase):
         for codigo in (403, 429, 503):
             with _Servidor({"/api": (codigo, b"")}) as s, mock.patch.object(cve, "NVD_API_URL", s.base + "/api"):
                 self.assertIsNone(cve.consultar_online("cpe:/a:apache:http_server:2.4.49", False), codigo)
-        with mock.patch.object(cve, "NVD_API_URL", "http://127.0.0.1:1/api"):  # puerto cerrado
+        with mock.patch.object(cve, "NVD_API_URL", "http://127.0.0.1:0/api"):  # el puerto 0 falla al momento; el 1 tarda 2 s en Windows
             self.assertIsNone(cve.consultar_online("cpe:/a:apache:http_server:2.4.49", False))
 
     def test_respuesta_ilegible_o_demasiado_grande_da_none(self):
@@ -400,7 +400,7 @@ class BuscarGithubTests(unittest.TestCase):
                 self.assertIsNone(exploits.buscar_github("CVE-2021-41773", False), codigo)
         with _Servidor({"/search": (200, b"no json")}) as s, mock.patch.object(exploits, "GITHUB_BUSQUEDA_URL", s.base + "/search"):
             self.assertIsNone(exploits.buscar_github("CVE-2021-41773", False))
-        with mock.patch.object(exploits, "GITHUB_BUSQUEDA_URL", "http://127.0.0.1:1/search"):
+        with mock.patch.object(exploits, "GITHUB_BUSQUEDA_URL", "http://127.0.0.1:0/search"):
             self.assertIsNone(exploits.buscar_github("CVE-2021-41773", False))
 
 
@@ -488,7 +488,7 @@ class ActualizarFuentesTests(unittest.TestCase):
                     self.assertTrue(any("No se pudo" in m for m in mensajes))
 
     def test_servidor_inalcanzable_no_rompe_ni_deja_ficheros(self):
-        with mock.patch.multiple(exploits, KEV_URL="http://127.0.0.1:1/kev.json", EXPLOITDB_URL="http://127.0.0.1:1/f.csv"):
+        with mock.patch.multiple(exploits, KEV_URL="http://127.0.0.1:0/kev.json", EXPLOITDB_URL="http://127.0.0.1:0/f.csv"):
             exploits.actualizar_fuentes(self.destino, False, log=lambda *_: None)
         self.assertEqual(list(self.destino.glob("*")), [])
 
@@ -533,8 +533,8 @@ class ActualizarFuentesTests(unittest.TestCase):
             with self.subTest(fuente=nombre):
                 base = self._servidor_truncado(cuerpo, anunciado)
                 mensajes = []
-                kev_url = base if nombre == "KEV" else "http://127.0.0.1:1/kev.json"
-                edb_url = base if nombre == "CSV" else "http://127.0.0.1:1/f.csv"
+                kev_url = base if nombre == "KEV" else "http://127.0.0.1:0/kev.json"
+                edb_url = base if nombre == "CSV" else "http://127.0.0.1:0/f.csv"
                 with mock.patch.multiple(exploits, KEV_URL=kev_url, EXPLOITDB_URL=edb_url):
                     exploits.actualizar_fuentes(self.destino, False, log=mensajes.append)
                 self.assertEqual((self.kev.read_bytes(), self.edb.read_bytes()), antes)
@@ -547,7 +547,7 @@ class ActualizarFuentesTests(unittest.TestCase):
         os.utime(self.edb, (time.time() - 3 * 86400,) * 2)
         cortado = EDB_PRUEBA + b"50384,exploits/multiple/50384.txt,Cort"
         base = self._servidor_truncado(cortado, 0, con_longitud=False)
-        with mock.patch.multiple(exploits, KEV_URL="http://127.0.0.1:1/kev.json", EXPLOITDB_URL=base):
+        with mock.patch.multiple(exploits, KEV_URL="http://127.0.0.1:0/kev.json", EXPLOITDB_URL=base):
             exploits.actualizar_fuentes(self.destino, False, log=lambda *_: None)
         self.assertEqual(self.edb.read_bytes(), EDB_PRUEBA)
 
