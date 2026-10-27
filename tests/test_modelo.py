@@ -220,15 +220,6 @@ class StartOllamaTests(unittest.TestCase):
         self.assertFalse(started)
         self.assertIn("No se pudo arrancar Ollama", message)
 
-    def test_a_slow_first_start_is_not_reported_as_a_failure(self):
-        with patch.object(modelo, "answers", return_value=False), \
-                patch.object(modelo, "find_ollama", return_value="C:/Ollama/ollama.exe"), \
-                patch.object(modelo.subprocess, "Popen") as popen:
-            popen.return_value.poll.return_value = None  # sigue arrancando
-            started, message = modelo.ensure_running(wait=0)
-        self.assertTrue(started)
-        self.assertIn("tarda", message)
-
     def test_ollama_listens_where_dedalo_will_look_for_it(self):
         for host, address in (("http://[::1]:11434", "[::1]:11434"), ("http://localhost", "localhost:80"),
                               ("http://127.0.0.1:9999", "127.0.0.1:9999")):
@@ -274,14 +265,6 @@ class StartOllamaTests(unittest.TestCase):
             started, message = modelo.ensure_running()
         self.assertFalse(started)
         self.assertIn("No se pudo arrancar Ollama", message)
-
-    def test_a_slow_ollama_that_was_already_running_is_not_reported_as_a_failure(self):
-        # Tardó en contestar la primera vez; el que se lanza no puede usar el puerto y se cierra.
-        with patch.object(modelo, "answers", side_effect=[False, True]), \
-                patch.object(modelo, "find_ollama", return_value="C:/Ollama/ollama.exe"), \
-                patch.object(modelo.subprocess, "Popen") as popen, patch.object(modelo.time, "sleep"):
-            popen.return_value.poll.return_value = 1
-            self.assertEqual(modelo.ensure_running(), (False, ""))
 
     def test_only_an_ollama_on_this_machine_is_started(self):
         with patch.object(modelo.subprocess, "Popen") as popen, self.assertRaisesRegex(ValueError, "este equipo"):

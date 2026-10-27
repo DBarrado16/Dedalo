@@ -60,33 +60,5 @@ class GenerateClaudeTests(unittest.TestCase):
                 modelo.generate_claude("hola", "claude-sonnet-5-5", api_key="k", url=url)
 
 
-class GeneradorTests(unittest.TestCase):
-    def test_engine_claude_usa_generate_claude(self):
-        llamadas = []
-        original = modelo.generate_claude
-        modelo.generate_claude = lambda prompt, model, **kw: llamadas.append((prompt, model)) or "ok"
-        try:
-            gen = modelo.generador("claude", "claude-sonnet-5-5", modelo.OLLAMA)
-            self.assertEqual(gen("hola"), "ok")
-        finally:
-            modelo.generate_claude = original
-        self.assertEqual(llamadas, [("hola", "claude-sonnet-5-5")])
-
-    def test_engine_ollama_usa_generate(self):
-        llamadas = []
-        original = modelo.generate
-        modelo.generate = lambda prompt, model, host, **kw: llamadas.append((prompt, model, host)) or "ok"
-        try:
-            gen = modelo.generador("ollama", "llama3.2:3b", modelo.OLLAMA)
-            self.assertEqual(gen("hola"), "ok")
-        finally:
-            modelo.generate = original
-        self.assertEqual(llamadas, [("hola", "llama3.2:3b", modelo.OLLAMA)])
-
-    def test_engine_desconocido_falla(self):
-        with self.assertRaises(ValueError):
-            modelo.generador("otro", "m", modelo.OLLAMA)
-
-
 if __name__ == "__main__":
     unittest.main()

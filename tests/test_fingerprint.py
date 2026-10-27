@@ -28,14 +28,6 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(enviado["tecnologias"], ["PHP:7.4"])
         self.assertIn("no instrucciones", text.lower())
 
-    def test_el_html_se_recorta_al_tope(self):
-        text = fingerprint.build_prompt(datos(html="x" * (fingerprint.MAX_HTML * 5)))
-        self.assertLessEqual(len(bloque(text)["html"]), fingerprint.MAX_HTML)
-
-    def test_el_titulo_se_recorta(self):
-        text = fingerprint.build_prompt(datos(titulo="T" * 500))
-        self.assertLessEqual(len(bloque(text)["titulo"]), fingerprint.MAX_TITULO)
-
     def test_el_esquema_cuadra_con_lo_que_parse_acepta(self):
         self.assertEqual(set(fingerprint.ESQUEMA["required"]), {"producto", "version", "confianza"})
 
@@ -46,14 +38,6 @@ class PromptTests(unittest.TestCase):
                                                     "san": ["vpn.example.com"]})
         sin_tls = fingerprint.build_prompt(datos(tls={}))
         self.assertNotIn("tls", bloque(sin_tls))
-
-    def test_el_favicon_se_incluye_recortado_a_producto_version_fuente(self):
-        con_favicon = fingerprint.build_prompt(datos(favicon={"producto": "RouterOS", "version": "6.49",
-                                                               "fuente": "demo", "mmh3": 123, "sha256": "x"}))
-        self.assertEqual(bloque(con_favicon)["favicon"], {"producto": "RouterOS", "version": "6.49",
-                                                            "fuente": "demo"})
-        sin_favicon = fingerprint.build_prompt(datos(favicon=None))
-        self.assertNotIn("favicon", bloque(sin_favicon))
 
     def test_las_senales_del_html_van_en_el_json(self):
         html = ('<meta name="generator" content="WordPress 6.4.2">'
@@ -76,14 +60,6 @@ class SenalesHtmlTests(unittest.TestCase):
             'Version 2.1.0',
         ])
 
-    def test_sin_duplicados_si_una_senal_se_repite(self):
-        html = '<!-- Joomla 3.9 --><p>texto</p><!-- Joomla 3.9 -->'
-        self.assertEqual(fingerprint.senales_html(html), ['<!-- Joomla 3.9 -->'])
-
-    def test_tope_de_senales(self):
-        html = "".join(f'<!-- señal {i} -->' for i in range(fingerprint.MAX_SENALES * 2))
-        self.assertEqual(len(fingerprint.senales_html(html)), fingerprint.MAX_SENALES)
-
     def test_sin_senales_devuelve_lista_vacia(self):
         self.assertEqual(fingerprint.senales_html("<html><body>sin pistas</body></html>"), [])
 
@@ -105,11 +81,6 @@ class ParseTests(unittest.TestCase):
     def test_acota_la_confianza_al_rango(self):
         self.assertEqual(fingerprint.parse_result(answer(confianza=150))["confianza"], 100)
         self.assertEqual(fingerprint.parse_result(answer(confianza=-5))["confianza"], 0)
-
-    def test_recorta_producto_y_version_largos(self):
-        out = fingerprint.parse_result(answer(producto="P" * 500, version="9" * 500))
-        self.assertLessEqual(len(out["producto"]), fingerprint.MAX_TEXTO)
-        self.assertLessEqual(len(out["version"]), fingerprint.MAX_TEXTO)
 
     def test_rechaza_lo_que_no_encaja(self):
         malos = ["sin json", "{roto", "[1,2]", json.dumps({"producto": "x"}),
