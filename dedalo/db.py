@@ -322,6 +322,12 @@ CREATE TABLE vulnerabilidad (
 CREATE INDEX vulnerabilidad_servicio ON vulnerabilidad (servicio_id);
 CREATE INDEX vulnerabilidad_ejecucion ON vulnerabilidad (ejecucion_id);
 """,
+    # Reconciliación al arrancar: marca (st_mtime_ns) del manifiesto del motor la última vez que sus
+    # resultados se registraron bien en una captura. 0 = aún sin registrar; NULL = captura anterior a
+    # esta migración. Si el manifiesto cambia después (motor huérfano) o el volcado falló, no coincide.
+    7: """
+ALTER TABLE ejecucion ADD COLUMN manifiesto_registrado INTEGER;
+""",
 }
 
 

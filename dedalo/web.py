@@ -302,6 +302,9 @@ class PortalStore:
                 meta = self._load_run(con, row)
                 if meta is not None:
                     self.jobs[meta["id"]] = meta
+                    # Una captura que estaba activa ya se registró al cerrarla (_close_interrupted).
+                    if row["captura"] and row["estado"] not in ACTIVE:
+                        self._reconcile(con, row)
 
     def _load_run(self, con, row):
         """Una ejecución del historial, sin su plan: se calcula al abrirla (_ensure_plan).
@@ -411,13 +414,9 @@ class PortalStore:
                     return
                 if record:
                     try:
-                        manifest = self._manifest({"id": job_id})
-                        if manifest:
-                            missing = auditoria.record_captures(con, capture_id, manifest,
-                                                                self.directory(job_id) / "resultado", self.root,
-                                                                self._result_logs(job_id, manifest))
-                            self._report_missing_images(job_id, missing)
+                        self._record(con, job_id, capture_id)
                     except Exception as exc:
+                        # El siguiente arranque los registra (_reconcile): su marca no se anotó.
                         print(f"Error del portal: no se pudieron registrar en la base los resultados de {job_id}: {exc}",
                               file=sys.stderr)
                 auditoria.set_state(con, capture_id, state, error)
@@ -425,6 +424,64 @@ class PortalStore:
             if strict:
                 raise
             print(f"Error del portal: no se pudo registrar en la base la captura de {job_id}: {exc}", file=sys.stderr)
+
+    def _manifest_mark(self, job_id):
+        """Marca (st_mtime_ns) del manifiesto del motor, o None si no hay."""
+        if not re.fullmatch(r"[a-f0-9]{32}", job_id):
+            return None
+        try:
+            # Sin directory(): resolver la ruta cuesta más que el stat, y esto va una vez por ejecución al arrancar.
+            return os.stat(os.path.join(self.root, job_id, "resultado", report.MANIFEST)).st_mtime_ns
+        except OSError:
+            return None
+
+    def _record(self, con, job_id, capture_id):
+        """Vuelca en la base los resultados del manifiesto y anota su marca; sin manifiesto legible, nada."""
+        # La marca se toma antes de leerlo: si el motor lo reescribe entretanto, queda vieja y se repite.
+        mark = self._manifest_mark(job_id)
+        manifest = self._manifest({"id": job_id})
+        if manifest:
+            missing = auditoria.record_captures(con, capture_id, manifest, self.directory(job_id) / "resultado",
+                                                self.root, self._result_logs(job_id, manifest), mark)
+            self._report_missing_images(job_id, missing)
+
+    def _reconcile(self, con, row):
+        """Registra al arrancar lo que el manifiesto de una captura cerrada tenga y la base no.
+
+        Cubre un motor que siguió escribiendo después de cerrarse su captura (sobrevive al portal en
+        Windows) y un volcado que falló. Solo cuesta un stat por ejecución: el manifiesto se lee si su
+        marca no es la registrada. Un fallo se avisa y no para el arranque.
+        """
+        mark = self._manifest_mark(row["id"])
+        if mark is None or mark == row["manifiesto_registrado"]:
+            return
+        try:
+            if row["manifiesto_registrado"] is None and not self._unrecorded_legacy(con, row, mark):
+                auditoria.set_manifest_mark(con, row["captura"], mark)  # anterior a la marca y ya registrada
+                return
+            self._record(con, row["id"], row["captura"])
+        except (OSError, sqlite3.Error) as exc:
+            print(f"Aviso: no se pudieron registrar en la base los resultados de {row['id']}: {exc}. "
+                  "Se reintentará al volver a abrir el portal.", file=sys.stderr)
+        except Exception as exc:
+            # Datos del manifiesto que no casan con la base: no cambiarán mientras no cambie el manifiesto.
+            print(f"Aviso: no se pudieron registrar en la base los resultados de {row['id']}: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr)
+            try:
+                auditoria.set_manifest_mark(con, row["captura"], mark)
+            except sqlite3.Error:
+                pass
+
+    @staticmethod
+    def _unrecorded_legacy(con, row, mark):
+        """Captura de antes de la marca: falta registrar si nunca se volcó o si el manifiesto es posterior a su cierre."""
+        if not auditoria.ever_recorded(con, row["captura"]):
+            return True
+        try:
+            closed = datetime.fromisoformat(row["terminada"]).timestamp()
+        except (TypeError, ValueError):
+            return True
+        return mark / 1e9 > closed
 
     @staticmethod
     def _report_missing_images(job_id, missing):

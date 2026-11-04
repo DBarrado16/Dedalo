@@ -1173,6 +1173,39 @@ class PortalTests(unittest.TestCase):
                 self.assertTrue(stop_file(job).is_file())
         self.assertFalse(stop_file(untouched).exists())
 
+    @staticmethod
+    def touch_later(path):
+        """Adelanta dos segundos la fecha de modificación: como si el motor hubiera escrito después."""
+        stat = path.stat()
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000))
+
+    def test_results_an_orphan_engine_writes_after_reopening_reach_the_database(self):
+        # El portal murió con la captura en curso y su motor siguió vivo. Al reabrir, al manifiesto
+        # aún le faltaba la última subred; el motor la termina después y el siguiente arranque la registra.
+        job = self.create()
+        capture = self.run_engine(job["id"])
+        path = self.store.directory(job["id"]) / "resultado" / report.MANIFEST
+        full = path.read_bytes()
+        manifest = json.loads(full)
+        last = manifest["grupos"][-1]
+        last.update(estado="en_curso", resultados=[])
+        manifest["estado"] = "en_curso"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        with closing(self.store.database()) as con, con:
+            con.execute("UPDATE ejecucion SET estado = 'en_curso', terminada = NULL WHERE id = ?", (capture,))
+            con.execute("UPDATE captura SET estado = 'pendiente', evidencia_id = NULL WHERE ejecucion_id = ?", (capture,))
+        self.reopen()
+        _, rows = self.capture_rows(capture)
+        self.assertEqual([r["estado"] for r in rows].count("pendiente"), len(last["objetivos"]))
+        path.write_bytes(full)  # el motor huérfano escribe la subred que le faltaba
+        self.touch_later(path)
+        self.reopen()
+        _, rows = self.capture_rows(capture)
+        self.assertEqual([(r["estado"], r["evidencia"]) for r in rows], [("capturada", 1)] * 3)
+        # Registrado una vez, el siguiente arranque no vuelve a leer el manifiesto.
+        with patch("dedalo.web.auditoria.record_captures", side_effect=AssertionError("ya estaba registrado")):
+            self.reopen()
+
     def test_scope_hint_says_how_to_authorize_all_ranges(self):
         page = self.request("/")[1]
         self.assertIn(b"0.0.0.0/0", page)
@@ -1386,6 +1419,38 @@ class PortalTests(unittest.TestCase):
         self.assertEqual((state["estado"], bool(state["terminada"])), ("completa", True))
         self.assertIn("disco lleno", errors.getvalue())
         self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
+        # El siguiente arranque los registra desde el manifiesto.
+        self.reopen()
+        state, rows = self.capture_rows(capture)
+        self.assertEqual(state["estado"], "completa")
+        self.assertEqual([(r["estado"], r["evidencia"]) for r in rows], [("capturada", 1)] * 3)
+
+    def test_a_capture_recorded_before_the_upgrade_is_read_again_only_if_its_manifest_is_newer(self):
+        job = self.create()
+        capture = self.run_engine(job["id"])
+        path = self.store.directory(job["id"]) / "resultado" / report.MANIFEST
+        with closing(self.store.database()) as con, con:  # como la dejaban las versiones anteriores
+            con.execute("UPDATE ejecucion SET manifiesto_registrado = NULL WHERE id = ?", (capture,))
+        with patch("dedalo.web.auditoria.record_captures", side_effect=AssertionError("no hacía falta")):
+            self.reopen()  # el manifiesto es anterior a su cierre: ya estaba registrado
+        with closing(self.store.database()) as con, con:
+            con.execute("UPDATE ejecucion SET manifiesto_registrado = NULL WHERE id = ?", (capture,))
+            con.execute("UPDATE captura SET estado = 'pendiente', evidencia_id = NULL WHERE ejecucion_id = ?", (capture,))
+        self.touch_later(path)  # un motor huérfano lo reescribió después de cerrarse
+        self.reopen()
+        _, rows = self.capture_rows(capture)
+        self.assertEqual([(r["estado"], r["evidencia"]) for r in rows], [("capturada", 1)] * 3)
+
+    def test_a_capture_whose_results_cannot_be_reconciled_does_not_stop_the_portal(self):
+        job = self.create()
+        capture = self.run_engine(job["id"])
+        self.touch_later(self.store.directory(job["id"]) / "resultado" / report.MANIFEST)
+        with patch("dedalo.web.auditoria.record_captures", side_effect=sqlite3.OperationalError("database is locked")), \
+                redirect_stderr(io.StringIO()) as errors:
+            self.reopen()
+        self.assertIn(job["id"], errors.getvalue())
+        self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
+        self.assertEqual(self.capture_rows(capture)[0]["estado"], "completa")
 
     def test_second_portal_cannot_claim_same_history(self):
         with self.assertRaisesRegex(ValueError, "Ya hay"):
