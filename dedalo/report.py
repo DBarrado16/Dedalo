@@ -30,6 +30,39 @@ def _resolved(path: Path) -> Path:
     return Path(text)
 
 
+# Lo que ocupa una ejecución por debajo de su carpeta de salida en el peor caso, con margen:
+# <rango>/<subred>/capturas/https---255.255.255.255-65535-.barra.png (unos 100 caracteres).
+HOLGURA_SALIDA = 105
+# El portal captura en <datos>/<id de la ejecución, 32>/resultado.
+HOLGURA_DATOS = 32 + 1 + len("resultado") + 1 + HOLGURA_SALIDA
+
+
+def rutas_largas_activadas() -> bool:
+    """Si Windows admite rutas de más de 260 caracteres (LongPathsEnabled); fuera de Windows, sí."""
+    if os.name != "nt":
+        return True
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as clave:
+            return winreg.QueryValueEx(clave, "LongPathsEnabled")[0] == 1
+    except OSError:
+        return False
+
+
+def comprobar_longitud(carpeta: Path, holgura: int) -> None:
+    """Rechaza una carpeta base con la que las capturas pasarían de 260 caracteres en Windows.
+
+    Sin rutas largas, crear esos ficheros falla a mitad de la ejecución (o al subir el
+    Nmap al portal) con un error que no dice la causa; mejor decirlo antes de empezar.
+    """
+    largo = len(str(Path(carpeta).resolve()))
+    if largo + holgura > 259 and not rutas_largas_activadas():
+        raise ValueError(
+            f"La carpeta {carpeta} es demasiado larga para Windows ({largo} caracteres): con lo que Dédalo "
+            f"crea dentro, las capturas pasarían del límite de 260. Usa una ruta de {259 - holgura} caracteres "
+            "como mucho o activa las rutas largas de Windows (LongPathsEnabled).")
+
+
 def inside(root: Path, relative: str) -> Path:
     base = _resolved(root)
     path = _resolved(base / relative)
