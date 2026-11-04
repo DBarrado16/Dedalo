@@ -68,6 +68,10 @@ def _valida(entrada: dict) -> None:
             raise ValueError("Cada credencial necesita usuario y clave de texto.")
     if "receta" in entrada and not isinstance(entrada["receta"], dict):
         raise ValueError("La receta debe ser un objeto.")
+    # La ruta va detrás de ip:puerto en la URL: sin «/» delante podría cambiar el host («@otro/»).
+    ruta = (entrada.get("receta") or {}).get("ruta", "/")
+    if not isinstance(ruta, str) or not ruta.startswith("/") or ruta.startswith("//"):
+        raise ValueError("La ruta de la receta debe empezar por «/».")
 
 
 def agregar(ruta: Path, entrada: dict) -> None:
