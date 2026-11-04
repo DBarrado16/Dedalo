@@ -28,6 +28,11 @@ SCHEME_LOG = "gowitness-esquema.log"
 SCHEME_ERRORS = ("ERR_EMPTY_RESPONSE", "ERR_INVALID_HTTP_RESPONSE", "ERR_CONNECTION_RESET",
                  "ERR_CONNECTION_CLOSED", "ERR_SSL_PROTOCOL_ERROR", "ERR_SSL_VERSION_OR_CIPHER_MISMATCH")
 LOGS = (LOG_NAME, SCHEME_LOG, RETRY_LOG)
+# Registros del proxy de alcance (lo que cortó o no pudo conectar), uno por pasada.
+PROXY_LOG = "proxy.jsonl"
+SCHEME_PROXY_LOG = "proxy-esquema.jsonl"
+RETRY_PROXY_LOG = "proxy-reintento.jsonl"
+PROXY_LOGS = (PROXY_LOG, SCHEME_PROXY_LOG, RETRY_PROXY_LOG)
 # Motores de gowitness para manejar el navegador. gorod va primero: chromedp se
 # queda sin imagen en páginas que gorod captura (probado con scanme.nmap.org y
 # una espera de 3 s o más).
@@ -210,6 +215,8 @@ def scan_subnet(binary: str, workdir: str | Path, urls: list[str], opts: dict,
         cmd += ["--chrome-path", opts["chrome"]]
     if opts.get("fullpage"):
         cmd.append("--screenshot-fullpage")
+    if opts.get("proxy"):
+        cmd += ["--chrome-proxy", opts["proxy"]]
     environment = os.environ.copy()
     if os.name == "nt" and Path(opts.get("chrome") or "").name.lower() == "msedge.exe":
         # Edge se relanza al heredar capas de compatibilidad y pierde el canal

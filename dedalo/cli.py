@@ -15,7 +15,7 @@ import sys
 from urllib.parse import urlsplit
 from xml.etree.ElementTree import ParseError
 
-from . import __version__, barra, gowitness, modelo, parser, report, targets, views
+from . import __version__, barra, gowitness, modelo, parser, proxy, report, targets, views
 
 
 def positive(value: str) -> int:
@@ -267,97 +267,117 @@ def capture(args) -> int:
     print(f"Salida: {root}", flush=True)
     print(f"Navegador: {chrome}", flush=True)
     interrupted = False
-    for position, group in enumerate(groups, 1):
-        if getattr(args, "stop_file", None) and Path(args.stop_file).exists():
-            interrupted = True
-            break
-        directory = report.inside(root, group["carpeta"])
-        directory.mkdir(parents=True)
-        group["estado"] = "en_curso"
-        report.write_index(root, manifest)
-        planned = [t["url"] for t in group["objetivos"]]
-        print(f"[{position}/{len(groups)}] {group['rango']} -> {group['subred']}: {len(planned)} URLs...", flush=True)
-        # El alcance se recomprueba justo antes de cada pasada: puede haber cambiado desde el plan.
-        urls = in_live_scope(args.alcance_vivo, planned)
-        error = ""
-        try:
-            if urls:
-                try:
-                    gowitness.scan_subnet(binary, directory, urls, engine)
-                except gowitness.GorodBlocked as blocked:
-                    # gorod no llegó a conectar con nadie: se repite la subred, salvo que se haya pedido parar.
-                    gorod_blocked(blocked)
-                    if getattr(args, "stop_file", None) and Path(args.stop_file).exists():
-                        raise KeyboardInterrupt from None
-                    urls = in_live_scope(args.alcance_vivo, urls)  # el alcance pudo cambiar entretanto
-                    if urls:
+    # El navegador de gowitness sale por un proxy local que corta lo excluido y lo interno fuera
+    # de alcance (docs/CONTRATOS.md 0.3). El tiempo es el de gowitness menos 1 s, para que el
+    # proxy dé su 502 antes de que el navegador se rinda.
+    if args.alcance_vivo:
+        scope_source = proxy.AlcanceVivo(args.alcance_vivo)
+    else:
+        ranges = targets.read_networks_file(args.rangos) if args.rangos else []
+        excluded = targets.read_networks_file(args.excluir) if getattr(args, "excluir", None) else []
+        scope_source = proxy.AlcanceFijo(proxy.alcance_de_consola(
+            [t["ip"] for g in groups for t in g["objetivos"]], ranges, getattr(args, "solo_rangos", False), excluded))
+    scope_proxy = proxy.Proxy(scope_source, max(1, opts["timeout"] - 1))
+    scope_proxy.iniciar()
+    engine["proxy"] = scope_proxy.url
+    try:
+        for position, group in enumerate(groups, 1):
+            if getattr(args, "stop_file", None) and Path(args.stop_file).exists():
+                interrupted = True
+                break
+            directory = report.inside(root, group["carpeta"])
+            directory.mkdir(parents=True)
+            group["estado"] = "en_curso"
+            report.write_index(root, manifest)
+            planned = [t["url"] for t in group["objetivos"]]
+            print(f"[{position}/{len(groups)}] {group['rango']} -> {group['subred']}: {len(planned)} URLs...", flush=True)
+            # El alcance se recomprueba justo antes de cada pasada: puede haber cambiado desde el plan.
+            urls = in_live_scope(args.alcance_vivo, planned)
+            error = ""
+            try:
+                if urls:
+                    try:
+                        scope_proxy.registro(directory / gowitness.PROXY_LOG)
                         gowitness.scan_subnet(binary, directory, urls, engine)
-            stopping = getattr(args, "stop_file", None) and Path(args.stop_file).exists()
-            # Error típico de esquema equivocado: se prueba una vez el otro esquema en el mismo
-            # IP:puerto. Las candidatas salen de los objetivos (ya en alcance), no del log.
-            # Va con el interruptor pedido (opts) pero con el motor efectivo (engine): no es
-            # un reintento de gorod, y sigue haciendo falta aunque gorod esté bloqueado.
-            alternatives = gowitness.scheme_candidates(directory, urls) if opts["retry"] and not stopping and urls else []
-            alternatives = in_live_scope(args.alcance_vivo, alternatives) if alternatives else []
-            if alternatives:
-                print(f"  {len(alternatives)} sin respuesta; se prueban con el otro esquema (http/https)...", flush=True)
-                try:
-                    gowitness.scan_subnet(binary, directory, alternatives, engine,
-                                          gowitness.SCHEME_URLS, gowitness.SCHEME_LOG)
-                except gowitness.GorodBlocked as blocked:
-                    gorod_blocked(blocked)
-                except (OSError, subprocess.CalledProcessError) as exc:
-                    print(f"  La prueba del otro esquema no pudo completarse: {exc}. Consulta {gowitness.SCHEME_LOG}", file=sys.stderr)
+                    except gowitness.GorodBlocked as blocked:
+                        # gorod no llegó a conectar con nadie: se repite la subred, salvo que se haya pedido parar.
+                        gorod_blocked(blocked)
+                        if getattr(args, "stop_file", None) and Path(args.stop_file).exists():
+                            raise KeyboardInterrupt from None
+                        urls = in_live_scope(args.alcance_vivo, urls)  # el alcance pudo cambiar entretanto
+                        if urls:
+                            scope_proxy.registro(directory / gowitness.PROXY_LOG)
+                            gowitness.scan_subnet(binary, directory, urls, engine)
                 stopping = getattr(args, "stop_file", None) and Path(args.stop_file).exists()
-            retry = gowitness.retry_candidates(directory, urls + alternatives) if engine["retry"] and not stopping else []
-            retry = in_live_scope(args.alcance_vivo, retry) if retry else []
-            if retry:
-                # La página respondió pero no hubo imagen: el otro motor a veces sí la obtiene.
-                other = gowitness.other_driver(engine["driver"])
-                print(f"  {len(retry)} sin imagen; se reintentan con el motor {other}...", flush=True)
-                try:
-                    gowitness.scan_subnet(binary, directory, retry, {**engine, "driver": other},
-                                          gowitness.RETRY_URLS, gowitness.RETRY_LOG)
-                except gowitness.GorodBlocked as blocked:
-                    gorod_blocked(blocked)
-                except (OSError, subprocess.CalledProcessError) as exc:
-                    # Lo capturado en la primera pasada sigue siendo válido.
-                    print(f"  El reintento no pudo completarse: {exc}. Consulta {gowitness.RETRY_LOG}", file=sys.stderr)
-        except KeyboardInterrupt:
-            interrupted = True
-            error = "Captura interrumpida por el usuario"
-        except (OSError, subprocess.CalledProcessError) as exc:
-            error = f"gowitness no pudo completar esta subred: {exc}. Consulta gowitness.log"
-        if url_bar and not interrupted:
-            # Quemar la barra con la URL en cada imagen (una pasada de Chrome por captura).
-            for fila in gowitness.read_results(directory / gowitness.DB_NAME).values():
-                try:
-                    barra.componer(gowitness.screenshot_path(directory, fila["filename"]),
-                                   fila["final_url"] or fila["url"], chrome)
-                except ValueError as exc:
-                    print(f"  {exc}", file=sys.stderr)
-        try:
-            report.collect_group(root, group, error)
-        except (OSError, sqlite3.Error, ValueError) as exc:
-            # No presentar como correctos resultados que no podemos verificar.
-            group.update(estado="error", error=f"No se pudo leer la base: {exc}", capturas=0, sin_captura=len(urls))
-            group["resultados"] = [
-                {"rango": group["rango"], "subred": group["subred"], "ip": t["ip"],
-                 "puerto": t["port"], "url": t["url"], "estado": "sin_captura", "error": group["error"]}
-                for t in group["objetivos"]
-            ]
-            (directory / "sin_captura.txt").write_text("\n".join(urls) + "\n", encoding="utf-8")
-        for row in group.get("resultados", []):
-            if row["url"] not in urls and row["estado"] != "capturada":
-                row["error"] = OUT_OF_LIVE_SCOPE  # no se intentó: el motivo es el alcance, no el log
-        if interrupted:
-            group["estado"] = "interrumpido"
-        report.write_index(root, manifest)
-        print(f"  {group['capturas']} capturas; {group['sin_captura']} sin captura.", flush=True)
-        if group.get("error"):
-            print(f"  {group['error']}", file=sys.stderr)
-        if interrupted:
-            break
+                # Error típico de esquema equivocado: se prueba una vez el otro esquema en el mismo
+                # IP:puerto. Las candidatas salen de los objetivos (ya en alcance), no del log.
+                # Va con el interruptor pedido (opts) pero con el motor efectivo (engine): no es
+                # un reintento de gorod, y sigue haciendo falta aunque gorod esté bloqueado.
+                alternatives = gowitness.scheme_candidates(directory, urls) if opts["retry"] and not stopping and urls else []
+                alternatives = in_live_scope(args.alcance_vivo, alternatives) if alternatives else []
+                if alternatives:
+                    print(f"  {len(alternatives)} sin respuesta; se prueban con el otro esquema (http/https)...", flush=True)
+                    try:
+                        scope_proxy.registro(directory / gowitness.SCHEME_PROXY_LOG)
+                        gowitness.scan_subnet(binary, directory, alternatives, engine,
+                                              gowitness.SCHEME_URLS, gowitness.SCHEME_LOG)
+                    except gowitness.GorodBlocked as blocked:
+                        gorod_blocked(blocked)
+                    except (OSError, subprocess.CalledProcessError) as exc:
+                        print(f"  La prueba del otro esquema no pudo completarse: {exc}. Consulta {gowitness.SCHEME_LOG}", file=sys.stderr)
+                    stopping = getattr(args, "stop_file", None) and Path(args.stop_file).exists()
+                retry = gowitness.retry_candidates(directory, urls + alternatives) if engine["retry"] and not stopping else []
+                retry = in_live_scope(args.alcance_vivo, retry) if retry else []
+                if retry:
+                    # La página respondió pero no hubo imagen: el otro motor a veces sí la obtiene.
+                    other = gowitness.other_driver(engine["driver"])
+                    print(f"  {len(retry)} sin imagen; se reintentan con el motor {other}...", flush=True)
+                    try:
+                        scope_proxy.registro(directory / gowitness.RETRY_PROXY_LOG)
+                        gowitness.scan_subnet(binary, directory, retry, {**engine, "driver": other},
+                                              gowitness.RETRY_URLS, gowitness.RETRY_LOG)
+                    except gowitness.GorodBlocked as blocked:
+                        gorod_blocked(blocked)
+                    except (OSError, subprocess.CalledProcessError) as exc:
+                        # Lo capturado en la primera pasada sigue siendo válido.
+                        print(f"  El reintento no pudo completarse: {exc}. Consulta {gowitness.RETRY_LOG}", file=sys.stderr)
+            except KeyboardInterrupt:
+                interrupted = True
+                error = "Captura interrumpida por el usuario"
+            except (OSError, subprocess.CalledProcessError) as exc:
+                error = f"gowitness no pudo completar esta subred: {exc}. Consulta gowitness.log"
+            if url_bar and not interrupted:
+                # Quemar la barra con la URL en cada imagen (una pasada de Chrome por captura).
+                for fila in gowitness.read_results(directory / gowitness.DB_NAME).values():
+                    try:
+                        barra.componer(gowitness.screenshot_path(directory, fila["filename"]),
+                                       fila["final_url"] or fila["url"], chrome)
+                    except ValueError as exc:
+                        print(f"  {exc}", file=sys.stderr)
+            try:
+                report.collect_group(root, group, error)
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                # No presentar como correctos resultados que no podemos verificar.
+                group.update(estado="error", error=f"No se pudo leer la base: {exc}", capturas=0, sin_captura=len(urls))
+                group["resultados"] = [
+                    {"rango": group["rango"], "subred": group["subred"], "ip": t["ip"],
+                     "puerto": t["port"], "url": t["url"], "estado": "sin_captura", "error": group["error"]}
+                    for t in group["objetivos"]
+                ]
+                (directory / "sin_captura.txt").write_text("\n".join(urls) + "\n", encoding="utf-8")
+            for row in group.get("resultados", []):
+                if row["url"] not in urls and row["estado"] != "capturada":
+                    row["error"] = OUT_OF_LIVE_SCOPE  # no se intentó: el motivo es el alcance, no el log
+            if interrupted:
+                group["estado"] = "interrumpido"
+            report.write_index(root, manifest)
+            print(f"  {group['capturas']} capturas; {group['sin_captura']} sin captura.", flush=True)
+            if group.get("error"):
+                print(f"  {group['error']}", file=sys.stderr)
+            if interrupted:
+                break
+    finally:
+        scope_proxy.parar()
 
     shots = sum(g.get("capturas", 0) for g in groups)
     has_error = any(g["estado"] == "error" for g in groups)
