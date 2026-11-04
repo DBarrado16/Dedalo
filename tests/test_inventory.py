@@ -179,4 +179,4 @@ class VulnerabilitiesInTheCaptureIndexTests(unittest.TestCase):
             report.write_index(Path(folder), self.manifest())
             texto = (Path(folder) / "indice.csv").read_text(encoding="utf-8-sig")
         self.assertEqual(list(csv.DictReader(io.StringIO(texto)))[0]["estado"], "pendiente")
-        self.assertEqual(texto.splitlines()[0].split(",")[-6:], report.COLUMNAS_VULN)
+        self.assertEqual(texto.splitlines()[0].split(",")[-7:], report.COLUMNAS_VULN + ["cortado_fuera_alcance"])
