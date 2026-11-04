@@ -6,11 +6,13 @@ import argparse
 from dataclasses import asdict
 from datetime import datetime, timezone
 import ipaddress
+import json
 import os
 from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+from urllib.parse import urlsplit
 from xml.etree.ElementTree import ParseError
 
 from . import __version__, barra, gowitness, modelo, parser, report, targets, views
@@ -74,6 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--chrome", help="Ruta o nombre del ejecutable Chrome/Chromium/Edge")
     capture.add_argument("--gowitness", help="Ruta o nombre del ejecutable gowitness v3")
     capture.add_argument("--stop-file", help=argparse.SUPPRESS)
+    # Alcance vigente que el portal reescribe si cambia la ficha: se relee antes de cada pasada.
+    capture.add_argument("--alcance-vivo", help=argparse.SUPPRESS)
 
     portal = subcommands.add_parser("web", help="Operar desde el portal web local")
     portal.add_argument("--puerto", type=port_number, default=8787)
@@ -115,6 +119,29 @@ def build_parser() -> argparse.ArgumentParser:
 
 def folder_name(cidr: str) -> str:
     return cidr.replace("/", "_").replace(":", "_")
+
+
+OUT_OF_LIVE_SCOPE = "Salió del alcance antes de capturarse: no se contactó."
+
+
+def in_live_scope(path: str | None, urls: list[str]) -> list[str]:
+    """Las URL que el alcance vigente aún permite (docs/CONTRATOS.md 0.3, reglas 2 y 4).
+
+    Sin fichero de alcance vivo (consola) no cambia nada. Si no se puede leer, no se contacta
+    con nadie: el alcance falla en cerrado.
+    """
+    if not path:
+        return urls
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        scope = targets.Scope(data["incluir"], data["excluir"])
+        kept = [url for url in urls if scope.status(urlsplit(url).hostname) == scope.IN]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        print(f"  No se pudo leer el alcance vigente ({exc}): no se contacta con nadie.", file=sys.stderr, flush=True)
+        return []
+    if len(kept) < len(urls):
+        print(f"  {len(urls) - len(kept)} URL ya no están en alcance: no se contactan.", flush=True)
+    return kept
 
 
 def plan(args) -> list[dict]:
@@ -196,15 +223,19 @@ def capture(args) -> int:
         directory.mkdir(parents=True)
         group["estado"] = "en_curso"
         report.write_index(root, manifest)
-        urls = [t["url"] for t in group["objetivos"]]
-        print(f"[{position}/{len(groups)}] {group['rango']} -> {group['subred']}: {len(urls)} URLs...", flush=True)
+        planned = [t["url"] for t in group["objetivos"]]
+        print(f"[{position}/{len(groups)}] {group['rango']} -> {group['subred']}: {len(planned)} URLs...", flush=True)
+        # El alcance se recomprueba justo antes de cada pasada: puede haber cambiado desde el plan.
+        urls = in_live_scope(args.alcance_vivo, planned)
         error = ""
         try:
-            gowitness.scan_subnet(binary, directory, urls, opts)
+            if urls:
+                gowitness.scan_subnet(binary, directory, urls, opts)
             stopping = getattr(args, "stop_file", None) and Path(args.stop_file).exists()
             # Error típico de esquema equivocado: se prueba una vez el otro esquema en el mismo
             # IP:puerto. Las candidatas salen de los objetivos (ya en alcance), no del log.
-            alternatives = gowitness.scheme_candidates(directory, urls) if opts["retry"] and not stopping else []
+            alternatives = gowitness.scheme_candidates(directory, urls) if opts["retry"] and not stopping and urls else []
+            alternatives = in_live_scope(args.alcance_vivo, alternatives) if alternatives else []
             if alternatives:
                 print(f"  {len(alternatives)} sin respuesta; se prueban con el otro esquema (http/https)...", flush=True)
                 try:
@@ -214,6 +245,7 @@ def capture(args) -> int:
                     print(f"  La prueba del otro esquema no pudo completarse: {exc}. Consulta {gowitness.SCHEME_LOG}", file=sys.stderr)
                 stopping = getattr(args, "stop_file", None) and Path(args.stop_file).exists()
             retry = gowitness.retry_candidates(directory, urls + alternatives) if opts["retry"] and not stopping else []
+            retry = in_live_scope(args.alcance_vivo, retry) if retry else []
             if retry:
                 # La página respondió pero no hubo imagen: el otro motor a veces sí la obtiene.
                 other = gowitness.other_driver(opts["driver"])
@@ -248,6 +280,9 @@ def capture(args) -> int:
                 for t in group["objetivos"]
             ]
             (directory / "sin_captura.txt").write_text("\n".join(urls) + "\n", encoding="utf-8")
+        for row in group.get("resultados", []):
+            if row["url"] not in urls and row["estado"] != "capturada":
+                row["error"] = OUT_OF_LIVE_SCOPE  # no se intentó: el motivo es el alcance, no el log
         if interrupted:
             group["estado"] = "interrumpido"
         report.write_index(root, manifest)
