@@ -208,8 +208,9 @@ def start_capture(con: sqlite3.Connection, import_id: str, options: dict, groups
         raise FileNotFoundError("Importación no encontrada")
     capture_id, stamp = uuid.uuid4().hex, created or now()
     with con:
-        con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada) "
-                    "VALUES (?, ?, 'captura', ?, ?, 'en_cola', ?, ?)",
+        # manifiesto_registrado = 0: sus resultados aún no se han registrado (ver reconcile en web.py).
+        con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada, "
+                    "manifiesto_registrado) VALUES (?, ?, 'captura', ?, ?, 'en_cola', ?, ?, 0)",
                     (capture_id, source["auditoria_id"], import_id, source["nombre"],
                      json.dumps(options, ensure_ascii=False), stamp))
         con.executemany("INSERT INTO captura (ejecucion_id, servicio_id, url, estado) VALUES (?, ?, ?, 'pendiente')",
@@ -693,8 +694,40 @@ def _evidence(con, execution_id: str, kind: str, path: Path, root: Path, stamp: 
     return con.execute("SELECT id FROM evidencia WHERE ejecucion_id = ? AND ruta = ?", (execution_id, route)).fetchone()[0]
 
 
+def _manifest_date(manifest: dict) -> str:
+    """Cuándo se hicieron las capturas de un manifiesto: su fin, o su inicio si no acabó; si no trae ninguno, ahora.
+
+    Un manifiesto se puede registrar mucho después (migración, reconciliación al arrancar).
+    """
+    for key in ("fin", "inicio"):
+        value = manifest.get(key)
+        if isinstance(value, str):
+            try:
+                datetime.fromisoformat(value)
+                return value
+            except ValueError:
+                pass
+    return now()
+
+
+def take_engine_state(con: sqlite3.Connection, execution_id: str, manifest: dict) -> tuple[str, str] | None:
+    """Una captura cerrada como interrumpida cuyo motor siguió vivo y terminó: estado y fin salen del manifiesto.
+
+    Solo cambia si sigue en «interrumpida» y el manifiesto dice «completa» o «parcial».
+    Devuelve (estado, fin), o None si no cambió.
+    """
+    state = manifest.get("estado")
+    if state not in ("completa", "parcial"):
+        return None
+    end = _manifest_date(manifest)
+    with con:
+        changed = con.execute("UPDATE ejecucion SET estado = ?, error = '', terminada = ? "
+                              "WHERE id = ? AND estado = 'interrumpida'", (state, end, execution_id)).rowcount == 1
+    return (state, end) if changed else None
+
+
 def record_captures(con: sqlite3.Connection, execution_id: str, manifest: dict, result_dir: Path, root: Path,
-                    logs: list[Path] = ()) -> list[str]:
+                    logs: list[Path] = (), mark: int | None = None) -> list[str]:
     """Vuelca en la base los resultados del manifiesto del motor; se puede repetir.
 
     Las subredes a las que no llegó la captura dejan sus URL como pendientes.
@@ -705,9 +738,12 @@ def record_captures(con: sqlite3.Connection, execution_id: str, manifest: dict, 
     guardada como evidencia, y `pendiente` que no se llegó a intentar. Conserva lo
     que vio el motor (código, título, URL final), sin evidencia y con el motivo en
     `error`. Devuelve las rutas de las imágenes que faltaban.
+
+    `mark` (st_mtime_ns del manifiesto leído) se anota en la misma transacción: así el
+    arranque sabe si el manifiesto cambió después de registrarse.
     """
     audit_id = con.execute("SELECT auditoria_id FROM ejecucion WHERE id = ?", (execution_id,)).fetchone()[0]
-    stamp = now()
+    stamp = _manifest_date(manifest)
     missing = []
     with con:
         for group in manifest["grupos"]:
@@ -733,7 +769,25 @@ def record_captures(con: sqlite3.Connection, execution_id: str, manifest: dict, 
         for path in logs:
             if Path(path).is_file():
                 _evidence(con, execution_id, "registro", Path(path), root, stamp)
+        if mark is not None:
+            _set_manifest_mark(con, execution_id, mark)
     return missing
+
+
+def _set_manifest_mark(con: sqlite3.Connection, execution_id: str, mark: int) -> None:
+    con.execute("UPDATE ejecucion SET manifiesto_registrado = ? WHERE id = ?", (mark, execution_id))
+
+
+def set_manifest_mark(con: sqlite3.Connection, execution_id: str, mark: int) -> None:
+    """Da por registrado el manifiesto con esa marca (st_mtime_ns) sin volver a leerlo."""
+    with con:
+        _set_manifest_mark(con, execution_id, mark)
+
+
+def ever_recorded(con: sqlite3.Connection, execution_id: str) -> bool:
+    """Si alguna vez se volcó un resultado del motor en esta captura (record_captures pone la fecha)."""
+    return con.execute("SELECT 1 FROM captura WHERE ejecucion_id = ? AND fecha IS NOT NULL LIMIT 1",
+                       (execution_id,)).fetchone() is not None
 
 
 def portal_options(con: sqlite3.Connection, import_id: str) -> dict:
@@ -754,7 +808,8 @@ def set_options(con: sqlite3.Connection, execution_id: str, options: dict) -> No
 def portal_jobs(con: sqlite3.Connection) -> list[sqlite3.Row]:
     """Cada importación con su captura, si ya se lanzó: el historial del portal."""
     return con.execute(
-        "SELECT i.id, i.nombre, i.creada, i.opciones, c.estado, c.error, c.terminada FROM ejecucion i "
+        "SELECT i.id, i.nombre, i.creada, i.opciones, c.estado, c.error, c.terminada, c.id AS captura, "
+        "c.manifiesto_registrado FROM ejecucion i "
         "LEFT JOIN ejecucion c ON c.origen_id = i.id AND c.tipo = 'captura' "
         "WHERE i.tipo = 'importacion' ORDER BY i.creada").fetchall()
 

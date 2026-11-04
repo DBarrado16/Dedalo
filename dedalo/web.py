@@ -292,8 +292,13 @@ class PortalStore:
             # capturas se siguen viendo desde su carpeta.
             print(f"Aviso: la captura de {job_id} se registra sin sus resultados: {type(exc).__name__}: {exc}",
                   file=sys.stderr)
-            auditoria.import_capture_history(con, job_id, meta["opciones"], [], state, error,
-                                             meta["fecha"], meta.get("fin"), None, result, self.root)
+            capture_id, _ = auditoria.import_capture_history(con, job_id, meta["opciones"], [], state, error,
+                                                             meta["fecha"], meta.get("fin"), None, result, self.root)
+            # Su plan sale del manifiesto al abrirla (_load_plan); el arranque no reintenta registrarlo
+            # hasta que cambie, porque volvería a fallar igual.
+            mark = self._manifest_mark(job_id)
+            if mark is not None:
+                auditoria.set_manifest_mark(con, capture_id, mark)
         else:
             self._report_missing_images(job_id, missing)
 
@@ -308,11 +313,12 @@ class PortalStore:
                 print(f"Aviso: no se pudo cargar el catálogo de credenciales: {exc}. El resto del portal "
                       "funciona; probar credenciales no estará disponible hasta arreglarlo.", file=sys.stderr)
             for row in auditoria.portal_jobs(con):
-                if not (self.root / row["id"]).is_dir():
-                    continue  # importación sin carpeta del portal
                 meta = self._load_run(con, row)
                 if meta is not None:
                     self.jobs[meta["id"]] = meta
+                    # Una captura que estaba activa ya se registró al cerrarla (_close_interrupted).
+                    if row["captura"] and row["estado"] not in ACTIVE:
+                        self._reconcile(con, row)
 
     def _load_run(self, con, row):
         """Una ejecución del historial, sin su plan: se calcula al abrirla (_ensure_plan).
@@ -324,6 +330,10 @@ class PortalStore:
                 "grupos": None, "total": 0, "subredes": 0, "fuera_alcance": None}
         failure = None
         try:
+            if not (self.root / row["id"]).is_dir():
+                # Sale en el historial para que se pueda borrar: su Nmap sigue en el inventario de la ficha.
+                raise ValueError("su carpeta ya no está en la carpeta de datos del portal. "
+                                 "Bórrala para quitar del inventario lo que solo aportaba ella.")
             options = json.loads(row["opciones"])
             if "captura" not in options:
                 return None  # importación que no se pudo migrar: se avisa en migration_failures
@@ -390,8 +400,17 @@ class PortalStore:
             self._plan_unlaunched(con, meta)
             return
         # Lo lanzado no cambia: las URL quedaron en la base y la agrupación en su rangos.txt.
-        hosts = auditoria.observed_hosts(con, meta["id"])
         planned = auditoria.planned_urls(con, capture_id)
+        manifest = None if planned else self._manifest(meta)
+        if manifest:
+            # Captura antigua migrada solo con su estado (sus objetivos no casaban con el inventario):
+            # su plan es el que siguió el motor. Solo se muestra; no se vuelve a conectar con nada.
+            groups = [{"rango": g["rango"], "subred": g["subred"], "carpeta": g["carpeta"], "estado": "pendiente",
+                       "objetivos": g["objetivos"]} for g in manifest["grupos"] if g["objetivos"]]
+            meta.update(grupos=groups, total=sum(len(g["objetivos"]) for g in groups), subredes=len(groups),
+                        fuera_alcance=None)
+            return
+        hosts = auditoria.observed_hosts(con, meta["id"])
         ranges_file = self.directory(meta["id"]) / "rangos.txt"
         ranges = targets.read_networks_file(ranges_file) if ranges_file.is_file() else []
         options = meta["opciones"]
@@ -422,13 +441,9 @@ class PortalStore:
                     return
                 if record:
                     try:
-                        manifest = self._manifest({"id": job_id})
-                        if manifest:
-                            missing = auditoria.record_captures(con, capture_id, manifest,
-                                                                self.directory(job_id) / "resultado", self.root,
-                                                                self._result_logs(job_id, manifest))
-                            self._report_missing_images(job_id, missing)
+                        self._record(con, job_id, capture_id)
                     except Exception as exc:
+                        # El siguiente arranque los registra (_reconcile): su marca no se anotó.
                         print(f"Error del portal: no se pudieron registrar en la base los resultados de {job_id}: {exc}",
                               file=sys.stderr)
                 auditoria.set_state(con, capture_id, state, error)
@@ -436,6 +451,73 @@ class PortalStore:
             if strict:
                 raise
             print(f"Error del portal: no se pudo registrar en la base la captura de {job_id}: {exc}", file=sys.stderr)
+
+    def _manifest_mark(self, job_id):
+        """Marca (st_mtime_ns) del manifiesto del motor, o None si no hay."""
+        if not re.fullmatch(r"[a-f0-9]{32}", job_id):
+            return None
+        try:
+            # Sin directory(): resolver la ruta cuesta más que el stat, y esto va una vez por ejecución al arrancar.
+            return os.stat(os.path.join(self.root, job_id, "resultado", report.MANIFEST)).st_mtime_ns
+        except OSError:
+            return None
+
+    def _record(self, con, job_id, capture_id):
+        """Vuelca en la base los resultados del manifiesto y anota su marca; sin manifiesto legible, nada.
+
+        Devuelve el manifiesto leído, o None.
+        """
+        # La marca se toma antes de leerlo: si el motor lo reescribe entretanto, queda vieja y se repite.
+        mark = self._manifest_mark(job_id)
+        manifest = self._manifest({"id": job_id})
+        if manifest:
+            missing = auditoria.record_captures(con, capture_id, manifest, self.directory(job_id) / "resultado",
+                                                self.root, self._result_logs(job_id, manifest), mark)
+            self._report_missing_images(job_id, missing)
+        return manifest
+
+    def _reconcile(self, con, row):
+        """Registra al arrancar lo que el manifiesto de una captura cerrada tenga y la base no.
+
+        Cubre un motor que siguió escribiendo después de cerrarse su captura (sobrevive al portal en
+        Windows) y un volcado que falló. Solo cuesta un stat por ejecución: el manifiesto se lee si su
+        marca no es la registrada. Un fallo se avisa y no para el arranque.
+        """
+        mark = self._manifest_mark(row["id"])
+        if mark is None or mark == row["manifiesto_registrado"]:
+            return
+        try:
+            if row["manifiesto_registrado"] is None and not self._unrecorded_legacy(con, row, mark):
+                auditoria.set_manifest_mark(con, row["captura"], mark)  # anterior a la marca y ya registrada
+                return
+            manifest = self._record(con, row["id"], row["captura"])
+            if manifest and row["estado"] == "interrumpida":
+                # Se cerró como interrumpida, pero su motor siguió y terminó: vale lo que diga el manifiesto.
+                taken = auditoria.take_engine_state(con, row["captura"], manifest)
+                if taken and row["id"] in self.jobs:
+                    self.jobs[row["id"]].update(estado=taken[0], error="", fin=taken[1])
+        except (OSError, sqlite3.Error) as exc:
+            print(f"Aviso: no se pudieron registrar en la base los resultados de {row['id']}: {exc}. "
+                  "Se reintentará al volver a abrir el portal.", file=sys.stderr)
+        except Exception as exc:
+            # Datos del manifiesto que no casan con la base: no cambiarán mientras no cambie el manifiesto.
+            print(f"Aviso: no se pudieron registrar en la base los resultados de {row['id']}: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr)
+            try:
+                auditoria.set_manifest_mark(con, row["captura"], mark)
+            except sqlite3.Error:
+                pass
+
+    @staticmethod
+    def _unrecorded_legacy(con, row, mark):
+        """Captura de antes de la marca: falta registrar si nunca se volcó o si el manifiesto es posterior a su cierre."""
+        if not auditoria.ever_recorded(con, row["captura"]):
+            return True
+        try:
+            closed = datetime.fromisoformat(row["terminada"]).timestamp()
+        except (TypeError, ValueError):
+            return True
+        return mark / 1e9 > closed
 
     @staticmethod
     def _report_missing_images(job_id, missing):
@@ -520,11 +602,19 @@ class PortalStore:
                 write_scope_files(directory, scope)
                 self.jobs[job_id] = meta
         except Exception:
-            # Sin importación completa no queda una ejecución a medias.
-            shutil.rmtree(directory, ignore_errors=True)
+            # Sin importación completa no queda una ejecución a medias. Base primero y carpeta después:
+            # si la base no deja deshacerla, la carpeta se queda y la ejecución sale entera al reabrir.
+            undone = True
             if imported:
-                with closing(self.database()) as con:
-                    auditoria.delete_execution(con, job_id)
+                try:
+                    with closing(self.database()) as con:
+                        auditoria.delete_execution(con, job_id)
+                except Exception as exc:
+                    undone = False
+                    print(f"Error del portal: no se pudo deshacer la importación {job_id}: {exc}. Saldrá en el "
+                          "historial al reabrir el portal; bórrala desde allí.", file=sys.stderr)
+            if undone:
+                shutil.rmtree(directory, ignore_errors=True)
             raise
         return self.detail(job_id)
 
@@ -1437,6 +1527,12 @@ class PortalStore:
             source = self.root / job_id
             if source.is_symlink() or source.is_junction():
                 raise ValueError("No se puede borrar una ejecución enlazada a otra carpeta")
+            if not source.exists():
+                # Su carpeta ya no está: basta con quitarla de la base, o no se podría borrar nunca.
+                with closing(self.database()) as con:
+                    auditoria.delete_execution(con, job_id)
+                del self.jobs[job_id]
+                return {"eliminada": job_id}
             # La carpeta se aparta antes de tocar la base, con un nombre que ni se carga ni se
             # migra al arrancar. Si la base falla, vuelve a su sitio y la ejecución sigue entera;
             # si algo queda a medias, el próximo arranque lo termina (_finish_deletes).
@@ -1453,8 +1549,12 @@ class PortalStore:
         try:
             shutil.rmtree(trash)
         except OSError as exc:
+            # El arranque siguiente termina de borrarla (_finish_deletes); el navegador también lo dice.
             print(f"Aviso: la ejecución {job_id} se borró del historial, pero no su carpeta {trash}: {exc}. "
-                  "Bórrala a mano.", file=sys.stderr)
+                  "Se borrará al volver a abrir el portal.", file=sys.stderr)
+            return {"eliminada": job_id,
+                    "aviso": "Su carpeta no se pudo borrar ahora (quizá algún archivo está abierto); "
+                             "se borrará al volver a abrir el portal."}
         return {"eliminada": job_id}
 
     def _group(self, job_id, group_index):

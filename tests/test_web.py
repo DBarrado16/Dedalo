@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import sqlite3
 import threading
@@ -196,6 +197,22 @@ class PortalTests(unittest.TestCase):
         self.assertFalse(directory.exists())
         self.assertFalse(self.stored(job["id"]))
 
+    def test_a_delete_that_cannot_remove_the_folder_tells_the_browser(self):
+        job = self.create()
+        with patch("dedalo.web.shutil.rmtree", side_effect=PermissionError("Archivo ocupado")), \
+                redirect_stderr(io.StringIO()):
+            status, content = self.request("/api/jobs/" + job["id"] + "/delete", {})
+        self.assertEqual(status, 200, content)
+        answer = json.loads(content)
+        self.assertEqual(answer["eliminada"], job["id"])
+        self.assertIn("carpeta", answer["aviso"])
+        self.assertIn("se borrará al volver a abrir el portal", answer["aviso"])
+        self.assertNotIn("aviso", json.loads(self.request("/api/jobs/" + self.create()["id"] + "/delete", {})[1]))
+        # La página lo enseña como texto, nunca como HTML.
+        self.assertIn(b"answer.aviso", self.request("/app.js")[1])
+        self.reopen()  # el arranque termina el borrado
+        self.assertEqual([p.name for p in Path(self.temp.name).iterdir() if p.is_dir()], [])
+
     def test_reopening_restores_a_run_whose_folder_could_not_go_back(self):
         job = self.create()
         rename, calls = Path.rename, []
@@ -212,6 +229,26 @@ class PortalTests(unittest.TestCase):
         self.assertFalse(self.store.directory(job["id"]).exists())
         self.reopen()
         self.assert_whole(job["id"])
+
+    def test_a_run_whose_folder_is_gone_says_so_and_can_be_deleted(self):
+        gone, healthy = self.create(), self.create()
+        shutil.rmtree(self.store.directory(gone["id"]))
+        with redirect_stderr(io.StringIO()):
+            self.reopen()
+        self.assertEqual({item["id"] for item in self.store.list()}, {gone["id"], healthy["id"]})
+        detail = self.store.detail(gone["id"])
+        self.assertEqual((detail["estado"], detail["total"]), ("error", 0))
+        self.assertIn("su carpeta ya no está", detail["error"])
+        # Borrarla quita de la base la ejecución y el Nmap que solo ella aportaba.
+        self.assertEqual(self.request("/api/jobs/" + gone["id"] + "/delete", {})[0], 200)
+        self.assertFalse(self.stored(gone["id"]))
+        self.assert_whole(healthy["id"])
+        # También si la carpeta desaparece con el portal abierto.
+        shutil.rmtree(self.store.directory(healthy["id"]))
+        self.assertEqual(self.request("/api/jobs/" + healthy["id"] + "/delete", {})[0], 200)
+        self.assertFalse(self.stored(healthy["id"]))
+        with closing(self.store.database()) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM activo").fetchone()[0], 0)
 
     def test_reopening_never_follows_a_link_named_like_a_set_aside_run(self):
         outside = Path(self.temp.name) / "fuera"
@@ -1198,6 +1235,97 @@ class PortalTests(unittest.TestCase):
                 self.assertTrue(stop_file(job).is_file())
         self.assertFalse(stop_file(untouched).exists())
 
+    @staticmethod
+    def touch_later(path):
+        """Adelanta dos segundos la fecha de modificación: como si el motor hubiera escrito después."""
+        stat = path.stat()
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000))
+
+    def test_results_an_orphan_engine_writes_after_reopening_reach_the_database(self):
+        # El portal murió con la captura en curso y su motor siguió vivo. Al reabrir, al manifiesto
+        # aún le faltaba la última subred; el motor la termina después y el siguiente arranque la registra.
+        job = self.create()
+        capture = self.run_engine(job["id"])
+        path = self.store.directory(job["id"]) / "resultado" / report.MANIFEST
+        full = path.read_bytes()
+        manifest = json.loads(full)
+        last = manifest["grupos"][-1]
+        last.update(estado="en_curso", resultados=[])
+        manifest["estado"] = "en_curso"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        with closing(self.store.database()) as con, con:
+            con.execute("UPDATE ejecucion SET estado = 'en_curso', terminada = NULL WHERE id = ?", (capture,))
+            con.execute("UPDATE captura SET estado = 'pendiente', evidencia_id = NULL WHERE ejecucion_id = ?", (capture,))
+        self.reopen()
+        _, rows = self.capture_rows(capture)
+        self.assertEqual([r["estado"] for r in rows].count("pendiente"), len(last["objetivos"]))
+        self.assertEqual(self.store.detail(job["id"])["estado"], "interrumpida")
+        path.write_bytes(full)  # el motor huérfano escribe la subred que le faltaba
+        self.touch_later(path)
+        self.reopen()
+        _, rows = self.capture_rows(capture)
+        self.assertEqual([(r["estado"], r["evidencia"]) for r in rows], [("capturada", 1)] * 3)
+        # El estado también sale del manifiesto: el motor terminó, no se interrumpió.
+        self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
+        with closing(self.store.database()) as con:
+            row = con.execute("SELECT estado, error FROM ejecucion WHERE id = ?", (capture,)).fetchone()
+        self.assertEqual((row["estado"], row["error"]), ("completa", ""))
+        # Registrado una vez, el siguiente arranque no vuelve a leer el manifiesto.
+        with patch("dedalo.web.auditoria.record_captures", side_effect=AssertionError("ya estaba registrado")):
+            self.reopen()
+
+    def make_legacy(self, job_id):
+        """Deja una ejecución como la guardaban las versiones anteriores: trabajo.json y nada en la base."""
+        path = self.store.directory(job_id) / "trabajo.json"
+        path.write_text(json.dumps(self.store.jobs[job_id], ensure_ascii=False), encoding="utf-8")
+        with closing(self.store.database()) as con:
+            auditoria.delete_execution(con, job_id)
+
+    def test_an_old_capture_migrated_without_its_results_still_shows_its_captures(self):
+        job = self.create()
+        self.run_engine(job["id"])
+        before = self.store.detail(job["id"])
+        self.make_legacy(job["id"])
+        # Su Nmap ya no trae 10.10.6.20:80, que el motor capturó: sus objetivos no casan con el inventario.
+        entrada = self.store.directory(job["id"]) / "entradas" / "nmap-00.txt"
+        texto = entrada.read_text(encoding="utf-8")
+        quitado = '<port protocol="tcp" portid="80"><state state="open"/><service name="http"/></port>'
+        self.assertEqual(texto.count(quitado), 1)
+        entrada.write_text(texto.replace(quitado, ""), encoding="utf-8")
+        with redirect_stderr(io.StringIO()) as errors:
+            self.reopen()
+        self.assertIn("se registra sin sus resultados", errors.getvalue())
+        self.assertEqual(errors.getvalue().count(job["id"]), 1)  # un solo aviso: el arranque no lo reintenta
+        detail = self.store.detail(job["id"])
+        self.assertEqual({k: detail[k] for k in ("estado", "total", "subredes", "capturas")},
+                         {k: before[k] for k in ("estado", "total", "subredes", "capturas")})
+        self.assertEqual(detail["grupos"], before["grupos"])
+        image = detail["grupos"][0]["objetivos"][0]["imagen"]
+        self.assertEqual(self.request(image)[0], 200)
+        # Al reabrir no se avisa otra vez: nada ha cambiado.
+        with redirect_stderr(io.StringIO()) as errors:
+            self.reopen()
+        self.assertNotIn(job["id"], errors.getvalue())
+
+    def test_migrated_captures_keep_the_date_of_their_manifest(self):
+        dates = {"fin": "2024-03-01T10:00:00+00:00", "inicio": "2024-02-01T09:00:00+00:00"}
+        jobs = {key: self.create() for key in dates}  # una con fin y otra que solo trae inicio
+        for key, job in jobs.items():
+            self.run_engine(job["id"])
+            path = self.store.directory(job["id"]) / "resultado" / report.MANIFEST
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            manifest.pop("fin")
+            manifest.update({key: dates[key]})
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            self.make_legacy(job["id"])
+        self.reopen()
+        with closing(self.store.database()) as con:
+            for key, job in jobs.items():
+                capture = auditoria.capture_of(con, job["id"])
+                fechas = {r[0] for r in con.execute("SELECT fecha FROM captura WHERE ejecucion_id = ?", (capture,))}
+                creadas = {r[0] for r in con.execute("SELECT creada FROM evidencia WHERE ejecucion_id = ?", (capture,))}
+                self.assertEqual((fechas, creadas), ({dates[key]}, {dates[key]}), key)
+
     def test_scope_hint_says_how_to_authorize_all_ranges(self):
         page = self.request("/")[1]
         self.assertIn(b"0.0.0.0/0", page)
@@ -1411,6 +1539,38 @@ class PortalTests(unittest.TestCase):
         self.assertEqual((state["estado"], bool(state["terminada"])), ("completa", True))
         self.assertIn("disco lleno", errors.getvalue())
         self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
+        # El siguiente arranque los registra desde el manifiesto.
+        self.reopen()
+        state, rows = self.capture_rows(capture)
+        self.assertEqual(state["estado"], "completa")
+        self.assertEqual([(r["estado"], r["evidencia"]) for r in rows], [("capturada", 1)] * 3)
+
+    def test_a_capture_recorded_before_the_upgrade_is_read_again_only_if_its_manifest_is_newer(self):
+        job = self.create()
+        capture = self.run_engine(job["id"])
+        path = self.store.directory(job["id"]) / "resultado" / report.MANIFEST
+        with closing(self.store.database()) as con, con:  # como la dejaban las versiones anteriores
+            con.execute("UPDATE ejecucion SET manifiesto_registrado = NULL WHERE id = ?", (capture,))
+        with patch("dedalo.web.auditoria.record_captures", side_effect=AssertionError("no hacía falta")):
+            self.reopen()  # el manifiesto es anterior a su cierre: ya estaba registrado
+        with closing(self.store.database()) as con, con:
+            con.execute("UPDATE ejecucion SET manifiesto_registrado = NULL WHERE id = ?", (capture,))
+            con.execute("UPDATE captura SET estado = 'pendiente', evidencia_id = NULL WHERE ejecucion_id = ?", (capture,))
+        self.touch_later(path)  # un motor huérfano lo reescribió después de cerrarse
+        self.reopen()
+        _, rows = self.capture_rows(capture)
+        self.assertEqual([(r["estado"], r["evidencia"]) for r in rows], [("capturada", 1)] * 3)
+
+    def test_a_capture_whose_results_cannot_be_reconciled_does_not_stop_the_portal(self):
+        job = self.create()
+        capture = self.run_engine(job["id"])
+        self.touch_later(self.store.directory(job["id"]) / "resultado" / report.MANIFEST)
+        with patch("dedalo.web.auditoria.record_captures", side_effect=sqlite3.OperationalError("database is locked")), \
+                redirect_stderr(io.StringIO()) as errors:
+            self.reopen()
+        self.assertIn(job["id"], errors.getvalue())
+        self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
+        self.assertEqual(self.capture_rows(capture)[0]["estado"], "completa")
 
     def test_second_portal_cannot_claim_same_history(self):
         with self.assertRaisesRegex(ValueError, "Ya hay"):
@@ -1509,6 +1669,20 @@ class PortalTests(unittest.TestCase):
         with closing(self.store.database()) as con:
             self.assertEqual(con.execute("SELECT COUNT(*) FROM ejecucion").fetchone()[0], 0)
             self.assertEqual(con.execute("SELECT COUNT(*) FROM activo").fetchone()[0], 0)
+
+    def test_undoing_an_import_whose_database_also_fails_keeps_its_folder(self):
+        # Base primero, carpeta después: si la base no deja deshacer, la ejecución sigue entera
+        # (sale al reabrir y se puede borrar) en vez de quedar una fila sin carpeta.
+        with patch("dedalo.web.write_scope_files", side_effect=OSError("Archivo ocupado")), \
+                patch("dedalo.web.auditoria.delete_execution", side_effect=sqlite3.OperationalError("database is locked")), \
+                redirect_stderr(io.StringIO()):
+            self.assertEqual(self.request("/api/jobs", self.payload())[0], 500)
+        with closing(self.store.database()) as con:
+            job_id = con.execute("SELECT id FROM ejecucion").fetchone()[0]
+        self.assertTrue((self.store.directory(job_id) / "entradas" / "nmap-00.txt").is_file())
+        self.reopen()
+        self.assertEqual(self.request("/api/jobs/" + job_id + "/delete", {})[0], 200)
+        self.assertEqual([p.name for p in Path(self.temp.name).iterdir() if p.is_dir()], [])
 
     def test_upload_with_only_non_web_services_retains_inventory(self):
         data = self.payload()

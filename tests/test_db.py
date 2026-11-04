@@ -89,7 +89,7 @@ CREATE TABLE nueva_ejecucion (
   id TEXT PRIMARY KEY, auditoria_id TEXT NOT NULL REFERENCES auditoria(id) ON DELETE CASCADE,
   tipo TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'descubrimiento', 'prueba')), origen_id TEXT REFERENCES ejecucion(id),
   nombre TEXT NOT NULL, estado TEXT NOT NULL, opciones TEXT NOT NULL DEFAULT '{}', creada TEXT NOT NULL,
-  iniciada TEXT, terminada TEXT, error TEXT NOT NULL DEFAULT '');
+  iniciada TEXT, terminada TEXT, error TEXT NOT NULL DEFAULT '', manifiesto_registrado INTEGER);
 INSERT INTO nueva_ejecucion SELECT * FROM ejecucion;
 DROP TABLE ejecucion;
 ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
