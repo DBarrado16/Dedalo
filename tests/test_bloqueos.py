@@ -119,6 +119,24 @@ class BloqueosTests(unittest.TestCase):
             self.assertEqual(errores["http://10.0.0.4/"], "page load error net::ERR_HTTP_RESPONSE_CODE_FAILURE")
             self.assertEqual(errores["http://[2001:db8::1]/"], "page load error net::ERR_CONNECTION_REFUSED")
 
+    def test_conexion_denegada_o_inalcanzable_tras_el_proxy_da_el_mensaje_de_hoy(self):
+        with tempfile.TemporaryDirectory() as temporal:
+            directorio = Path(temporal)
+            (directorio / gowitness.LOG_NAME).write_text(
+                'ERRO failed to witness target target=http://10.0.0.1:80/ err="page load error net::ERR_TUNNEL_CONNECTION_FAILED"\n'
+                'ERRO failed to witness target target=https://10.0.0.2:443/ err="page load error net::ERR_HTTP_RESPONSE_CODE_FAILURE"\n',
+                encoding="utf-8")
+            registro(directorio / gowitness.PROXY_LOG, [
+                {"destino": "10.0.0.1:80", "ip": "10.0.0.1", "puerto": 80, "fallo": "denegada"},
+                {"destino": "10.0.0.2:443", "ip": "10.0.0.2", "puerto": 443, "fallo": "inalcanzable"},
+            ])
+            errores = gowitness.read_errors(directorio)
+            # Sin proxy, Chrome daba ERR_NETWORK_ACCESS_DENIED, con su aviso de la VPN.
+            self.assertEqual(errores["http://10.0.0.1/"],
+                             "Acceso a la red denegado (ERR_NETWORK_ACCESS_DENIED). "
+                             "Comprueba que el portal se haya iniciado con acceso a la red/VPN.")
+            self.assertEqual(errores["https://10.0.0.2/"], "page load error net::ERR_ADDRESS_UNREACHABLE")
+
     def test_csv_lleva_lo_cortado(self):
         self.assertEqual(report.COLUMNS[-1], "cortado_fuera_alcance")
         manifiesto = {"grupos": [

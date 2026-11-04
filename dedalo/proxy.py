@@ -5,12 +5,14 @@ que se apoya en ellas para decidir, justo antes de conectar, si una IP se contac
 
 from __future__ import annotations
 
+import errno
 import ipaddress
 import json
 import re
 import selectors
 import socket
 import socketserver
+import struct
 import sys
 import threading
 import time
@@ -28,21 +30,41 @@ _REINTENTO_TOTAL = 0.2
 _REINTENTO_PAUSA = 0.02
 
 
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_COMPATIBLE = ipaddress.ip_network("::/96")
+
+
+def _juzgada(ip: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """La dirección con la que se juzga `ip`: la IPv4 que lleve dentro, si lleva una.
+
+    ::ffff:a.b.c.d (mapeada), 64:ff9b::a.b.c.d (NAT64) y ::a.b.c.d (IPv4-compatible)
+    llegan al mismo equipo que a.b.c.d. Las dos últimas son is_global para ipaddress
+    aunque dentro lleven una IP interna; :: y ::1 no se tocan."""
+    direccion = ipaddress.ip_address(ip)
+    if direccion.version == 4:
+        return direccion
+    if direccion.ipv4_mapped:
+        return direccion.ipv4_mapped
+    if direccion in _NAT64 or (direccion in _COMPATIBLE and direccion.is_global):
+        return ipaddress.IPv4Address(int(direccion) & 0xFFFFFFFF)
+    return direccion
+
+
 def decidir(ip: str, alcance: targets.Scope | None) -> str | None:
     """Motivo por el que NO se contacta con `ip`, o None si pasa.
 
     Orden: excluida corta; en alcance pasa; una IP pública pasa; el resto corta.
-    Sin alcance legible no pasa nada, tampoco lo público (falla en cerrado)."""
+    Una IPv6 que lleva dentro una IPv4 se juzga como esa IPv4 (la exclusión escrita
+    con la IPv6 también gana). Sin alcance legible no pasa nada, tampoco lo público
+    (falla en cerrado)."""
     if alcance is None:
         return ILEGIBLE
-    estado = alcance.status(ip)
-    if estado == alcance.EXCLUDED:
+    direccion = _juzgada(ip)
+    estado = alcance.status(str(direccion))
+    if estado == alcance.EXCLUDED or alcance.status(ip) == alcance.EXCLUDED:
         return EXCLUIDA
     if estado == alcance.IN:
         return None
-    direccion = ipaddress.ip_address(ip)
-    # ::ffff:a.b.c.d llega al mismo equipo que a.b.c.d: se juzga como IPv4.
-    direccion = getattr(direccion, "ipv4_mapped", None) or direccion
     return None if direccion.is_global else FUERA
 
 
@@ -92,7 +114,8 @@ class AlcanceVivo:
         while True:
             try:
                 estado = self._path.stat()
-                firma = (estado.st_mtime_ns, estado.st_size)
+                # st_ino: un fichero reemplazado con el mismo tamaño y la misma fecha es otro.
+                firma = (estado.st_mtime_ns, estado.st_size, estado.st_ino)
                 if firma != self._firma or self._scope is None:
                     datos = json.loads(self._path.read_text(encoding="utf-8"))
                     self._scope = targets.Scope(datos["incluir"], datos["excluir"])
@@ -119,6 +142,8 @@ _NOMBRE_CABECERA = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 _HOST = re.compile(r"[A-Za-z0-9._%:-]+")
 _PUERTO = re.compile(r"[0-9]{1,5}")
 _VERSION = re.compile(r"HTTP/1\.[01]")
+# Equipo o red inalcanzable; en Windows llegan con el código de Winsock (WSAEHOSTUNREACH, WSAENETUNREACH).
+_INALCANZABLE = {errno.EHOSTUNREACH, errno.ENETUNREACH, 10065, 10051}
 
 
 def _respuesta(codigo: int, texto: str) -> bytes:
@@ -238,11 +263,24 @@ def _analizar(cabecera: bytes) -> _Peticion:
     return _Peticion(host, puerto, reenvio, cuerpo)
 
 
+def _abortar(cliente: socket.socket) -> None:
+    """Cierra con RST, no con FIN: el navegador ve el reset del servidor (ERR_CONNECTION_RESET).
+
+    Se cierra aquí mismo; el `shutdown` posterior de socketserver falla con OSError
+    sobre el socket ya cerrado, y socketserver lo ignora."""
+    try:
+        cliente.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    finally:
+        cliente.close()
+
+
 def _tunel(cliente: socket.socket, servidor: socket.socket, cuerpo: int | None) -> None:
     """Pasa bytes en los dos sentidos hasta que cualquiera de los dos lados cierre.
 
-    `cuerpo`: bytes del cliente que aún se reenvían (None: sin tope). Lo que el cliente
-    mande de más se descarta: en HTTP sería otra petición, quizá para otro servidor."""
+    Lo que hace el servidor llega tal cual: si cierra, el cliente recibe un cierre; si
+    resetea, un reset. `cuerpo`: bytes del cliente que aún se reenvían (None: sin tope).
+    Lo que el cliente mande de más se descarta: en HTTP sería otra petición, quizá para
+    otro servidor."""
     with selectors.DefaultSelector() as selector:
         selector.register(cliente, selectors.EVENT_READ, servidor)
         selector.register(servidor, selectors.EVENT_READ, cliente)
@@ -251,6 +289,10 @@ def _tunel(cliente: socket.socket, servidor: socket.socket, cuerpo: int | None) 
                 origen, destino = clave.fileobj, clave.data
                 try:
                     datos = origen.recv(_BLOQUE)
+                except ConnectionResetError:
+                    if origen is servidor:
+                        _abortar(cliente)
+                    return
                 except OSError:
                     return
                 if not datos:
@@ -261,6 +303,10 @@ def _tunel(cliente: socket.socket, servidor: socket.socket, cuerpo: int | None) 
                 if datos:
                     try:
                         destino.sendall(datos)
+                    except ConnectionResetError:
+                        if destino is servidor:
+                            _abortar(cliente)
+                        return
                     except OSError:
                         return
 
@@ -408,8 +454,10 @@ class Proxy:
             linea["fallo"] = "rechazada"
         except TimeoutError:
             linea["fallo"] = "sin_respuesta"
-        except OSError:
-            linea["fallo"] = "error"
+        except PermissionError:
+            linea["fallo"] = "denegada"
+        except OSError as error:
+            linea["fallo"] = "inalcanzable" if error.errno in _INALCANZABLE else "error"
         self._anotar(linea)
         cliente.sendall(_SIN_CONEXION)
         return None

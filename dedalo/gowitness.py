@@ -369,7 +369,7 @@ def _proxy_lines(directory: Path):
 
 
 def read_failures(directory: Path) -> dict[str, str]:
-    """`ip:puerto` -> por qué el proxy no pudo conectar (rechazada | sin_respuesta | error)."""
+    """`ip:puerto` -> por qué el proxy no pudo conectar (rechazada | sin_respuesta | denegada | inalcanzable | error)."""
     return {item["destino"].lower(): item["fallo"] for item in _proxy_lines(directory)
             if isinstance(item.get("fallo"), str)}
 
@@ -417,7 +417,8 @@ def read_blocked(directory: Path) -> tuple[dict[str, list[dict]], list[dict]]:
 # Con el proxy, un puerto cerrado o caído llega a Chrome como fallo del túnel; el mensaje
 # recupera el código que habría dado sin proxy, según lo que anotó el proxy al conectar.
 _TUNNEL_ERRORS = ("net::ERR_TUNNEL_CONNECTION_FAILED", "net::ERR_HTTP_RESPONSE_CODE_FAILURE")
-_DIRECT_ERRORS = {"rechazada": "net::ERR_CONNECTION_REFUSED", "sin_respuesta": "net::ERR_CONNECTION_TIMED_OUT"}
+_DIRECT_ERRORS = {"rechazada": "net::ERR_CONNECTION_REFUSED", "sin_respuesta": "net::ERR_CONNECTION_TIMED_OUT",
+                  "denegada": "net::ERR_NETWORK_ACCESS_DENIED", "inalcanzable": "net::ERR_ADDRESS_UNREACHABLE"}
 
 
 def _without_proxy(message: str, url: str, failures: dict[str, str]) -> str:

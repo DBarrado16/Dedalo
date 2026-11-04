@@ -1,9 +1,12 @@
 """Regla de paso del proxy de alcance y sus fuentes de alcance."""
 
 from contextlib import redirect_stderr
+import errno
 import io
 import json
+import os
 import socket
+import struct
 import tempfile
 import threading
 import unittest
@@ -30,6 +33,24 @@ class ReglaDePasoTests(unittest.TestCase):
         self.assertIsNone(proxy.decidir("::ffff:10.10.1.1", s))
         self.assertEqual(proxy.decidir("::ffff:192.168.1.1", s), proxy.FUERA)
         self.assertIsNone(proxy.decidir("::ffff:8.8.4.4", s))
+
+    def test_nat64_se_juzga_como_su_ipv4(self):
+        s = targets.Scope(["10.10.0.0/16"], ["1.1.1.1/32"])
+        self.assertEqual(proxy.decidir("64:ff9b::a00:1", s), proxy.FUERA)       # 10.0.0.1, interna fuera de alcance
+        self.assertEqual(proxy.decidir("64:ff9b::101:101", s), proxy.EXCLUIDA)  # 1.1.1.1, pública pero excluida
+        self.assertIsNone(proxy.decidir("64:ff9b::a0a:101", s))                 # 10.10.1.1, en alcance
+        self.assertIsNone(proxy.decidir("64:ff9b::808:404", s))                 # 8.8.4.4, pública
+        # La exclusión escrita en IPv6 también gana.
+        s6 = targets.Scope(["10.10.0.0/16"], ["64:ff9b::a0a:101/128"])
+        self.assertEqual(proxy.decidir("64:ff9b::a0a:101", s6), proxy.EXCLUIDA)
+
+    def test_ipv4_compatible_se_juzga_como_su_ipv4(self):
+        s = targets.Scope(["10.10.0.0/16"], ["1.1.1.1/32"])
+        self.assertEqual(proxy.decidir("::a00:1", s), proxy.FUERA)
+        self.assertEqual(proxy.decidir("::101:101", s), proxy.EXCLUIDA)
+        self.assertIsNone(proxy.decidir("::a0a:101", s))
+        self.assertIsNone(proxy.decidir("::808:404", s))
+        self.assertEqual(proxy.decidir("::1", s), proxy.FUERA)
 
     def test_nombre_con_una_ip_excluida_usa_otra(self):
         s = targets.Scope(["10.10.0.0/16"], ["10.10.5.20/32"])
@@ -83,6 +104,21 @@ class AlcanceVivoTests(unittest.TestCase):
         self.assertIsNone(proxy.decidir("10.0.0.1", vivo.actual()))
         self.escribir(["10.0.0.0/8"], ["10.0.0.1/32"])  # cambia el tamaño
         self.assertEqual(proxy.decidir("10.0.0.1", vivo.actual()), proxy.EXCLUIDA)
+
+    def test_alcance_vivo_relee_si_se_reemplaza_con_igual_tamano_y_fecha(self):
+        self.escribir(["10.0.0.0/8"], ["10.0.0.1/32"])
+        vivo = proxy.AlcanceVivo(self.ruta)
+        self.assertEqual(proxy.decidir("10.0.0.1", vivo.actual()), proxy.EXCLUIDA)
+        antes = self.ruta.stat()
+        nuevo = self.ruta.with_name("alcance.json.tmp")
+        nuevo.write_text(json.dumps({"incluir": ["10.0.0.0/8"], "excluir": ["10.0.0.2/32"]}), encoding="utf-8")
+        os.utime(nuevo, ns=(antes.st_atime_ns, antes.st_mtime_ns))
+        os.replace(nuevo, self.ruta)     # como write_live_scope: otro fichero en el mismo sitio
+        despues = self.ruta.stat()
+        self.assertEqual((despues.st_mtime_ns, despues.st_size), (antes.st_mtime_ns, antes.st_size))
+        self.assertNotEqual(despues.st_ino, antes.st_ino)
+        self.assertIsNone(proxy.decidir("10.0.0.1", vivo.actual()))
+        self.assertEqual(proxy.decidir("10.0.0.2", vivo.actual()), proxy.EXCLUIDA)
 
     def test_alcance_vivo_no_relee_si_no_cambia(self):
         self.escribir(["10.0.0.0/8"])
@@ -157,7 +193,8 @@ class ServidorDePrueba:
     """Servidor de una sola conexión en 127.0.0.1 que guarda lo que recibe.
 
     En modo "eco" devuelve lo que le llega; en modo "http" lee una petición, responde
-    `ok` con `Connection: close` y sigue leyendo hasta que el otro lado cierre."""
+    `ok` con `Connection: close` y sigue leyendo hasta que el otro lado cierre; en modo
+    "reset" lee lo primero que llegue y corta la conexión con un RST."""
 
     RESPUESTA = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
 
@@ -180,6 +217,11 @@ class ServidorDePrueba:
             if self.modo == "eco":
                 while datos := conexion.recv(65536):
                     conexion.sendall(datos)
+                return
+            if self.modo == "reset":
+                # Lee lo primero que llegue y aborta con RST en vez de cerrar con FIN.
+                self.recibido = conexion.recv(65536)
+                conexion.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
                 return
             while b"\r\n\r\n" not in self.recibido:
                 self.recibido += conexion.recv(65536)
@@ -413,6 +455,73 @@ class ServidorProxyTests(unittest.TestCase):
             {"destino": "10.10.1.1:81", "ip": "10.10.1.1", "puerto": 81, "fallo": "rechazada"},
             {"destino": "10.10.1.1:82", "ip": "10.10.1.1", "puerto": 82, "fallo": "sin_respuesta"},
             {"destino": "10.10.1.1:83", "ip": "10.10.1.1", "puerto": 83, "fallo": "error"}])
+
+    def test_conexion_denegada_o_inalcanzable_se_anota_por_su_clase(self):
+        casos = [(PermissionError(errno.EACCES, "denegada"), "denegada"),
+                 (OSError(errno.EHOSTUNREACH, "equipo inalcanzable"), "inalcanzable"),
+                 (OSError(errno.ENETUNREACH, "red inalcanzable"), "inalcanzable"),
+                 (OSError(10065, "WSAEHOSTUNREACH"), "inalcanzable"),
+                 (OSError(10051, "WSAENETUNREACH"), "inalcanzable"),
+                 (OSError(errno.EIO, "otro"), "error")]
+        conectar = mock.Mock()
+        servidor = self.arrancar(conectar=conectar)
+        for puerto, (error, _) in enumerate(casos, start=81):
+            conectar.side_effect = error
+            _, cabecera = self.pedir(servidor, f"CONNECT 10.10.1.1:{puerto} HTTP/1.1\r\n\r\n".encode())
+            self.assertTrue(cabecera.startswith("HTTP/1.1 502 "), cabecera)
+        self.assertEqual([l["fallo"] for l in self.lineas()], [fallo for _, fallo in casos])
+
+    def vigilar_cierre(self):
+        """Avisa cuando socketserver termina con la conexión atendida y recoge lo que se le escape.
+
+        Devuelve (evento, errores): `errores` junta lo que llegó a `handle_error` y lo que
+        lanzó `shutdown_request` (que acabaría como traza en la consola)."""
+        cerrada, errores = threading.Event(), []
+        original = proxy._Servidor.shutdown_request
+
+        def cerrar(servidor, peticion):
+            try:
+                original(servidor, peticion)
+            except BaseException as error:
+                errores.append(error)
+            finally:
+                cerrada.set()
+
+        parche = mock.patch.object(proxy._Servidor, "shutdown_request", cerrar)
+        parche.start()
+        self.addCleanup(parche.stop)
+        trazas = mock.patch.object(proxy._Servidor, "handle_error", lambda *a: errores.append(a))
+        trazas.start()
+        self.addCleanup(trazas.stop)
+        return cerrada, errores
+
+    def test_reset_del_servidor_llega_como_reset_en_connect(self):
+        reset = self.servidor_local("reset")
+        cerrada, errores = self.vigilar_cierre()
+        servidor = self.arrancar()
+        conexion, cabecera = self.pedir(servidor, f"CONNECT 127.0.0.1:{reset.puerto} HTTP/1.1\r\n\r\n".encode())
+        self.assertTrue(cabecera.startswith("HTTP/1.1 200 "), cabecera)
+        conexion.sendall(b"hola")
+        with self.assertRaises(ConnectionResetError):
+            self.leer_todo(conexion)
+        self.assertTrue(cerrada.wait(ESPERA))
+        self.assertEqual(errores, [])
+        reset.cerrar()
+        self.assertEqual(reset.recibido, b"hola")
+        self.assertEqual(self.lineas(), [])
+
+    def test_reset_del_servidor_llega_como_reset_en_http(self):
+        reset = self.servidor_local("reset")
+        cerrada, errores = self.vigilar_cierre()
+        servidor = self.arrancar()
+        conexion = self.cliente(servidor)
+        conexion.sendall(f"GET http://127.0.0.1:{reset.puerto}/ HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+        with self.assertRaises(ConnectionResetError):
+            self.leer_todo(conexion)
+        self.assertTrue(cerrada.wait(ESPERA))
+        self.assertEqual(errores, [])
+        reset.cerrar()
+        self.assertTrue(reset.recibido.startswith(b"GET / HTTP/1.1\r\n"), reset.recibido)
 
     # --- HTTP con URL absoluta ---
 
