@@ -5,8 +5,10 @@ Conserva los resultados en pruebas_locales/ para poder abrir el visor. Con
 DEDALO_CONSERVAR_SALIDA=RUTA (carpeta que aún no exista) copia además ahí la salida
 de la captura, recién comprobada.
 
-La web de 127.0.0.1 carga una imagen de 10.255.255.1:81, fuera del alcance de la prueba
+La web de 127.0.0.1 carga una imagen de 240.0.0.1:81, fuera del alcance de la prueba
 y no pública: el proxy de alcance la corta antes de conectar, así que no sale nada del equipo.
+Es una IP reservada (clase E) que no se enruta: si algo la pidiera sin proxy, tampoco
+llegaría a ninguna red.
 """
 
 from __future__ import annotations
@@ -29,9 +31,10 @@ import urllib.request
 from dedalo import gowitness, report, views
 
 ROOT = Path(__file__).resolve().parent.parent
-# Recurso fuera del alcance 127.0.0.0/8 de la prueba y no público: el proxy lo corta.
-FUERA_DE_ALCANCE = "http://10.255.255.1:81/x.png"
-CORTE_ESPERADO = {"destino": "10.255.255.1:81", "ip": "10.255.255.1", "puerto": 81, "motivo": "fuera_de_alcance"}
+# Recurso fuera del alcance 127.0.0.0/8 de la prueba y no público (240.0.0.0/4, reservada
+# y no enrutable): el proxy lo corta.
+FUERA_DE_ALCANCE = "http://240.0.0.1:81/x.png"
+CORTE_ESPERADO = {"destino": "240.0.0.1:81", "ip": "240.0.0.1", "puerto": 81, "motivo": "fuera_de_alcance"}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -179,7 +182,7 @@ def main():
         assert all(row["bloqueos"] == [] for row in rows if row is not page), rows
         # Atribuido a su web, no a la subred (el tráfico de fondo del navegador no cuenta aquí).
         assert all(CORTE_ESPERADO not in g["bloqueos_sin_pagina"] for g in manifest["grupos"]), manifest["grupos"]
-        # El proxy cortó 10.255.255.1 por la regla, antes de conectar: ninguna línea suya es un fallo de conexión.
+        # El proxy cortó 240.0.0.1 por la regla, antes de conectar: ninguna línea suya es un fallo de conexión.
         proxy_lines = [json.loads(line) for g in manifest["grupos"] for name in gowitness.PROXY_LOGS
                        if (output / g["carpeta"] / name).is_file()
                        for line in (output / g["carpeta"] / name).read_text(encoding="utf-8").splitlines()]

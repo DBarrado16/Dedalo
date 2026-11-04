@@ -499,7 +499,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(con_proxy[posicion + 1], "http://127.0.0.1:9")
         self.assertNotIn("--chrome-proxy", sin_proxy)
 
-    def _proxy_espiado(self, instancias, falla_al_parar=False):
+    def _proxy_espiado(self, instancias):
         """Proxy real (solo escucha en 127.0.0.1) que anota sus instancias, su registro y si se paró."""
         from dedalo import proxy as modulo
         class Espiado(modulo.Proxy):
