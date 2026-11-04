@@ -7,6 +7,7 @@ interruptor `sin_internet`. Ambas convierten lo descargado al formato de `guarda
 
 from __future__ import annotations
 
+import codecs
 from datetime import datetime, timedelta, timezone
 import gzip
 import http.client
@@ -28,6 +29,7 @@ ANIOS_BASE = 10  # la base inicial cubre los últimos 10 años
 DIAS_INCREMENTAL = 7  # el feed de modificadas cubre ~8 días; con una marca más vieja se baja todo
 MAX_DESCARGA = 400 << 20  # tope de un feed comprimido
 MAX_DESCOMPRIMIDO = 2 << 30  # tope de un feed ya descomprimido
+TROZO_FEED = 1 << 20  # los feeds se leen por trozos de 1 MB, no enteros
 MAX_RESPUESTA_API = 32 << 20  # tope de una respuesta de la API
 
 
@@ -282,26 +284,96 @@ def item_desde_nvd(entrada) -> dict | None:
             "cvss": cvss, "resumen": _texto(descripcion.get("value")), "cpes": reglas}
 
 
-def _items_de_json(texto: str) -> list[dict]:
-    """Items de `guardar_cves` de un JSON de la NVD (`{"vulnerabilities": [...]}`); ValueError si no lo es."""
-    datos = json.loads(texto)
-    vulnerabilidades = datos.get("vulnerabilities") if isinstance(datos, dict) else None
-    if not isinstance(vulnerabilidades, list):
-        raise ValueError("el JSON de la NVD no trae «vulnerabilities»")
-    return [item for item in map(item_desde_nvd, vulnerabilidades) if item]
+class _LectorFeed:
+    """Recorre un JSON leído por trozos: solo guarda en memoria lo que falta por consumir del trozo actual."""
+
+    _DECODIFICADOR = json.JSONDecoder()
+    _NO_ESPACIO = re.compile(r"\S")
+
+    def __init__(self, crudo):
+        self.crudo = crudo
+        self.decodificador = codecs.getincrementaldecoder("utf-8-sig")()
+        self.texto, self.pos, self.leidos, self.fin = "", 0, 0, False
+
+    def _cargar(self) -> bool:
+        """Añade el trozo siguiente; False si ya no queda nada."""
+        if self.fin:
+            return False
+        bloque = self.crudo.read(TROZO_FEED)
+        self.leidos += len(bloque)
+        if self.leidos > MAX_DESCOMPRIMIDO:
+            raise ValueError("el feed descomprimido es mayor de lo esperado")
+        self.fin = not bloque
+        self.texto = self.texto[self.pos:] + self.decodificador.decode(bloque, final=self.fin)
+        self.pos = 0
+        return True
+
+    def siguiente(self) -> str:
+        """El siguiente carácter que no es espacio, sin consumirlo; "" al final del fichero."""
+        while not (encontrado := self._NO_ESPACIO.search(self.texto, self.pos)):
+            self.pos = len(self.texto)
+            if not self._cargar():
+                return ""
+        self.pos = encontrado.start()
+        return encontrado.group()
+
+    def consumir(self, esperados: str) -> str:
+        caracter = self.siguiente()
+        if not caracter or caracter not in esperados:
+            raise ValueError(f"el JSON de la NVD no es el esperado: falta uno de «{esperados}»")
+        self.pos += 1
+        return caracter
+
+    def valor(self):
+        self.siguiente()
+        while True:
+            try:
+                valor, fin = self._DECODIFICADOR.raw_decode(self.texto, self.pos)
+            except json.JSONDecodeError:
+                if self._cargar():  # el valor sigue en el trozo siguiente
+                    continue
+                raise
+            if fin == len(self.texto) and isinstance(valor, (int, float)) and self._cargar():
+                continue  # un número al final del trozo puede seguir en el siguiente
+            self.pos = fin
+            return valor
 
 
 def _leer_feed(ruta: Path) -> list[dict]:
-    """Items de un feed descargado, comprimido (gzip) o no, con o sin BOM."""
+    """Items de un feed descargado, comprimido (gzip) o no, con o sin BOM.
+
+    Lee por trozos y decodifica cada entrada de «vulnerabilities» por separado: un feed anual
+    descomprimido pesa cientos de MB, y leído y parseado de una vez pasaba de 1 GB de RAM.
+    """
     with ruta.open("rb") as f:
         gz = f.read(2) == b"\x1f\x8b"
-    with (gzip.open(ruta, "rb") if gz else ruta.open("rb")) as f:
-        crudo = f.read(MAX_DESCOMPRIMIDO + 1)
-    if len(crudo) > MAX_DESCOMPRIMIDO:
-        raise ValueError("el feed descomprimido es mayor de lo esperado")
-    texto = crudo.decode("utf-8-sig")
-    del crudo  # los bytes ya no hacen falta: que no sigan en memoria mientras se parsea el JSON
-    return _items_de_json(texto)
+    items, visto = [], False
+    with (gzip.open(ruta, "rb") if gz else ruta.open("rb")) as crudo:
+        lector = _LectorFeed(crudo)
+        lector.consumir("{")
+        separador = lector.consumir("}") if lector.siguiente() == "}" else ","
+        while separador == ",":
+            clave = lector.valor()
+            lector.consumir(":")
+            if clave == "vulnerabilities":
+                visto = True
+                lector.consumir("[")
+                if lector.siguiente() == "]":
+                    lector.consumir("]")
+                else:
+                    while True:
+                        if item := item_desde_nvd(lector.valor()):
+                            items.append(item)
+                        if lector.consumir(",]") == "]":
+                            break
+            else:
+                lector.valor()
+            separador = lector.consumir(",}")
+        if lector.siguiente():
+            raise ValueError("el JSON de la NVD trae datos de más al final")
+    if not visto:
+        raise ValueError("el JSON de la NVD no trae «vulnerabilities»")
+    return items
 
 
 def _marca(con, clave: str) -> datetime | None:

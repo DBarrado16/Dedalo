@@ -234,6 +234,7 @@ def capture(args) -> int:
     if url_bar:
         opts["format"] = "png"  # la barra se compone como PNG; se fuerza para que sustituya a la captura
     root = Path(args.salida or ("salida/" + datetime.now().strftime("%Y%m%d-%H%M%S-%f"))).resolve()
+    report.comprobar_longitud(root, report.holgura_de(groups))
     if root.exists() and (not root.is_dir() or any(root.iterdir())):
         raise ValueError(f"La salida no está vacía: {root}. Usa una carpeta nueva para no mezclar ejecuciones.")
     root.mkdir(parents=True, exist_ok=True)
