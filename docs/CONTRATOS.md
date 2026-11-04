@@ -47,7 +47,36 @@ Una IP queda en una de estas situaciones:
 
 1. Importar nunca filtra. Todo lo que trae el Nmap se guarda, marcado con su situación, para no perder información.
 2. **Solo se contacta lo que está en alcance.** Las capturas, el descubrimiento DNS, las credenciales y el favicon que trae la detección de versión —y en el futuro los escaneos— comprueban el alcance justo antes de conectar, no solo al planificar. En la captura, el portal deja el alcance vigente en `alcance-vivo.json` (en la carpeta de la ejecución) al lanzarla y cada vez que cambia la ficha, y el motor lo relee antes de cada subred, de la pasada de esquema y del reintento; si no lo puede leer, no contacta con nadie. Una IP escrita como IPv6 mapeada (`::ffff:a.b.c.d`) se juzga como su IPv4.
-   **Límite conocido:** lo que se filtra son las URL que se le dan al navegador. El navegador de gowitness sigue las redirecciones de la página y carga sus recursos (imágenes, scripts) sin pasar por esta comprobación, así que una web en alcance puede hacerle pedir algo fuera de alcance. Cerrarlo exige filtrar las conexiones del propio navegador (por ejemplo, con un proxy local), pendiente de decisión.
+   **El navegador de la captura sale por un proxy de alcance.** El navegador de gowitness sigue las redirecciones de la página y carga sus recursos (imágenes, scripts, CSS) por su cuenta, así que no basta con filtrar las URL que se le dan: sale por un proxy local de Dédalo (`dedalo/proxy.py`), que escucha en `127.0.0.1`, en un puerto que elige el sistema, mientras dura `capturar`. Cada conexión que pide el navegador se decide justo antes de conectar, con el alcance vigente: el de `alcance-vivo.json`, releído si cambió (siempre desde el portal); en consola, las IP de los objetivos planificados, más los rangos de `--rangos` si hay `--solo-rangos`, menos lo excluido. La regla, en este orden:
+
+   | Destino (IP ya resuelta) | Qué pasa | Motivo del corte |
+   | --- | --- | --- |
+   | Excluida | Se corta, aunque sea pública. La exclusión siempre gana. | `excluida` |
+   | En alcance | Pasa. | — |
+   | Pública (`ipaddress.is_global`) | Pasa: es internet público. | — |
+   | Cualquier otra fuera de alcance (privada, enlace local, CGNAT, reservada…) | Se corta. | `fuera_de_alcance` |
+
+   - Si el alcance vivo no se puede leer, se reintenta unos 200 ms (en Windows, leerlo justo mientras el portal lo sustituye puede fallar un instante) y, si sigue sin leerse, se corta **todo**, también lo público, con el motivo `alcance_ilegible`.
+   - Un nombre se resuelve con el resolvedor del sistema y la regla se aplica a cada dirección: se conecta a una que pase, **la misma IP que se comprobó**, sin volver a resolver; si ninguna pasa, se corta. Una IPv6 mapeada se juzga como su IPv4.
+   - Lo cortado recibe `403 Forbidden` y lo que pasó la regla pero no se pudo conectar, `502 Bad Gateway`, los dos sin cuerpo. El proxy nunca cierra sin responder: Chrome lo daría como `ERR_EMPTY_RESPONSE` y dispararía la pasada de esquema en un puerto cerrado.
+   - `CONNECT` es un túnel de bytes: el TLS va de punta a punta y el proxy no lo abre. En HTTP plano se reenvía una sola petición por conexión del navegador, con `Connection: close` hacia el servidor.
+
+   **Registro del proxy.** Cada pasada de gowitness tiene el suyo, en JSON Lines y en la carpeta de su subred: `proxy.jsonl` (la normal), `proxy-esquema.jsonl` (la de esquema) y `proxy-reintento.jsonl` (la del otro motor). Lleva una línea por cada conexión que **no** se hizo; lo que pasa no se anota:
+
+   | Línea | Campos |
+   | --- | --- |
+   | Corte | `destino` (`host:puerto` tal como lo pidió el navegador; IPv6 entre corchetes), `ip` (`str` o `null`), `puerto` (`int`), `motivo`: `excluida`, `fuera_de_alcance` o `alcance_ilegible` |
+   | Fallo de conexión | `destino`, `ip` (`str` o `null`), `puerto`, `fallo`: `rechazada` (el puerto la rechazó), `sin_respuesta` (no respondió a tiempo) o `error` (el nombre no se resolvió u otro error de red) |
+
+   `ip` es la dirección que se juzgó (en un corte) o a la que se intentó conectar (en un fallo), y `null` cuando el nombre no se resolvió a ninguna IP válida. Al leer los errores de las URL objetivo, un fallo del túnel (`ERR_TUNNEL_CONNECTION_FAILED`, `ERR_HTTP_RESPONSE_CODE_FAILURE`) con un fallo `rechazada` o `sin_respuesta` anotado para su `host:puerto` se vuelve a escribir como el que daría Chrome sin proxy (`ERR_CONNECTION_REFUSED`, `ERR_CONNECTION_TIMED_OUT`): los mensajes de error no cambian por el proxy.
+
+   **Qué se ve.** Un corte se atribuye a cada web cuya lista de peticiones (`network_logs` de gowitness) pidió ese `host:puerto`. En `ejecucion.json`, cada resultado lleva `bloqueos` (`destino`, `ip`, `puerto`, `motivo`; vacía si no se cortó nada) y cada subred, `bloqueos_sin_pagina` con los cortes que no se atribuyen a ninguna web: una redirección cortada deja su página sin resultado ni `network_logs`, y no se adivina de cuál era. Los cortes por web llegan a la base (`captura_bloqueo`, ver `docs/MODELO_DATOS.md`), al portal (un aviso junto a la web) y a la última columna del índice CSV, `cortado_fuera_alcance` (`destino (motivo)`, separados por `; `).
+
+   **Límites que quedan:**
+   - Chrome no manda por el proxy lo que va al propio equipo (`localhost`, `127.0.0.0/8`, `::1`), y gowitness no deja pasar `--proxy-bypass-list`. Solo afecta al equipo del auditor.
+   - Una página con JavaScript hecho a propósito podría mandar UDP por WebRTC sin pasar por el proxy: gowitness no deja pasar `--force-webrtc-ip-handling-policy` al navegador.
+   - Los nombres los resuelve el resolvedor del sistema, como antes hacía el navegador.
+   - El propio navegador (Edge sobre todo) hace peticiones de fondo a internet (telemetría, SmartScreen): pasan por ser públicas y no se atribuyen a ninguna web.
 3. Una auditoría sin reglas `incluir` no tiene nada en alcance: se puede importar y consultar, pero no lanzar conexiones. El portal pide definir el alcance.
 4. Cambiar el alcance no borra datos; solo cambia qué se puede contactar a partir de ese momento.
 5. La captura que prueba el otro esquema (http/https) cuando falla el primero solo usa IP:puerto que ya son objetivo y ya pasaron el filtro de alcance: las URL candidatas se derivan de la lista de objetivos, nunca de lo que diga el log, y solo cambian el esquema.

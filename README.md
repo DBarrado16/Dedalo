@@ -251,6 +251,8 @@ python -m dedalo capturar parte1.xml parte2.gnmap parte3.nmap -r rangos.txt -o s
 
 Si la misma IP aparece en varios archivos, se unen sus puertos abiertos; no se interpreta como un histórico de aperturas y cierres. Se captura por IP, aunque nmap incluya nombres DNS.
 
+**Proxy de alcance.** El navegador de gowitness sale por un proxy local de Dédalo que decide cada conexión justo antes de hacerla: corta lo excluido y lo interno fuera de alcance, y deja pasar lo que está en alcance e internet público. Lo que se cortó a cada web queda en `ejecucion.json`, en la columna `cortado_fuera_alcance` del índice y, en el portal, en un aviso junto a la web. La regla y sus límites, en `docs/CONTRATOS.md` §0.3, regla 2.
+
 | Opción | Función |
 | --- | --- |
 | `-r, --rangos` | Archivo de rangos. Opcional; sin él todas las IP van a `fuera_de_rango`. |
@@ -312,11 +314,12 @@ salida/cliente-01/
       capturas/
 ```
 
-- `indice.csv`: una fila por objetivo, con rango, subred, IP, puerto, URL original, estado, código HTTP, título, URL final, ruta relativa de captura y error, y seis columnas `vuln_*` que quedan en blanco en la consola (las rellena la descarga del portal cuando hay un cruce de vulnerabilidades). Se guarda en UTF-8 con BOM; se neutralizan textos que Excel podría tratar como fórmulas.
+- `indice.csv`: una fila por objetivo, con rango, subred, IP, puerto, URL original, estado, código HTTP, título, URL final, ruta relativa de captura y error, seis columnas `vuln_*` que quedan en blanco en la consola (las rellena la descarga del portal cuando hay un cruce de vulnerabilidades) y, la última, `cortado_fuera_alcance`: lo que el proxy de alcance le cortó a esa web, como `destino (motivo)` separados por `; `. Se guarda en UTF-8 con BOM; se neutralizan textos que Excel podría tratar como fórmulas.
 - `ejecucion.json`: objetivos, opciones, estado y resultados por subred. Necesario para `ver`. Se actualiza al terminar cada grupo.
 - `urls.txt`: URLs enviadas a gowitness, con **puertos siempre explícitos**, incluidos 80 y 443. Esto impide que el lector de gowitness añada puertos por defecto.
 - `sin_captura.txt`: URLs sin imagen válida. Un fichero vacío significa que ese grupo se capturó completo.
 - `gowitness.log`: errores de conexión, tiempos agotados y mensajes del proceso.
+- `proxy.jsonl` (y `proxy-esquema.jsonl`, `proxy-reintento.jsonl` si hubo esas pasadas): lo que el proxy de alcance cortó o no pudo conectar, una línea por conexión. Solo aparece si hubo algo que anotar.
 - Solo se cuentan como capturadas las filas correctas de la base que además tengan un fichero de imagen existente y no vacío.
 
 Una respuesta HTTP 401, 403, 404 o 500 puede tener captura y se conserva con su código. Un puerto que estaba abierto cuando se hizo nmap puede haber dejado de responder.
@@ -386,7 +389,7 @@ Prueba real de principio a fin:
 python -m tests.integration_local
 ```
 
-Necesita gowitness y navegador instalado. Arranca dos webs locales en `127.0.0.1` y `127.0.1.1`, intenta usar 80/443 y usa puertos libres si no puede. Verifica HTTP, redirección, HTTPS autofirmado, un puerto cerrado, URLs exactas, CSV, bases por subred, combinaciones de rango/todo y respuesta del servidor web. Cierra los servicios al terminar y conserva resultados en `pruebas_locales/FECHA-HORA/resultado`.
+Necesita gowitness y navegador instalado. Arranca dos webs locales en `127.0.0.1` y `127.0.1.1`, intenta usar 80/443 y usa puertos libres si no puede. Verifica HTTP, redirección, HTTPS autofirmado, un puerto cerrado, esquema equivocado, URLs exactas, CSV, bases por subred, combinaciones de rango/todo y respuesta del servidor web. La web de `127.0.0.1` pide además una imagen a `10.255.255.1:81`, fuera de alcance: se comprueba que el proxy de alcance la corta antes de conectar (no sale nada del equipo) y que el corte llega al manifiesto. Cierra los servicios al terminar y conserva resultados en `pruebas_locales/FECHA-HORA/resultado`; con `DEDALO_CONSERVAR_SALIDA=RUTA` (una carpeta que aún no exista) copia además ahí la salida de la captura.
 
 El certificado y la clave de `tests/fixtures/` son exclusivamente material público de prueba local; no se instalan en el almacén de certificados.
 
