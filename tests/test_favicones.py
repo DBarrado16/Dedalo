@@ -41,9 +41,18 @@ class Mmh3ShodanTests(unittest.TestCase):
         # b"" también es b"", así que mmh3_shodan(b"") debe dar lo mismo.
         self.assertEqual(favicones.mmh3_shodan(b""), 0)
 
-    def test_valor_conocido_sobre_un_favicon_de_prueba(self):
-        # Calculado con esta misma implementación durante el desarrollo (ver informe de la tarea).
-        self.assertEqual(favicones.mmh3_shodan(b"\x89PNG\r\n\x1a\n favicon de prueba"), 805670246)
+    def test_vectores_de_referencia_de_murmurhash3(self):
+        # Vectores publicados de MurmurHash3 x86_32 (SMHasher) y el ejemplo de la documentación de mmh3.
+        self.assertEqual(favicones._mmh3_x86_32(b"foo"), -156908512)
+        for datos, semilla, esperado in ((b"", 1, 0x514E28B7), (b"", 0xFFFFFFFF, 0x81F16F39),
+                                         (b"\0\0\0\0", 0, 0x2362F9DE), (b"ab", 0x9747B28C, 0x74875592),
+                                         (b"Hello, world!", 0x9747B28C, 0x24884CBA),
+                                         (b"The quick brown fox jumps over the lazy dog", 0x9747B28C, 0x2FA826CD)):
+            self.assertEqual(favicones._mmh3_x86_32(datos, semilla) & 0xFFFFFFFF, esperado, datos)
+
+    def test_el_catalogo_trae_huellas_reales(self):
+        # 81586312 es la huella del favicon.ico del repositorio de Jenkins, calculada con mmh3_shodan.
+        self.assertEqual(favicones.cargar()["mmh3"][81586312]["producto"], "Jenkins")
 
 
 class Sha256HexTests(unittest.TestCase):

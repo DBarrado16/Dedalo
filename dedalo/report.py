@@ -30,6 +30,50 @@ def _resolved(path: Path) -> Path:
     return Path(text)
 
 
+# Lo que ocupa una ejecución IPv4 por debajo de su carpeta de salida en el peor caso, con margen:
+# <rango>/<subred>/capturas/https---255.255.255.255-65535-.barra.png (unos 90 caracteres).
+# Con IPv6 es más; `capturar` lo mide con sus objetivos reales (holgura_de).
+HOLGURA_SALIDA = 105
+# El portal captura en <datos>/<id de la ejecución, 32>/resultado.
+HOLGURA_DATOS = 32 + 1 + len("resultado") + 1 + HOLGURA_SALIDA
+# Las vistas van en .vistas/AAAAMMDD-HHMMSS-xxxxxxxx (views.py), al lado de las subredes.
+_CARPETA_VISTA = len(".vistas/20260101-000000-00000000")
+
+
+def holgura_de(groups: list[dict]) -> int:
+    """Lo más largo que creará una ejecución bajo su salida: carpeta de la subred o de una vista,
+    `capturas/` y el nombre que gowitness da a la captura (la URL con unos caracteres más,
+    y `.barra.png` mientras se compone la barra)."""
+    return max((max(len(g["carpeta"]), _CARPETA_VISTA) + len("/capturas/") + len(t["url"]) + 12
+                for g in groups for t in g["objetivos"]), default=0)
+
+
+def rutas_largas_activadas() -> bool:
+    """Si Windows admite rutas de más de 260 caracteres (LongPathsEnabled); fuera de Windows, sí."""
+    if os.name != "nt":
+        return True
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as clave:
+            return winreg.QueryValueEx(clave, "LongPathsEnabled")[0] == 1
+    except OSError:
+        return False
+
+
+def comprobar_longitud(carpeta: Path, holgura: int) -> None:
+    """Rechaza una carpeta base con la que las capturas pasarían de 260 caracteres en Windows.
+
+    Sin rutas largas, crear esos ficheros falla a mitad de la ejecución (o al subir el
+    Nmap al portal) con un error que no dice la causa; mejor decirlo antes de empezar.
+    """
+    largo = len(str(Path(carpeta).resolve()))
+    if largo + holgura > 259 and not rutas_largas_activadas():
+        raise ValueError(
+            f"La carpeta {carpeta} es demasiado larga para Windows ({largo} caracteres): con lo que Dédalo "
+            f"crea dentro, las capturas pasarían del límite de 260. Usa una ruta de {259 - holgura} caracteres "
+            "como mucho o activa las rutas largas de Windows (LongPathsEnabled).")
+
+
 def inside(root: Path, relative: str) -> Path:
     base = _resolved(root)
     path = _resolved(base / relative)

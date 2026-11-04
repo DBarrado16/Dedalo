@@ -1775,6 +1775,7 @@ def ensure_gowitness(explicit):
 
 
 def serve_portal(args):
+    report.comprobar_longitud(Path(args.datos), report.HOLGURA_DATOS)
     ensure_gowitness(args.gowitness)
     if args.arrancar_ollama:
         # Antes que el portal: así su primera consulta de modelos ya encuentra a Ollama.
