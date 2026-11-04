@@ -1239,6 +1239,25 @@ class PortalTests(unittest.TestCase):
             self.reopen()
         self.assertNotIn(job["id"], errors.getvalue())
 
+    def test_migrated_captures_keep_the_date_of_their_manifest(self):
+        dates = {"fin": "2024-03-01T10:00:00+00:00", "inicio": "2024-02-01T09:00:00+00:00"}
+        jobs = {key: self.create() for key in dates}  # una con fin y otra que solo trae inicio
+        for key, job in jobs.items():
+            self.run_engine(job["id"])
+            path = self.store.directory(job["id"]) / "resultado" / report.MANIFEST
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            manifest.pop("fin")
+            manifest.update({key: dates[key]})
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            self.make_legacy(job["id"])
+        self.reopen()
+        with closing(self.store.database()) as con:
+            for key, job in jobs.items():
+                capture = auditoria.capture_of(con, job["id"])
+                fechas = {r[0] for r in con.execute("SELECT fecha FROM captura WHERE ejecucion_id = ?", (capture,))}
+                creadas = {r[0] for r in con.execute("SELECT creada FROM evidencia WHERE ejecucion_id = ?", (capture,))}
+                self.assertEqual((fechas, creadas), ({dates[key]}, {dates[key]}), key)
+
     def test_scope_hint_says_how_to_authorize_all_ranges(self):
         page = self.request("/")[1]
         self.assertIn(b"0.0.0.0/0", page)

@@ -694,6 +694,22 @@ def _evidence(con, execution_id: str, kind: str, path: Path, root: Path, stamp: 
     return con.execute("SELECT id FROM evidencia WHERE ejecucion_id = ? AND ruta = ?", (execution_id, route)).fetchone()[0]
 
 
+def _manifest_date(manifest: dict) -> str:
+    """Cuándo se hicieron las capturas de un manifiesto: su fin, o su inicio si no acabó; si no trae ninguno, ahora.
+
+    Un manifiesto se puede registrar mucho después (migración, reconciliación al arrancar).
+    """
+    for key in ("fin", "inicio"):
+        value = manifest.get(key)
+        if isinstance(value, str):
+            try:
+                datetime.fromisoformat(value)
+                return value
+            except ValueError:
+                pass
+    return now()
+
+
 def record_captures(con: sqlite3.Connection, execution_id: str, manifest: dict, result_dir: Path, root: Path,
                     logs: list[Path] = (), mark: int | None = None) -> list[str]:
     """Vuelca en la base los resultados del manifiesto del motor; se puede repetir.
@@ -711,7 +727,7 @@ def record_captures(con: sqlite3.Connection, execution_id: str, manifest: dict, 
     arranque sabe si el manifiesto cambió después de registrarse.
     """
     audit_id = con.execute("SELECT auditoria_id FROM ejecucion WHERE id = ?", (execution_id,)).fetchone()[0]
-    stamp = now()
+    stamp = _manifest_date(manifest)
     missing = []
     with con:
         for group in manifest["grupos"]:
