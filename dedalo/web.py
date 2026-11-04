@@ -71,6 +71,17 @@ def write_scope_files(directory, scope):
     (directory / "excluir.txt").write_text("".join(f"{net}\n" for net in scope.exclude), encoding="utf-8")
 
 
+LIVE_SCOPE = "alcance-vivo.json"
+
+
+def write_live_scope(directory, scope):
+    """Alcance vigente para una captura ya lanzada, que el motor relee antes de cada pasada (regla 0.3.4)."""
+    temporary = directory / (LIVE_SCOPE + ".tmp")
+    temporary.write_text(json.dumps({"incluir": [str(n) for n in scope.include],
+                                     "excluir": [str(n) for n in scope.exclude]}), encoding="utf-8")
+    report.replace(temporary, directory / LIVE_SCOPE)
+
+
 def text_field(value, label, maximum):
     if not isinstance(value, str) or len(value) > maximum:
         raise ValueError(f"{label}: texto inválido o demasiado largo")
@@ -448,8 +459,7 @@ class PortalStore:
         try:
             binary = gowitness.find_gowitness(self.binary_option)
             chrome = gowitness.find_chrome(self.chrome_option)
-            return {"ready": True, "browser": Path(chrome).name if chrome else "Descarga automática",
-                    "error": ""}
+            return {"ready": True, "browser": Path(chrome).name, "error": ""}
         except (OSError, ValueError) as exc:
             return {"ready": False, "browser": "", "error": str(exc)}
 
@@ -613,14 +623,19 @@ class PortalStore:
                 owners = auditoria.audits_by_execution(con)
                 scope = auditoria.scope(con, audit_id)
             self.scope_changes += 1
-            # Lo ya lanzado no cambia. Lo preparado toma el alcance nuevo: se recalcula si ya se
-            # abrió; si no, se calculará al abrirlo y basta con su alcance en disco (inventory).
+            # Lo preparado toma el alcance nuevo: se recalcula si ya se abrió; si no, se calculará
+            # al abrirlo y basta con su alcance en disco (inventory). Lo lanzado conserva su plan,
+            # pero su motor relee el alcance vivo antes de cada pasada: no contacta lo que salga.
             for job_id, meta in self.jobs.items():
-                if meta["estado"] == "preparada" and owners.get(job_id) == audit_id:
+                if owners.get(job_id) != audit_id:
+                    continue
+                if meta["estado"] == "preparada":
                     if meta["grupos"] is None:
                         write_scope_files(self.directory(job_id), scope)
                     else:
                         self._replan(job_id)
+                elif meta["estado"] in ACTIVE:
+                    write_live_scope(self.directory(job_id), scope)
             with closing(self.database()) as con:
                 return next(a for a in auditoria.audits(con) if a["id"] == audit_id)
 
@@ -1351,23 +1366,30 @@ class PortalStore:
                 self._capture_state(job_id, "en_curso")
                 meta["estado"] = "en_curso"
                 options = dict(meta["opciones"])
+                # El alcance de ahora, no el de cuando se encoló; dentro del bloqueo, para que un
+                # cambio de la ficha no se cruce. Si no se puede escribir, el motor no contacta a nadie.
+                try:
+                    with closing(self.database()) as con:
+                        audit_id = auditoria.audits_by_execution(con).get(job_id)
+                        write_live_scope(self.directory(job_id), auditoria.scope(con, audit_id))
+                except Exception as exc:
+                    print(f"Error del portal: no se pudo escribir el alcance vigente de {job_id}: {exc}", file=sys.stderr)
             directory = self.directory(job_id)
             command = [sys.executable, "-u", "-m", "dedalo", "capturar"]
             command += [str(p) for p in sorted((directory / "entradas").glob("nmap-*.txt"))]
             command += ["-r", str(directory / "rangos.txt"), "--solo-rangos", "--excluir", str(directory / "excluir.txt"),
                         "-o", str(directory / "resultado"),
                         "--gowitness", binary, "--stop-file", str(directory / "parar"),
+                        "--alcance-vivo", str(directory / LIVE_SCOPE),
                         # Si gorod no puede arrancar en este equipo, las siguientes capturas lo saben.
                         "--memoria-motor", str(self.root / "gorod-bloqueado.json"),
                         "--puertos", options["puertos"], "--formato", options["formato"],
                         "--hilos", str(options["hilos"]), "--timeout", str(options["timeout"]),
                         "--delay", str(options["delay"]),
                         # Ejecuciones preparadas antes de existir estas opciones: valores por defecto.
-                        "--driver", options.get("driver", gowitness.DRIVERS[0])]
+                        "--driver", options.get("driver", gowitness.DRIVERS[0]), "--chrome", chrome]
             if not options.get("reintentar", True):
                 command.append("--sin-reintento")
-            if chrome:
-                command += ["--chrome", chrome]
             if options["por_servicio"]:
                 command.append("--por-servicio")
             if options["pagina_completa"]:

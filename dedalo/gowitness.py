@@ -74,7 +74,9 @@ def find_gowitness(explicit: str | None) -> str:
     if local.is_file():
         return str(local)
     found = shutil.which("gowitness")
-    if found:
+    # Uno en la carpeta actual no cuenta: en Windows shutil.which también mira ahí, y el lanzador
+    # se sitúa en la del repo; un gowitness.exe dejado en ella no debe ejecutarse (como en modelo.find_ollama).
+    if found and Path(found).resolve().parent != Path.cwd().resolve():
         return str(Path(found).resolve())
     raise ValueError("No encuentro gowitness v3. Ejecuta «python -m dedalo instalar», déjalo en bin/ o en el PATH, o usa --gowitness.")
 
@@ -139,8 +141,11 @@ def install_gowitness(destination: str | Path | None = None, log=print) -> str:
     return str(target)
 
 
-def find_chrome(explicit: str | None) -> str | None:
-    """None permite que gowitness descargue su propio navegador."""
+def find_chrome(explicit: str | None) -> str:
+    """Navegador instalado con el que captura gowitness; sin ninguno, ValueError.
+
+    Nunca se deja que gowitness descargue el suyo: su Chromium no trae una huella fijada.
+    """
     if explicit:
         return _executable(explicit)
     if os.name == "nt":
@@ -168,7 +173,8 @@ def find_chrome(explicit: str | None) -> str | None:
     for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
         if found := shutil.which(name):
             return str(Path(found).resolve())
-    return None
+    raise ValueError("No se encuentra Chrome, Chromium ni Edge instalado. Instala uno o indica su ruta con "
+                     "--chrome: Dédalo no deja que gowitness descargue un navegador sin verificar.")
 
 
 class GorodBlocked(subprocess.CalledProcessError):

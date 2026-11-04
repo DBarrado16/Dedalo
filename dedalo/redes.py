@@ -7,6 +7,8 @@ Es una sugerencia: rellena los rangos de la ficha, que el usuario revisa.
 from __future__ import annotations
 
 import ipaddress
+import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -53,7 +55,9 @@ def cidrs(texto: str) -> list[str]:
 
 
 def _ejecutar() -> str:
-    comando = ["ipconfig"] if sys.platform.startswith("win") else ["ip", "-o", "addr"]
+    # En Windows, con ruta completa: un nombre suelto se busca antes en la carpeta actual y en la de Python.
+    ipconfig = str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "ipconfig.exe")
+    comando = [ipconfig] if sys.platform.startswith("win") else ["ip", "-o", "addr"]
     return subprocess.run(comando, capture_output=True, text=True, timeout=10,
                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
 

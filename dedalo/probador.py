@@ -37,7 +37,15 @@ _OPENER = urllib.request.build_opener(_SIN_PROXY, _HTTPS, _SinRedireccion())
 def _url(ip: str, objetivo: dict, ruta: str = "/") -> str:
     esquema = "https" if objetivo["https"] else "http"
     anfitrion = f"[{ip}]" if ":" in ip else ip
-    return f"{esquema}://{anfitrion}:{objetivo['puerto']}{ruta}"
+    # La ruta viene del catálogo (que puede ser un fichero compartido): sin «/» delante podría
+    # cambiar el host de la URL («@otro/», «:81@…»). Se exige aquí, donde se conecta.
+    if not isinstance(ruta, str) or not ruta.startswith("/") or ruta.startswith("//"):
+        raise ValueError("la ruta de la receta debe empezar por «/»")
+    url = f"{esquema}://{anfitrion}:{objetivo['puerto']}{ruta}"
+    partes = urllib.parse.urlsplit(url)
+    if partes.hostname != ip.lower() or partes.port != int(objetivo["puerto"]):
+        raise ValueError("la ruta de la receta cambia el destino de la URL")
+    return url
 
 
 def _http_basic(ip, objetivo, timeout) -> bool:

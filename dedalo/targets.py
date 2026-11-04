@@ -143,11 +143,21 @@ class Scope:
     IN, EXCLUDED, OUT = "en_alcance", "excluida", "fuera"
 
     def __init__(self, include: list[str], exclude: list[str] = ()):
-        self.include = [ipaddress.ip_network(n, strict=False) for n in include]
-        self.exclude = [ipaddress.ip_network(n, strict=False) for n in exclude]
+        self.include = [self._network(n) for n in include]
+        self.exclude = [self._network(n) for n in exclude]
+
+    @staticmethod
+    def _network(text: str):
+        # Una red IPv4 escrita como IPv6 mapeada (::ffff:a.b.c.d) es la red IPv4.
+        net = ipaddress.ip_network(text, strict=False)
+        if net.version == 6 and net.prefixlen >= 96 and net.network_address.ipv4_mapped:
+            return ipaddress.ip_network(f"{net.network_address.ipv4_mapped}/{net.prefixlen - 96}", strict=False)
+        return net
 
     def status(self, ip: str) -> str:
         addr = ipaddress.ip_address(ip)
+        # ::ffff:a.b.c.d llega al mismo equipo que a.b.c.d: se juzga como IPv4.
+        addr = getattr(addr, "ipv4_mapped", None) or addr
         if any(net.version == addr.version and addr in net for net in self.exclude):
             return self.EXCLUDED
         if any(net.version == addr.version and addr in net for net in self.include):

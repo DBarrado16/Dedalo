@@ -1549,6 +1549,27 @@ class PortalTests(unittest.TestCase):
         self.assertIn("alcance", json.loads(content)["error"])
         self.assertEqual(self.request("/api/audits/" + "b" * 32, {"nombre": "X", "incluir": ""})[0], 404)
 
+    def test_a_capture_in_progress_gets_the_scope_changes(self):
+        # Regla 0.3.4: una exclusión hecha con la captura ya lanzada llega a su alcance vivo.
+        job = self.create()
+        seen, done = {}, threading.Event()
+        def run(command, **kwargs):
+            live = Path(command[command.index("--alcance-vivo") + 1])
+            seen["al_lanzar"] = json.loads(live.read_text(encoding="utf-8"))
+            self.store.update_audit(self.audit["id"], {"nombre": "Cliente de prueba", "incluir": "10.10.0.0/17",
+                                                       "excluir": "10.10.6.20"})
+            seen["despues"] = json.loads(live.read_text(encoding="utf-8"))
+            done.set()
+            class Result:
+                returncode = 0
+            return Result()
+        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), patch("dedalo.web.gowitness.find_chrome", return_value="fake"), \
+             patch("dedalo.web.subprocess.run", side_effect=run):
+            self.assertEqual(self.request("/api/jobs/" + job["id"] + "/start", {})[0], 202)
+            self.assertTrue(done.wait(5))
+        self.assertEqual(seen["al_lanzar"], {"incluir": ["10.10.0.0/17"], "excluir": []})
+        self.assertEqual(seen["despues"], {"incluir": ["10.10.0.0/17"], "excluir": ["10.10.6.20/32"]})
+
     def test_capture_command_enforces_scope(self):
         job = self.create()
         started = threading.Event()
@@ -1558,7 +1579,7 @@ class PortalTests(unittest.TestCase):
             class Result:
                 returncode = 0
             return Result()
-        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), patch("dedalo.web.gowitness.find_chrome", return_value=None), \
+        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), patch("dedalo.web.gowitness.find_chrome", return_value="fake"), \
              patch("dedalo.web.subprocess.run", side_effect=run):
             self.assertEqual(self.request("/api/jobs/" + job["id"] + "/start", {})[0], 202)
             self.assertTrue(started.wait(3))
@@ -1583,7 +1604,7 @@ class PortalTests(unittest.TestCase):
             class Result:
                 returncode = 0
             return Result()
-        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), patch("dedalo.web.gowitness.find_chrome", return_value=None), \
+        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), patch("dedalo.web.gowitness.find_chrome", return_value="fake"), \
              patch("dedalo.web.subprocess.run", side_effect=run):
             self.assertEqual(self.request("/api/jobs/" + job["id"] + "/start", {})[0], 202)
             self.assertTrue(started.wait(3))

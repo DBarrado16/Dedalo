@@ -16,7 +16,7 @@ Acepta XML (`-oX`), grepable (`-oG`) y salida normal (`-oN`), detectados por el 
 
 - Python 3.12 o superior. Solo usa la librería estándar; no hay paquetes que instalar con pip.
 - [gowitness v3](https://github.com/sensepost/gowitness), probado con **3.2.0**. Colocar el ejecutable en `bin/gowitness.exe` (Windows), `bin/gowitness` (Linux), en el PATH o indicar `--gowitness`.
-- Chrome, Chromium o Edge. Se detectan automáticamente o se indican con `--chrome`. Si no se encuentra ninguno, gowitness puede descargar su navegador.
+- Chrome, Chromium o Edge. Se detectan automáticamente o se indican con `--chrome`. Si no se encuentra ninguno, la captura no arranca: Dédalo no deja que gowitness descargue un navegador sin verificar.
 - Opcional, para la priorización con IA: [Ollama](https://ollama.com) en el mismo equipo, con un modelo descargado. El resto del portal funciona sin él.
 
 El ejecutable de gowitness no se incluye en el repositorio. `python -m dedalo instalar` descarga el binario oficial para Windows, Linux o macOS (Intel o ARM), comprueba su SHA-256 contra la huella fijada en `dedalo/gowitness.py` y lo coloca en `bin/`. El portal lo hace automáticamente al arrancar si no encuentra gowitness **o si el que encuentra es de otra versión** (lo típico en WSL/Kali, donde el gowitness del sistema no conoce los flags que usa Dédalo): comprueba la versión y descarga solo el binario fijado, sin pasos a mano. Solo se salta esta comprobación si se indicó `--gowitness` (ahí mandas tú). Si la descarga falla, el portal arranca igualmente y muestra el aviso. Los comandos `capturar` y `ver` no descargan nada por su cuenta.

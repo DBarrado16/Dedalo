@@ -114,8 +114,6 @@ def main():
     output = destination / "resultado"
     try:
         browser = gowitness.find_chrome(None)
-        if not browser:
-            raise RuntimeError("Esta prueba necesita Chrome/Chromium/Edge instalado para evitar descargas.")
         args = ["capturar", str(nmap), "-r", str(ranges), "-o", str(output),
                 "--puertos", f"{http_port}=http,{https_port}=https,{closed_port}=http,"
                              f"{wrong_http_port}=http,{wrong_https_port}=https",

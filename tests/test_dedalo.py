@@ -184,17 +184,18 @@ class WorkflowTests(unittest.TestCase):
             self.assertTrue(compuestas)                                     # compuso cada imagen
             self.assertTrue(all(url == "https://10.10.5.10/x" for _, url in compuestas))  # con su final_url
 
-    def test_capture_warns_when_the_bar_is_on_but_there_is_no_chrome(self):
+    def test_without_an_installed_browser_the_capture_stops_before_connecting(self):
+        # H7: gowitness no descarga su propio Chromium (no tiene huella fijada); hace falta uno instalado.
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "salida"
-            visto = {}
-            componer = unittest.mock.Mock()
-            p = self._patched_capture(componer, visto)
-            with p[0], patch("dedalo.cli.gowitness.find_chrome", return_value=None), \
-                    p[2], p[3], p[4], p[5], p[6], p[7]:
-                _, output = self.call(self.arguments(destination))
-            componer.assert_not_called()
-            self.assertIn("Chrome", output)                    # avisa de que la barra se queda sin componer
+            empty = {"LOCALAPPDATA": temporary, "ProgramFiles": temporary, "ProgramFiles(x86)": temporary}
+            with patch.dict(os.environ, empty), patch("dedalo.gowitness.shutil.which", return_value=None), \
+                    patch("dedalo.cli.gowitness.find_gowitness", return_value="gw"), \
+                    patch("dedalo.cli.gowitness.scan_subnet", side_effect=AssertionError("no debe conectar")):
+                code, output = self.call(self.arguments(destination))
+            self.assertNotEqual(code, 0)
+            self.assertIn("--chrome", output)                  # dice cómo indicarlo
+            self.assertFalse(destination.exists())
 
     def test_capture_without_the_bar_does_not_compose_nor_force_png(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -273,6 +274,31 @@ class WorkflowTests(unittest.TestCase):
                 patch("dedalo.gowitness.find_chrome", return_value="fake"), \
                 patch("dedalo.gowitness.scan_subnet", side_effect=scan):
             return self.call(self.arguments(destination) + list(extra))
+
+    def test_an_exclusion_made_during_the_capture_is_honoured_before_the_next_connection(self):
+        # Regla 0.3.4: cambiar el alcance cambia lo que se contacta a partir de ese momento,
+        # también con la captura ya en marcha (subredes siguientes, pasada de esquema y reintento).
+        with tempfile.TemporaryDirectory() as temporary:
+            destination, calls = Path(temporary) / "salida", []
+            live = Path(temporary) / "alcance-vivo.json"
+            live.write_text(json.dumps({"incluir": ["0.0.0.0/0"], "excluir": []}), encoding="utf-8")
+            engine = self.fake_engine(calls)
+            def scan(*args, **kwargs):
+                live.write_text(json.dumps({"incluir": ["0.0.0.0/0"], "excluir": ["10.0.0.0/8", "192.168.1.8"]}),
+                                encoding="utf-8")  # el operador excluye mientras captura
+                return engine(*args, **kwargs)
+            self.run_with(destination, scan, ["--alcance-vivo", str(live)])
+            self.assertEqual(len(calls), 1, calls)  # solo la primera pasada de la primera subred
+            rows = [r for g in report.load_manifest(destination)["grupos"] for r in g.get("resultados", [])]
+            later = [r for r in rows if r["ip"] != "10.10.5.10"]
+            self.assertTrue(later and all("alcance" in r["error"] for r in later), later)
+
+    def test_an_unreadable_live_scope_contacts_nobody(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            calls = []
+            self.run_with(Path(temporary) / "salida", self.fake_engine(calls),
+                          ["--alcance-vivo", str(Path(temporary) / "no-existe.json")])
+            self.assertEqual(calls, [])
 
     def test_pages_without_image_are_retried_with_the_other_engine(self):
         with tempfile.TemporaryDirectory() as temporary:
