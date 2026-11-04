@@ -1234,11 +1234,17 @@ class PortalTests(unittest.TestCase):
         self.reopen()
         _, rows = self.capture_rows(capture)
         self.assertEqual([r["estado"] for r in rows].count("pendiente"), len(last["objetivos"]))
+        self.assertEqual(self.store.detail(job["id"])["estado"], "interrumpida")
         path.write_bytes(full)  # el motor huérfano escribe la subred que le faltaba
         self.touch_later(path)
         self.reopen()
         _, rows = self.capture_rows(capture)
         self.assertEqual([(r["estado"], r["evidencia"]) for r in rows], [("capturada", 1)] * 3)
+        # El estado también sale del manifiesto: el motor terminó, no se interrumpió.
+        self.assertEqual(self.store.detail(job["id"])["estado"], "completa")
+        with closing(self.store.database()) as con:
+            row = con.execute("SELECT estado, error FROM ejecucion WHERE id = ?", (capture,)).fetchone()
+        self.assertEqual((row["estado"], row["error"]), ("completa", ""))
         # Registrado una vez, el siguiente arranque no vuelve a leer el manifiesto.
         with patch("dedalo.web.auditoria.record_captures", side_effect=AssertionError("ya estaba registrado")):
             self.reopen()

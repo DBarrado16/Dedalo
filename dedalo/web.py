@@ -452,7 +452,10 @@ class PortalStore:
             return None
 
     def _record(self, con, job_id, capture_id):
-        """Vuelca en la base los resultados del manifiesto y anota su marca; sin manifiesto legible, nada."""
+        """Vuelca en la base los resultados del manifiesto y anota su marca; sin manifiesto legible, nada.
+
+        Devuelve el manifiesto leído, o None.
+        """
         # La marca se toma antes de leerlo: si el motor lo reescribe entretanto, queda vieja y se repite.
         mark = self._manifest_mark(job_id)
         manifest = self._manifest({"id": job_id})
@@ -460,6 +463,7 @@ class PortalStore:
             missing = auditoria.record_captures(con, capture_id, manifest, self.directory(job_id) / "resultado",
                                                 self.root, self._result_logs(job_id, manifest), mark)
             self._report_missing_images(job_id, missing)
+        return manifest
 
     def _reconcile(self, con, row):
         """Registra al arrancar lo que el manifiesto de una captura cerrada tenga y la base no.
@@ -475,7 +479,12 @@ class PortalStore:
             if row["manifiesto_registrado"] is None and not self._unrecorded_legacy(con, row, mark):
                 auditoria.set_manifest_mark(con, row["captura"], mark)  # anterior a la marca y ya registrada
                 return
-            self._record(con, row["id"], row["captura"])
+            manifest = self._record(con, row["id"], row["captura"])
+            if manifest and row["estado"] == "interrumpida":
+                # Se cerró como interrumpida, pero su motor siguió y terminó: vale lo que diga el manifiesto.
+                taken = auditoria.take_engine_state(con, row["captura"], manifest)
+                if taken and row["id"] in self.jobs:
+                    self.jobs[row["id"]].update(estado=taken[0], error="", fin=taken[1])
         except (OSError, sqlite3.Error) as exc:
             print(f"Aviso: no se pudieron registrar en la base los resultados de {row['id']}: {exc}. "
                   "Se reintentará al volver a abrir el portal.", file=sys.stderr)

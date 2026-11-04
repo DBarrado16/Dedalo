@@ -710,6 +710,22 @@ def _manifest_date(manifest: dict) -> str:
     return now()
 
 
+def take_engine_state(con: sqlite3.Connection, execution_id: str, manifest: dict) -> tuple[str, str] | None:
+    """Una captura cerrada como interrumpida cuyo motor siguió vivo y terminó: estado y fin salen del manifiesto.
+
+    Solo cambia si sigue en «interrumpida» y el manifiesto dice «completa» o «parcial».
+    Devuelve (estado, fin), o None si no cambió.
+    """
+    state = manifest.get("estado")
+    if state not in ("completa", "parcial"):
+        return None
+    end = _manifest_date(manifest)
+    with con:
+        changed = con.execute("UPDATE ejecucion SET estado = ?, error = '', terminada = ? "
+                              "WHERE id = ? AND estado = 'interrumpida'", (state, end, execution_id)).rowcount == 1
+    return (state, end) if changed else None
+
+
 def record_captures(con: sqlite3.Connection, execution_id: str, manifest: dict, result_dir: Path, root: Path,
                     logs: list[Path] = (), mark: int | None = None) -> list[str]:
     """Vuelca en la base los resultados del manifiesto del motor; se puede repetir.
