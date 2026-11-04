@@ -29,6 +29,30 @@ def fake_database(directory, urls, missing_file=False):
     con.close()
 
 
+# Registro de gowitness 3.2.0 cuando Windows no deja ejecutar leakless.exe, el ayudante de
+# su motor gorod: el error sale en una caja partida en líneas y en el idioma del sistema.
+LEAKLESS_BLOCKED = (
+    "Usage:\n  gowitness scan file [flags]\n\n"
+    "  An error occured running the file command                                   \n"
+    "  The error was:                                                              \n"
+    "                                                                              \n"
+    "  fork/exec C:\\Users\\auditor\\AppData\\Local\\Temp\\leakless-amd64-               \n"
+    "  adb80298fa6a3af7ced8b1c9b5f18007\\leakless.exe: No se pudo completar la      \n"
+    "  operación porque el archivo contiene un virus o software potencialmente no  \n"
+    "  deseado.                                                                    \n\n\n")
+LEAKLESS_REASON = "No se pudo completar la operación porque el archivo contiene un virus o software potencialmente no deseado."
+
+
+def blocked_gorod(calls, engine):
+    """gowitness simulado en un Windows que no deja ejecutar leakless.exe: gorod no llega a arrancar."""
+    def scan(binary, directory, urls, opts, urls_file=gowitness.URLS_FILE, log_name=gowitness.LOG_NAME):
+        if opts["driver"] != "gorod":
+            return engine(binary, directory, urls, opts, urls_file, log_name)
+        calls.append((opts["driver"], log_name, list(urls)))
+        raise gowitness.GorodBlocked(1, [binary, "scan", "file"], LEAKLESS_REASON)
+    return scan
+
+
 class ParserTests(unittest.TestCase):
     def test_formats_produce_same_targets(self):
         outputs = []
@@ -244,8 +268,8 @@ class WorkflowTests(unittest.TestCase):
             (directory / log_name).write_text("".join(line + "\n" for line in errors), encoding="utf-8")
         return scan
 
-    def run_with(self, destination, scan, extra=()):
-        with patch("dedalo.gowitness.find_gowitness", return_value="fake"), \
+    def run_with(self, destination, scan, extra=(), binary="fake"):
+        with patch("dedalo.gowitness.find_gowitness", return_value=binary), \
                 patch("dedalo.gowitness.find_chrome", return_value="fake"), \
                 patch("dedalo.gowitness.scan_subnet", side_effect=scan):
             return self.call(self.arguments(destination) + list(extra))
@@ -399,6 +423,140 @@ class WorkflowTests(unittest.TestCase):
             urls, alternativas = ["http://10.0.0.1:8443/"], ["https://10.0.0.1:8443/"]
             self.assertEqual(gowitness.retry_candidates(directory, urls + alternativas), ["https://10.0.0.1:8443/"])
             self.assertEqual(gowitness.retry_candidates(directory, urls), [])
+
+    def test_blocked_leakless_is_recognised_however_the_error_is_wrapped(self):
+        cases = {
+            "caja de gowitness en español": (LEAKLESS_BLOCKED, LEAKLESS_REASON),
+            "una línea en inglés": (
+                "fork/exec C:\\Temp\\leakless-amd64-0\\leakless.exe: Operation did not complete successfully "
+                "because the file contains a virus or potentially unwanted software.\n",
+                "Operation did not complete successfully because the file contains a virus or potentially unwanted software."),
+            "Linux": ("fork/exec /tmp/leakless-amd64-0/leakless: permission denied\n", "permission denied"),
+            "otro ejecutable": ("fork/exec C:\\Chrome\\chrome.exe: El sistema no puede encontrar el archivo especificado.\n", None),
+            "errores de páginas": ('ERRO failed to witness target target=http://10.0.0.1:80/ err="net::ERR_CONNECTION_REFUSED"\n', None),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / gowitness.LOG_NAME
+            self.assertIsNone(gowitness.leakless_blocked(log))
+            for name, (text, reason) in cases.items():
+                with self.subTest(name):
+                    log.write_text(text, encoding="utf-8")
+                    self.assertEqual(gowitness.leakless_blocked(log), reason)
+            # Un corte dentro del nombre no impide reconocerlo, aunque se pierda el motivo.
+            log.write_text("  fork/exec C:\\Temp\\leakl\n  ess-amd64-0\\leakl\n  ess.exe: No se pudo\n", encoding="utf-8")
+            self.assertIsNotNone(gowitness.leakless_blocked(log))
+
+    def test_scan_subnet_tells_a_blocked_gorod_apart(self):
+        def run(command, stdout, **kwargs):
+            stdout.write(LEAKLESS_BLOCKED)
+            raise subprocess.CalledProcessError(1, command)
+        opts = {"threads": 1, "timeout": 5, "delay": 0, "format": "png"}
+        with tempfile.TemporaryDirectory() as temporary, patch("dedalo.gowitness.subprocess.run", side_effect=run):
+            with self.assertRaises(gowitness.GorodBlocked) as caught:
+                gowitness.scan_subnet("gowitness", temporary, ["http://10.0.0.1/"], {**opts, "driver": "gorod"})
+            self.assertEqual(caught.exception.reason, LEAKLESS_REASON)
+            # chromedp no usa leakless: su fallo se propaga tal cual.
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                gowitness.scan_subnet("gowitness", temporary, ["http://10.0.0.1/"], {**opts, "driver": "chromedp"})
+            self.assertNotIsInstance(caught.exception, gowitness.GorodBlocked)
+
+    def test_blocked_gorod_repeats_the_subnet_with_chromedp(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination, calls, shown = Path(temporary) / "salida", [], []
+            inner = self.fake_engine(calls)
+            def engine(*args):
+                shown.append(report.load_manifest(destination).get("aviso", ""))  # lo que ve el portal
+                return inner(*args)
+            code, output = self.run_with(destination, blocked_gorod(calls, engine))
+            self.assertIn(LEAKLESS_REASON, shown[0])  # ya mientras se repite la subred
+            # Un solo intento con gorod; esa subred y las demás van con chromedp, sin reintentos con gorod.
+            self.assertEqual([c[:2] for c in calls], [("gorod", gowitness.LOG_NAME)] + [("chromedp", gowitness.LOG_NAME)] * 3)
+            self.assertEqual(calls[1][2], calls[0][2])
+            self.assertEqual(code, 3, output)  # el simulador deja sin imagen las HTTPS
+            data = report.load_manifest(destination)
+            self.assertEqual([g["estado"] for g in data["grupos"]], ["parcial", "completo", "parcial"])
+            self.assertIn(LEAKLESS_REASON, data["aviso"])
+            self.assertIn(data["aviso"], output)
+
+    def test_blocked_gorod_still_tries_the_other_scheme_with_chromedp(self):
+        # La pasada de esquema no es un reintento de gorod: sigue, pero con el motor efectivo.
+        with tempfile.TemporaryDirectory() as temporary:
+            calls = []
+            def engine(binary, directory, urls, opts, urls_file=gowitness.URLS_FILE, log_name=gowitness.LOG_NAME):
+                calls.append((opts["driver"], log_name, list(urls)))
+                if log_name == gowitness.LOG_NAME and "http://10.10.6.20:8443/" in urls:
+                    (Path(directory) / log_name).write_text(
+                        'ERRO failed to witness target target=http://10.10.6.20:8443/ err="page load error net::ERR_EMPTY_RESPONSE"\n',
+                        encoding="utf-8")
+            self.run_with(Path(temporary) / "salida", blocked_gorod(calls, engine), ["--puertos", "8443=http"])
+            self.assertEqual([c for c in calls if c[1] == gowitness.SCHEME_LOG],
+                             [("chromedp", gowitness.SCHEME_LOG, ["https://10.10.6.20:8443/"])])
+
+    def test_blocked_gorod_is_not_repeated_after_a_stop(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            calls, stop = [], Path(temporary) / "parar"
+            blocked = blocked_gorod(calls, self.fake_engine(calls))
+            def scan(*args, **kwargs):
+                stop.touch()  # el operador pide parar mientras gorod intenta arrancar
+                return blocked(*args, **kwargs)
+            self.run_with(Path(temporary) / "salida", scan, ["--stop-file", str(stop)])
+            self.assertEqual([c[0] for c in calls], ["gorod"])  # sin repetir con chromedp
+
+    def test_blocked_gorod_retry_is_tried_only_once(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination, calls = Path(temporary) / "salida", []
+            code, output = self.run_with(destination, blocked_gorod(calls, self.fake_engine(calls)), ["--driver", "chromedp"])
+            self.assertEqual(code, 3, output)
+            self.assertEqual([c[:2] for c in calls], [
+                ("chromedp", gowitness.LOG_NAME), ("gorod", gowitness.RETRY_LOG),
+                ("chromedp", gowitness.LOG_NAME), ("chromedp", gowitness.LOG_NAME)])
+            self.assertIn(LEAKLESS_REASON, report.load_manifest(destination)["aviso"])
+
+    def test_failed_chromedp_repeat_keeps_the_notice_and_the_error(self):
+        def broken(*args):
+            raise subprocess.CalledProcessError(1, ["gowitness"])
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "salida"
+            code, output = self.run_with(destination, blocked_gorod([], broken))
+            self.assertEqual(code, 1, output)
+            data = report.load_manifest(destination)
+            self.assertTrue(all(g["estado"] == "error" for g in data["grupos"]))
+            self.assertIn(LEAKLESS_REASON, data["aviso"])
+
+    def test_a_damaged_block_memory_never_breaks_the_capture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            binary, memory = folder / "gowitness.exe", folder / "gorod-bloqueado.json"
+            binary.write_bytes(b"gowitness 3.2.0")
+            self.assertIsNone(cli.remembered_block(str(memory), str(binary)))  # todavía no existe
+            for content in ("[]", '"texto"', "{", "{}"):
+                with self.subTest(content):
+                    memory.write_text(content, encoding="utf-8")
+                    self.assertIsNone(cli.remembered_block(str(memory), str(binary)))
+            memory.write_text(json.dumps({"gowitness": gowitness.sha256_of(binary), "fecha": None, "motivo": None}), encoding="utf-8")
+            notice = cli.remembered_block(str(memory), str(binary))
+            self.assertIn("gorod", notice)
+            self.assertNotIn("None", notice)
+
+    def test_blocked_gorod_is_remembered_for_the_same_gowitness(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            binary, memory = folder / "gowitness.exe", folder / "gorod-bloqueado.json"
+            binary.write_bytes(b"gowitness 3.2.0")
+            def run(name):
+                calls = []
+                code, output = self.run_with(folder / name, blocked_gorod(calls, self.fake_engine(calls)),
+                                             ["--memoria-motor", str(memory)], binary=str(binary))
+                self.assertEqual(code, 3, output)
+                return [c[0] for c in calls], report.load_manifest(folder / name)
+            drivers, _ = run("primera")
+            self.assertEqual(drivers[0], "gorod")
+            drivers, data = run("segunda")
+            self.assertNotIn("gorod", drivers)
+            self.assertIn(LEAKLESS_REASON, data["aviso"])
+            binary.write_bytes(b"gowitness 3.2.1")  # con otro gowitness se vuelve a probar gorod
+            drivers, _ = run("tercera")
+            self.assertEqual(drivers[0], "gorod")
 
     def test_failed_binary_continues_other_groups(self):
         with tempfile.TemporaryDirectory() as temporary:
