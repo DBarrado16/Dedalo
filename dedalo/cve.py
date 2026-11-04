@@ -284,15 +284,6 @@ def item_desde_nvd(entrada) -> dict | None:
             "cvss": cvss, "resumen": _texto(descripcion.get("value")), "cpes": reglas}
 
 
-def _items_de_json(texto: str) -> list[dict]:
-    """Items de `guardar_cves` de un JSON de la NVD (`{"vulnerabilities": [...]}`); ValueError si no lo es."""
-    datos = json.loads(texto)
-    vulnerabilidades = datos.get("vulnerabilities") if isinstance(datos, dict) else None
-    if not isinstance(vulnerabilidades, list):
-        raise ValueError("el JSON de la NVD no trae «vulnerabilities»")
-    return [item for item in map(item_desde_nvd, vulnerabilidades) if item]
-
-
 class _LectorFeed:
     """Recorre un JSON leído por trozos: solo guarda en memoria lo que falta por consumir del trozo actual."""
 
