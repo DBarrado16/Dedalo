@@ -252,6 +252,7 @@ python -m dedalo capturar parte1.xml parte2.gnmap parte3.nmap -r rangos.txt -o s
 Si la misma IP aparece en varios archivos, se unen sus puertos abiertos; no se interpreta como un histórico de aperturas y cierres. Se captura por IP, aunque nmap incluya nombres DNS.
 
 **Proxy de alcance.** El navegador de gowitness sale por un proxy local de Dédalo que decide cada conexión justo antes de hacerla: corta lo excluido y lo interno fuera de alcance, y deja pasar lo que está en alcance e internet público. Lo que se cortó a cada web queda en `ejecucion.json`, en la columna `cortado_fuera_alcance` del índice y, en el portal, en un aviso junto a la web. La regla y sus límites, en `docs/CONTRATOS.md` §0.3, regla 2.
+Límite conocido: Chromium no manda por el proxy lo que va al propio equipo ni, en principio, a direcciones de enlace local (`169.254.0.0/16`, `fe80::/10`); una página podría hacer que el navegador conecte directamente con una de ellas (pendiente de decisión, ver `docs/SEGURIDAD.md`, H1).
 
 | Opción | Función |
 | --- | --- |
@@ -389,7 +390,7 @@ Prueba real de principio a fin:
 python -m tests.integration_local
 ```
 
-Necesita gowitness y navegador instalado. Arranca dos webs locales en `127.0.0.1` y `127.0.1.1`, intenta usar 80/443 y usa puertos libres si no puede. Verifica HTTP, redirección, HTTPS autofirmado, un puerto cerrado, esquema equivocado, URLs exactas, CSV, bases por subred, combinaciones de rango/todo y respuesta del servidor web. La web de `127.0.0.1` pide además una imagen a `10.255.255.1:81`, fuera de alcance: se comprueba que el proxy de alcance la corta antes de conectar (no sale nada del equipo) y que el corte llega al manifiesto. Cierra los servicios al terminar y conserva resultados en `pruebas_locales/FECHA-HORA/resultado`; con `DEDALO_CONSERVAR_SALIDA=RUTA` (una carpeta que aún no exista) copia además ahí la salida de la captura.
+Necesita gowitness y navegador instalado. Arranca dos webs locales en `127.0.0.1` y `127.0.1.1`, intenta usar 80/443 y usa puertos libres si no puede. Verifica HTTP, redirección, HTTPS autofirmado, un puerto cerrado, esquema equivocado, URLs exactas, CSV, bases por subred, combinaciones de rango/todo y respuesta del servidor web. La web de `127.0.0.1` pide además una imagen a `240.0.0.1:81` (reservada, no enrutable), fuera de alcance: se comprueba que el proxy de alcance la corta antes de conectar (no sale nada del equipo) y que el corte llega al manifiesto. Cierra los servicios al terminar y conserva resultados en `pruebas_locales/FECHA-HORA/resultado`; con `DEDALO_CONSERVAR_SALIDA=RUTA` (una carpeta que aún no exista) copia además ahí la salida de la captura.
 
 El certificado y la clave de `tests/fixtures/` son exclusivamente material público de prueba local; no se instalan en el almacén de certificados.
 
