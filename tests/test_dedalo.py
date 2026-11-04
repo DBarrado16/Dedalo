@@ -184,17 +184,18 @@ class WorkflowTests(unittest.TestCase):
             self.assertTrue(compuestas)                                     # compuso cada imagen
             self.assertTrue(all(url == "https://10.10.5.10/x" for _, url in compuestas))  # con su final_url
 
-    def test_capture_warns_when_the_bar_is_on_but_there_is_no_chrome(self):
+    def test_without_an_installed_browser_the_capture_stops_before_connecting(self):
+        # H7: gowitness no descarga su propio Chromium (no tiene huella fijada); hace falta uno instalado.
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "salida"
-            visto = {}
-            componer = unittest.mock.Mock()
-            p = self._patched_capture(componer, visto)
-            with p[0], patch("dedalo.cli.gowitness.find_chrome", return_value=None), \
-                    p[2], p[3], p[4], p[5], p[6], p[7]:
-                _, output = self.call(self.arguments(destination))
-            componer.assert_not_called()
-            self.assertIn("Chrome", output)                    # avisa de que la barra se queda sin componer
+            empty = {"LOCALAPPDATA": temporary, "ProgramFiles": temporary, "ProgramFiles(x86)": temporary}
+            with patch.dict(os.environ, empty), patch("dedalo.gowitness.shutil.which", return_value=None), \
+                    patch("dedalo.cli.gowitness.find_gowitness", return_value="gw"), \
+                    patch("dedalo.cli.gowitness.scan_subnet", side_effect=AssertionError("no debe conectar")):
+                code, output = self.call(self.arguments(destination))
+            self.assertNotEqual(code, 0)
+            self.assertIn("--chrome", output)                  # dice cómo indicarlo
+            self.assertFalse(destination.exists())
 
     def test_capture_without_the_bar_does_not_compose_nor_force_png(self):
         with tempfile.TemporaryDirectory() as temporary:

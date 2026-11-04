@@ -1563,7 +1563,7 @@ class PortalTests(unittest.TestCase):
             class Result:
                 returncode = 0
             return Result()
-        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), patch("dedalo.web.gowitness.find_chrome", return_value=None), \
+        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), patch("dedalo.web.gowitness.find_chrome", return_value="fake"), \
              patch("dedalo.web.subprocess.run", side_effect=run):
             self.assertEqual(self.request("/api/jobs/" + job["id"] + "/start", {})[0], 202)
             self.assertTrue(done.wait(5))
@@ -1579,7 +1579,7 @@ class PortalTests(unittest.TestCase):
             class Result:
                 returncode = 0
             return Result()
-        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), patch("dedalo.web.gowitness.find_chrome", return_value=None), \
+        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), patch("dedalo.web.gowitness.find_chrome", return_value="fake"), \
              patch("dedalo.web.subprocess.run", side_effect=run):
             self.assertEqual(self.request("/api/jobs/" + job["id"] + "/start", {})[0], 202)
             self.assertTrue(started.wait(3))
@@ -1604,7 +1604,7 @@ class PortalTests(unittest.TestCase):
             class Result:
                 returncode = 0
             return Result()
-        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), patch("dedalo.web.gowitness.find_chrome", return_value=None), \
+        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), patch("dedalo.web.gowitness.find_chrome", return_value="fake"), \
              patch("dedalo.web.subprocess.run", side_effect=run):
             self.assertEqual(self.request("/api/jobs/" + job["id"] + "/start", {})[0], 202)
             self.assertTrue(started.wait(3))

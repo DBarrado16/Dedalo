@@ -141,8 +141,11 @@ def install_gowitness(destination: str | Path | None = None, log=print) -> str:
     return str(target)
 
 
-def find_chrome(explicit: str | None) -> str | None:
-    """None permite que gowitness descargue su propio navegador."""
+def find_chrome(explicit: str | None) -> str:
+    """Navegador instalado con el que captura gowitness; sin ninguno, ValueError.
+
+    Nunca se deja que gowitness descargue el suyo: su Chromium no trae una huella fijada.
+    """
     if explicit:
         return _executable(explicit)
     if os.name == "nt":
@@ -170,7 +173,8 @@ def find_chrome(explicit: str | None) -> str | None:
     for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
         if found := shutil.which(name):
             return str(Path(found).resolve())
-    return None
+    raise ValueError("No se encuentra Chrome, Chromium ni Edge instalado. Instala uno o indica su ruta con "
+                     "--chrome: Dédalo no deja que gowitness descargue un navegador sin verificar.")
 
 
 class GorodBlocked(subprocess.CalledProcessError):

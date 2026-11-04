@@ -459,8 +459,7 @@ class PortalStore:
         try:
             binary = gowitness.find_gowitness(self.binary_option)
             chrome = gowitness.find_chrome(self.chrome_option)
-            return {"ready": True, "browser": Path(chrome).name if chrome else "Descarga automática",
-                    "error": ""}
+            return {"ready": True, "browser": Path(chrome).name, "error": ""}
         except (OSError, ValueError) as exc:
             return {"ready": False, "browser": "", "error": str(exc)}
 
@@ -1388,11 +1387,9 @@ class PortalStore:
                         "--hilos", str(options["hilos"]), "--timeout", str(options["timeout"]),
                         "--delay", str(options["delay"]),
                         # Ejecuciones preparadas antes de existir estas opciones: valores por defecto.
-                        "--driver", options.get("driver", gowitness.DRIVERS[0])]
+                        "--driver", options.get("driver", gowitness.DRIVERS[0]), "--chrome", chrome]
             if not options.get("reintentar", True):
                 command.append("--sin-reintento")
-            if chrome:
-                command += ["--chrome", chrome]
             if options["por_servicio"]:
                 command.append("--por-servicio")
             if options["pagina_completa"]:

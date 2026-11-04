@@ -233,8 +233,6 @@ def capture(args) -> int:
     url_bar = not args.sin_barra_url
     if url_bar:
         opts["format"] = "png"  # la barra se compone como PNG; se fuerza para que sustituya a la captura
-    if url_bar and not chrome:
-        print("Aviso: no hay Chrome para componer la barra de URL en las capturas; irán sin ella.", file=sys.stderr)
     root = Path(args.salida or ("salida/" + datetime.now().strftime("%Y%m%d-%H%M%S-%f"))).resolve()
     if root.exists() and (not root.is_dir() or any(root.iterdir())):
         raise ValueError(f"La salida no está vacía: {root}. Usa una carpeta nueva para no mezclar ejecuciones.")
@@ -266,7 +264,7 @@ def capture(args) -> int:
             use_chromedp(notice)
     report.write_index(root, manifest)
     print(f"Salida: {root}", flush=True)
-    print(f"Navegador: {chrome or 'descarga automática de gowitness'}", flush=True)
+    print(f"Navegador: {chrome}", flush=True)
     interrupted = False
     for position, group in enumerate(groups, 1):
         if getattr(args, "stop_file", None) and Path(args.stop_file).exists():
@@ -329,7 +327,7 @@ def capture(args) -> int:
             error = "Captura interrumpida por el usuario"
         except (OSError, subprocess.CalledProcessError) as exc:
             error = f"gowitness no pudo completar esta subred: {exc}. Consulta gowitness.log"
-        if url_bar and chrome and not interrupted:
+        if url_bar and not interrupted:
             # Quemar la barra con la URL en cada imagen (una pasada de Chrome por captura).
             for fila in gowitness.read_results(directory / gowitness.DB_NAME).values():
                 try:
