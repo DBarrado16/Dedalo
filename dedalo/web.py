@@ -421,10 +421,12 @@ class PortalStore:
                     fuera_alcance=None)
 
     def _result_logs(self, job_id, manifest):
+        """Registros que quedan como evidencia: el del proceso y, por subred, los de gowitness
+        y los del proxy de alcance (lo que cortó). Los que no existan no se registran."""
         result = self.directory(job_id) / "resultado"
         return [self.directory(job_id) / "proceso.log"] + [
             report.inside(result, g["carpeta"]) / name for g in manifest["grupos"]
-            for name in gowitness.LOGS]
+            for name in gowitness.LOGS + gowitness.PROXY_LOGS]
 
     def _capture_state(self, job_id, state, error="", record=False, strict=False):
         """Guarda en la base el estado de la captura de un trabajo y, si se pide, sus resultados.
@@ -802,10 +804,12 @@ class PortalStore:
                     "estado": "capturada" if captured else row.get("estado", group["estado"] if group["estado"] == "en_curso" else "pendiente"),
                     "error": "" if captured else gowitness.find_error(errors, target["url"]) or row.get("error", ""),
                     "imagen": f"/api/jobs/{job_id}/image/{index}/{number}" if captured else "",
+                    "bloqueos": row.get("bloqueos") or [],
                 })
             response["grupos"].append({
                 "rango": group["rango"], "subred": group["subred"], "estado": group["estado"],
                 "capturas": sum(bool(t["imagen"]) for t in targets), "objetivos": targets, "error": group.get("error", ""),
+                "bloqueos_sin_pagina": group.get("bloqueos_sin_pagina") or [],
             })
         response["capturas"] = sum(g["capturas"] for g in response["grupos"])
         with closing(self.database()) as con:

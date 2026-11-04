@@ -16,7 +16,7 @@ MANIFEST = "ejecucion.json"
 # del CSV del inventario; en blanco hasta que se haga el cruce.
 COLUMNAS_VULN = ["vuln_estado", "vuln_prioridad", "vuln_cves", "vuln_severidades", "vuln_exploits", "vuln_enlaces"]
 COLUMNS = ["rango", "subred", "ip", "puerto", "url", "estado", "codigo_http",
-           "titulo", "url_final", "captura", "error"] + COLUMNAS_VULN
+           "titulo", "url_final", "captura", "error"] + COLUMNAS_VULN + ["cortado_fuera_alcance"]
 
 
 def _resolved(path: Path) -> Path:
@@ -118,11 +118,16 @@ def collect_group(root: Path, group: dict, error: str = "") -> None:
     directory = inside(root, group["carpeta"])
     found = gowitness.read_results(directory / gowitness.DB_NAME)
     errors = gowitness.read_errors(directory)
+    blocked, unmatched = gowitness.read_blocked(directory)
     rows, missing = [], []
     for target in group["objetivos"]:
         # Si solo respondió el otro esquema, la fila sigue siendo la del objetivo; la URL que
         # respondió se ve en url_final.
         result = gowitness.find_result(found, target["url"])
+        # Lo cortado a la web del objetivo, en cualquiera de sus dos esquemas, una vez cada corte.
+        cuts = []
+        for url in (target["url"], gowitness.other_scheme(target["url"])):
+            cuts += [cut for cut in blocked.get(gowitness.normalize_url(url), []) if cut not in cuts]
         shot = ""
         if result:
             shot = gowitness.screenshot_path(directory, result["filename"]).relative_to(root).as_posix()
@@ -136,8 +141,10 @@ def collect_group(root: Path, group: dict, error: str = "") -> None:
             "titulo": result["title"] if result else "",
             "url_final": result["final_url"] if result else "",
             "captura": shot, "error": "" if result else (gowitness.find_error(errors, target["url"]) or error or "Consultar gowitness.log"),
+            "bloqueos": cuts,
         })
     group["resultados"] = rows
+    group["bloqueos_sin_pagina"] = unmatched
     group["capturas"] = len(rows) - len(missing)
     group["sin_captura"] = len(missing)
     group["error"] = error
@@ -168,6 +175,8 @@ def _write_rows(file, manifest: dict, vulns: dict | None) -> None:
             } for target in group["objetivos"]]
         for row in rows:
             row = row | (vulns or {}).get((row["ip"], str(row["puerto"])), {})
+            row["cortado_fuera_alcance"] = "; ".join(f"{cut['destino']} ({cut['motivo']})"
+                                                     for cut in row.pop("bloqueos", None) or [])
             writer.writerow({key: csv_text(value) for key, value in row.items()})
 
 

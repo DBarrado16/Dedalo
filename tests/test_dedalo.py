@@ -486,6 +486,81 @@ class WorkflowTests(unittest.TestCase):
                 gowitness.scan_subnet("gowitness", temporary, ["http://10.0.0.1/"], {**opts, "driver": "chromedp"})
             self.assertNotIsInstance(caught.exception, gowitness.GorodBlocked)
 
+    def test_scan_subnet_pasa_el_proxy(self):
+        ordenes = []
+        def run(command, **kwargs):
+            ordenes.append(command)
+        opts = {"threads": 1, "timeout": 5, "delay": 0, "format": "png", "driver": "chromedp"}
+        with tempfile.TemporaryDirectory() as temporary, patch("dedalo.gowitness.subprocess.run", side_effect=run):
+            gowitness.scan_subnet("gowitness", temporary, ["http://10.0.0.1/"], {**opts, "proxy": "http://127.0.0.1:9"})
+            gowitness.scan_subnet("gowitness", temporary, ["http://10.0.0.1/"], opts)
+        con_proxy, sin_proxy = ordenes
+        posicion = con_proxy.index("--chrome-proxy")
+        self.assertEqual(con_proxy[posicion + 1], "http://127.0.0.1:9")
+        self.assertNotIn("--chrome-proxy", sin_proxy)
+
+    def _proxy_espiado(self, instancias):
+        """Proxy real (solo escucha en 127.0.0.1) que anota sus instancias, su registro y si se paró."""
+        from dedalo import proxy as modulo
+        class Espiado(modulo.Proxy):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                self.parado = False
+                instancias.append(self)
+            def parar(self):
+                self.parado = True
+                super().parar()
+        return patch("dedalo.cli.proxy.Proxy", Espiado)
+
+    def test_capture_usa_el_proxy_en_cada_pasada(self):
+        for falla in (False, True):
+            with self.subTest(falla=falla), tempfile.TemporaryDirectory() as temporary:
+                destination, instancias, pasadas = Path(temporary) / "salida", [], []
+                def scan(binary, directory, urls, opts, urls_file=gowitness.URLS_FILE, log_name=gowitness.LOG_NAME):
+                    pasadas.append((opts.get("proxy"), instancias[0]._registro, Path(directory)))
+                    if falla:
+                        raise OSError("fallo simulado")
+                def collect(root, group, error):
+                    group.update(capturas=0, sin_captura=0, resultados=[])
+                with self._proxy_espiado(instancias), \
+                        patch("dedalo.cli.gowitness.find_gowitness", return_value="gw"), \
+                        patch("dedalo.cli.gowitness.find_chrome", return_value="chrome"), \
+                        patch("dedalo.cli.gowitness.scan_subnet", side_effect=scan), \
+                        patch("dedalo.cli.gowitness.scheme_candidates", return_value=["https://10.10.5.10/"]), \
+                        patch("dedalo.cli.gowitness.retry_candidates", return_value=["https://10.10.5.10/"]), \
+                        patch("dedalo.cli.gowitness.read_results", return_value={}), \
+                        patch("dedalo.cli.report.collect_group", side_effect=collect):
+                    self.call(self.arguments(destination) + ["--sin-barra-url"])
+                self.assertEqual(len(instancias), 1)
+                self.assertTrue(instancias[0].parado)                  # también si scan_subnet lanza
+                self.assertTrue(pasadas)
+                self.assertTrue(all((proxy or "").startswith("http://127.0.0.1:") for proxy, _, _ in pasadas))
+                nombres = [registro.name for _, registro, _ in pasadas]
+                if falla:
+                    self.assertEqual(set(nombres), {gowitness.PROXY_LOG})   # la primera pasada aborta la subred
+                else:
+                    self.assertEqual(set(nombres), set(gowitness.PROXY_LOGS))
+                    self.assertEqual(nombres[:3], list(gowitness.PROXY_LOGS))
+                for _, registro, directorio in pasadas:
+                    self.assertEqual(registro.parent, directorio)        # el registro es de la carpeta de la subred
+
+    def test_capture_en_consola_corta_lo_no_planificado(self):
+        from dedalo import proxy as modulo
+        with tempfile.TemporaryDirectory() as temporary:
+            destination, instancias = Path(temporary) / "salida", []
+            excluir = Path(temporary) / "excluir.txt"
+            excluir.write_text("10.99.99.99\n", encoding="utf-8")
+            with self._proxy_espiado(instancias), \
+                    patch("dedalo.cli.gowitness.find_gowitness", return_value="gw"), \
+                    patch("dedalo.cli.gowitness.find_chrome", return_value="chrome"), \
+                    patch("dedalo.cli.gowitness.scan_subnet"), \
+                    patch("dedalo.cli.gowitness.read_results", return_value={}):
+                self.call(self.arguments(destination) + ["--sin-barra-url", "--excluir", str(excluir)])
+            alcance = instancias[0]._alcance.actual()
+            self.assertEqual(modulo.decidir("192.168.77.7", alcance), modulo.FUERA)   # privada no planificada
+            self.assertEqual(modulo.decidir("10.99.99.99", alcance), modulo.EXCLUIDA)
+            self.assertIsNone(modulo.decidir("10.10.5.10", alcance))                   # la planificada pasa
+
     def test_blocked_gorod_repeats_the_subnet_with_chromedp(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination, calls, shown = Path(temporary) / "salida", [], []

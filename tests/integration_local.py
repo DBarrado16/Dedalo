@@ -1,7 +1,14 @@
 """Prueba real y reproducible: solo usa servidores en 127.0.0.0/8.
 
 Ejecutar desde la raíz: python -m tests.integration_local
-Conserva los resultados en pruebas_locales/ para poder abrir el visor.
+Conserva los resultados en pruebas_locales/ para poder abrir el visor. Con
+DEDALO_CONSERVAR_SALIDA=RUTA (carpeta que aún no exista) copia además ahí la salida
+de la captura, recién comprobada.
+
+La web de 127.0.0.1 carga una imagen de 240.0.0.1:81, fuera del alcance de la prueba
+y no pública: el proxy de alcance la corta antes de conectar, así que no sale nada del equipo.
+Es una IP reservada (clase E) que no se enruta: si algo la pidiera sin proxy, tampoco
+llegaría a ninguna red.
 """
 
 from __future__ import annotations
@@ -12,6 +19,7 @@ import json
 import os
 import re
 from pathlib import Path
+import shutil
 import socket
 import ssl
 import subprocess
@@ -23,6 +31,10 @@ import urllib.request
 from dedalo import gowitness, report, views
 
 ROOT = Path(__file__).resolve().parent.parent
+# Recurso fuera del alcance 127.0.0.0/8 de la prueba y no público (240.0.0.0/4, reservada
+# y no enrutable): el proxy lo corta.
+FUERA_DE_ALCANCE = "http://240.0.0.1:81/x.png"
+CORTE_ESPERADO = {"destino": "240.0.0.1:81", "ip": "240.0.0.1", "puerto": 81, "motivo": "fuera_de_alcance"}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -32,6 +44,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Location", "/portal")
             self.end_headers()
             return
+        # Solo la web de 127.0.0.1 pide el recurso de fuera; Chrome no manda 127.0.0.0/8 al proxy.
+        recurso = (f'<img src="{FUERA_DE_ALCANCE}" alt="" width="1" height="1">'
+                   if self.server.server_address[0] == "127.0.0.1" else "")
         page = f"""<!doctype html><html lang="es"><meta charset="utf-8">
 <title>Prueba local {self.server.name}</title>
 <style>body{{font:20px system-ui;background:#101827;color:#dce8ff;margin:70px}}
@@ -40,7 +55,7 @@ small{{color:#66d9ba}}h1{{font-size:46px}}code{{color:#9bbfff}}</style>
 <main><small>DEDALO / PRUEBA LOCAL</small><h1>Captura {self.server.name} correcta</h1>
 <p>Esta página permite comprobar la captura y su asociación con la IP.</p>
 <p><code>{self.server.server_address[0]}</code></p>
-<p>{'Certificado autofirmado de pruebas.' if self.server.name == 'HTTPS' else 'Redirección HTTP resuelta hasta /portal.'}</p></main></html>""".encode()
+<p>{'Certificado autofirmado de pruebas.' if self.server.name == 'HTTPS' else 'Redirección HTTP resuelta hasta /portal.'}</p>{recurso}</main></html>""".encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(page)))
@@ -154,6 +169,29 @@ def main():
             log_text = (output / group["carpeta"] / "gowitness.log").read_text(encoding="utf-8")
             attempted = {gowitness.normalize_url(u) for u in re.findall(r'target=(https?://[^\s"]+)', log_text)}
             assert attempted == requested, f"URLs ejecutadas distintas de las solicitadas: {attempted ^ requested}"
+        # Puerto cerrado: el mismo error que sin proxy (127.0.0.1 no pasa por él) y sin pasada de esquema.
+        closed = next(row for row in rows if row["puerto"] == closed_port)
+        assert closed["estado"] == "sin_captura", closed
+        assert "ERR_CONNECTION_REFUSED" in closed["error"], closed
+        assert not closed["error"].startswith("Ni http ni https"), closed
+        local_group = next(g for g in manifest["grupos"] if g["subred"] == "127.0.0.0/24")
+        assert not (output / local_group["carpeta"] / gowitness.SCHEME_URLS).exists()
+        # Proxy de alcance: la web de 127.0.0.1 lleva su corte y ninguna otra lleva ninguno.
+        page = next(row for row in successes if row["ip"] == "127.0.0.1")
+        assert page["bloqueos"] == [CORTE_ESPERADO], page
+        assert all(row["bloqueos"] == [] for row in rows if row is not page), rows
+        # Atribuido a su web, no a la subred (el tráfico de fondo del navegador no cuenta aquí).
+        assert all(CORTE_ESPERADO not in g["bloqueos_sin_pagina"] for g in manifest["grupos"]), manifest["grupos"]
+        # El proxy cortó 240.0.0.1 por la regla, antes de conectar: ninguna línea suya es un fallo de conexión.
+        proxy_lines = [json.loads(line) for g in manifest["grupos"] for name in gowitness.PROXY_LOGS
+                       if (output / g["carpeta"] / name).is_file()
+                       for line in (output / g["carpeta"] / name).read_text(encoding="utf-8").splitlines()]
+        outside = [line for line in proxy_lines if line["destino"] == CORTE_ESPERADO["destino"]]
+        assert outside and all(line.get("motivo") == "fuera_de_alcance" and "fallo" not in line
+                               for line in outside), outside
+        if keep := os.environ.get("DEDALO_CONSERVAR_SALIDA"):
+            shutil.copytree(output, keep)   # falla si la carpeta ya existe: no se mezcla con otra
+            print(f"Salida copiada en {keep}", flush=True)
         run(args, destination / "repeticion.log", expected=1)
 
         run(["ver", str(output), "--listar"], destination / "listar.log")

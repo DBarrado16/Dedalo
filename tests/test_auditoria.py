@@ -348,3 +348,68 @@ class ImportTests(unittest.TestCase):
         auditoria.start_vuln(self.con, "lunes", {})
         auditoria.close_interrupted_analyses(self.con)
         self.assertEqual(auditoria.vuln_status(self.con, "lunes")["estado"], "interrumpida")
+
+
+class CortesDelProxyTests(unittest.TestCase):
+    """Lo que el proxy de alcance cortó en cada web se guarda en `captura_bloqueo`."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.con = db.connect(self.root)
+        audit = auditoria.default_audit(self.con)
+        path = self.root / "lunes" / "inventario.xml"
+        path.parent.mkdir()
+        shutil.copy(ROOT / "ejemplos" / "inventario.xml", path)
+        hosts = parser.merge([parser.parse_file(path)])
+        auditoria.import_nmap(self.con, audit, "lunes", "Nmap lunes", hosts, [path], self.root)
+        self.ip = hosts[0].ip
+        self.port = next(iter(hosts[0].ports))
+        self.url = f"http://{self.ip}:{self.port}"
+        self.groups = [{"objetivos": [{"ip": self.ip, "port": self.port, "url": self.url}]}]
+        self.capture = auditoria.start_capture(self.con, "lunes", {}, self.groups)
+
+    def tearDown(self):
+        self.con.close()
+        self.temp.cleanup()
+
+    def manifest(self, **row):
+        base = {"ip": self.ip, "puerto": self.port, "url": self.url, "estado": "sin_captura"}
+        return {"grupos": [{"resultados": [{**base, **row}]}]}
+
+    def dump(self, manifest):
+        auditoria.record_captures(self.con, self.capture, manifest, self.root, self.root)
+
+    def cuts(self):
+        return [tuple(row) for row in self.con.execute(
+            "SELECT destino, ip, puerto, motivo FROM captura_bloqueo ORDER BY id")]
+
+    BLOCKS = [{"destino": "10.9.9.9", "ip": "10.9.9.9", "puerto": 80, "motivo": "excluida"},
+              {"destino": "interno.local", "ip": None, "puerto": None, "motivo": "alcance_ilegible"}]
+
+    def test_record_captures_guarda_los_cortes_y_se_puede_repetir(self):
+        manifest = self.manifest(bloqueos=self.BLOCKS)
+        self.dump(manifest)
+        first = self.cuts()
+        self.assertEqual(first, [("10.9.9.9", "10.9.9.9", 80, "excluida"),
+                                 ("interno.local", None, None, "alcance_ilegible")])
+        self.dump(manifest)
+        self.assertEqual(self.cuts(), first)
+        self.dump(self.manifest(bloqueos=self.BLOCKS[:1]))
+        self.assertEqual(self.cuts(), first[:1])  # un nuevo volcado sustituye a los anteriores
+        self.assertEqual(auditoria.capture_blocks(self.con, self.capture),
+                         {self.url: [self.BLOCKS[0]]})
+
+    def test_borrar_la_ejecucion_borra_sus_cortes(self):
+        self.dump(self.manifest(bloqueos=self.BLOCKS))
+        self.assertEqual(len(self.cuts()), 2)
+        auditoria.delete_execution(self.con, "lunes")
+        self.assertEqual(self.cuts(), [])
+
+    def test_manifiesto_sin_bloqueos_se_registra(self):
+        self.dump(self.manifest())
+        self.dump(self.manifest(bloqueos=None))
+        self.assertEqual(self.cuts(), [])
+        self.assertEqual(self.con.execute("SELECT estado FROM captura WHERE ejecucion_id = ?",
+                                          (self.capture,)).fetchone()[0], "sin_captura")
+        self.assertEqual(auditoria.capture_blocks(self.con, self.capture), {})

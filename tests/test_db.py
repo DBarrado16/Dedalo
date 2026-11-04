@@ -11,7 +11,7 @@ NEXT = LATEST + 1  # número para migraciones de prueba
 TABLES = {"auditoria", "alcance", "ejecucion", "activo", "servicio", "observacion_activo",
           "observacion", "evidencia", "captura", "prioridad",
           "config", "credencial_catalogo", "credencial_resultado", "deteccion",
-          "cve", "cve_cpe", "vulnerabilidad"}
+          "cve", "cve_cpe", "vulnerabilidad", "captura_bloqueo"}
 
 
 class DatabaseTests(unittest.TestCase):
@@ -40,6 +40,21 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(self.con.execute("PRAGMA user_version").fetchone()[0], max(db.MIGRATIONS))
         self.assertEqual(self.con.execute("PRAGMA foreign_keys").fetchone()[0], 1)
         self.assertEqual(self.con.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+
+    def test_migracion_8_crea_captura_bloqueo(self):
+        columns = {row[1] for row in self.con.execute("PRAGMA table_info(captura_bloqueo)")}
+        self.assertEqual(columns, {"id", "captura_id", "destino", "ip", "puerto", "motivo"})
+        indexes = {row[0] for row in self.con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'captura_bloqueo'")}
+        self.assertIn("captura_bloqueo_captura", indexes)
+        self.assertGreaterEqual(LATEST, 8)
+        self.audit()
+        with self.con:
+            capture = self.con.execute("INSERT INTO captura (ejecucion_id, servicio_id, url, estado) "
+                                       "VALUES ('e1', 1, 'https://10.10.5.3', 'pendiente')").lastrowid
+            self.con.execute("INSERT INTO captura_bloqueo (captura_id, destino, motivo) VALUES (?, 'x', 'excluida')", (capture,))
+        with self.assertRaises(sqlite3.IntegrityError), self.con:
+            self.con.execute("INSERT INTO captura_bloqueo (captura_id, destino, motivo) VALUES (?, 'x', 'otro')", (capture,))
 
     def test_reopening_keeps_data_and_does_not_migrate_again(self):
         self.audit()

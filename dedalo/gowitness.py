@@ -28,6 +28,11 @@ SCHEME_LOG = "gowitness-esquema.log"
 SCHEME_ERRORS = ("ERR_EMPTY_RESPONSE", "ERR_INVALID_HTTP_RESPONSE", "ERR_CONNECTION_RESET",
                  "ERR_CONNECTION_CLOSED", "ERR_SSL_PROTOCOL_ERROR", "ERR_SSL_VERSION_OR_CIPHER_MISMATCH")
 LOGS = (LOG_NAME, SCHEME_LOG, RETRY_LOG)
+# Registros del proxy de alcance (lo que cortó o no pudo conectar), uno por pasada.
+PROXY_LOG = "proxy.jsonl"
+SCHEME_PROXY_LOG = "proxy-esquema.jsonl"
+RETRY_PROXY_LOG = "proxy-reintento.jsonl"
+PROXY_LOGS = (PROXY_LOG, SCHEME_PROXY_LOG, RETRY_PROXY_LOG)
 # Motores de gowitness para manejar el navegador. gorod va primero: chromedp se
 # queda sin imagen en páginas que gorod captura (probado con scanme.nmap.org y
 # una espera de 3 s o más).
@@ -210,6 +215,8 @@ def scan_subnet(binary: str, workdir: str | Path, urls: list[str], opts: dict,
         cmd += ["--chrome-path", opts["chrome"]]
     if opts.get("fullpage"):
         cmd.append("--screenshot-fullpage")
+    if opts.get("proxy"):
+        cmd += ["--chrome-proxy", opts["proxy"]]
     environment = os.environ.copy()
     if os.name == "nt" and Path(opts.get("chrome") or "").name.lower() == "msedge.exe":
         # Edge se relanza al heredar capas de compatibilidad y pierde el canal
@@ -329,6 +336,101 @@ def _log_errors(path: Path):
         return
 
 
+def _destino(url: str) -> str | None:
+    """`host:puerto` de una URL como lo anota el proxy (IPv6 entre corchetes), en minúsculas.
+
+    El puerto, si no viene, es el del esquema; None si la URL no lleva a un host (data:, blob:…).
+    """
+    try:
+        parts = urlsplit(url)
+        port = parts.port or {"http": 80, "ws": 80, "https": 443, "wss": 443}.get(parts.scheme.lower())
+    except ValueError:
+        return None
+    host = (parts.hostname or "").lower()
+    if not host or not port:
+        return None
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
+def _proxy_lines(directory: Path):
+    """Cada línea legible de los registros del proxy de la subred; una a medias se salta."""
+    for name in PROXY_LOGS:
+        try:
+            with (Path(directory) / name).open(encoding="utf-8", errors="replace") as log:
+                for line in log:
+                    try:
+                        item = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(item, dict) and isinstance(item.get("destino"), str):
+                        yield item
+        except OSError:
+            continue
+
+
+def read_failures(directory: Path) -> dict[str, str]:
+    """`ip:puerto` -> por qué el proxy no pudo conectar (rechazada | sin_respuesta | denegada | inalcanzable | error)."""
+    return {item["destino"].lower(): item["fallo"] for item in _proxy_lines(directory)
+            if isinstance(item.get("fallo"), str)}
+
+
+def read_blocked(directory: Path) -> tuple[dict[str, list[dict]], list[dict]]:
+    """Lo que el proxy cortó: (URL normalizada de cada página -> sus cortes, cortes sin página).
+
+    Un corte es de una página si alguna petición suya en `network_logs` fue a ese `host:puerto`;
+    puede serlo de varias. Sin registros del proxy no se abre la base: las salidas antiguas
+    quedan como estaban.
+    """
+    cuts = {}
+    for item in _proxy_lines(directory):
+        if "fallo" not in item and isinstance(item.get("motivo"), str):
+            cut = {"destino": item["destino"], "ip": item.get("ip"), "puerto": item.get("puerto"), "motivo": item["motivo"]}
+            cuts.setdefault((item["destino"].lower(), item["motivo"]), cut)
+    if not cuts:
+        return {}, []
+    requests = []
+    path = (Path(directory) / DB_NAME).resolve()
+    if path.is_file():
+        con = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+        try:
+            requests = con.execute(
+                "SELECT results.url, network_logs.url FROM network_logs "
+                "JOIN results ON results.id = network_logs.result_id ORDER BY network_logs.id").fetchall()
+        except sqlite3.OperationalError:  # base de una gowitness sin network_logs
+            requests = []
+        finally:
+            con.close()
+    asked: dict[str, set[str]] = {}
+    for page, request in requests:
+        if page and request and (destination := _destino(request)):
+            asked.setdefault(normalize_url(page), set()).add(destination)
+    by_page, unmatched = {}, []
+    for (destination, _), cut in cuts.items():
+        pages = [page for page, destinations in asked.items() if destination in destinations]
+        for page in pages:
+            by_page.setdefault(page, []).append(cut)
+        if not pages:
+            unmatched.append(cut)
+    return by_page, unmatched
+
+
+# Con el proxy, un puerto cerrado o caído llega a Chrome como fallo del túnel; el mensaje
+# recupera el código que habría dado sin proxy, según lo que anotó el proxy al conectar.
+_TUNNEL_ERRORS = ("net::ERR_TUNNEL_CONNECTION_FAILED", "net::ERR_HTTP_RESPONSE_CODE_FAILURE")
+_DIRECT_ERRORS = {"rechazada": "net::ERR_CONNECTION_REFUSED", "sin_respuesta": "net::ERR_CONNECTION_TIMED_OUT",
+                  "denegada": "net::ERR_NETWORK_ACCESS_DENIED", "inalcanzable": "net::ERR_ADDRESS_UNREACHABLE"}
+
+
+def _without_proxy(message: str, url: str, failures: dict[str, str]) -> str:
+    direct = _DIRECT_ERRORS.get(failures.get(_destino(url) or ""))
+    if direct is None:
+        return message
+    for error in _TUNNEL_ERRORS:
+        if error in message:
+            return message.replace(error, direct)
+    return message
+
+
 def read_errors(directory: Path) -> dict[str, str]:
     """Recuperar el error de cada URL, también para ejecuciones antiguas.
 
@@ -336,9 +438,11 @@ def read_errors(directory: Path) -> dict[str, str]:
     esquema, o la del otro motor.
     """
     errors = {}
+    failures = read_failures(directory)
     for name, prefix in ((LOG_NAME, ""), (SCHEME_LOG, "Ni http ni https respondieron: "),
                          (RETRY_LOG, "También sin imagen al reintentar con el otro motor: ")):
         for key, _, message in _log_errors(Path(directory) / name):
+            message = _without_proxy(message, key, failures)
             if "ERR_NETWORK_ACCESS_DENIED" in message:
                 message = "Acceso a la red denegado (ERR_NETWORK_ACCESS_DENIED). Comprueba que el portal se haya iniciado con acceso a la red/VPN."
             elif "ERR_INVALID_AUTH_CREDENTIALS" in message:
