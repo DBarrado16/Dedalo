@@ -583,11 +583,19 @@ class PortalStore:
                 write_scope_files(directory, scope)
                 self.jobs[job_id] = meta
         except Exception:
-            # Sin importación completa no queda una ejecución a medias.
-            shutil.rmtree(directory, ignore_errors=True)
+            # Sin importación completa no queda una ejecución a medias. Base primero y carpeta después:
+            # si la base no deja deshacerla, la carpeta se queda y la ejecución sale entera al reabrir.
+            undone = True
             if imported:
-                with closing(self.database()) as con:
-                    auditoria.delete_execution(con, job_id)
+                try:
+                    with closing(self.database()) as con:
+                        auditoria.delete_execution(con, job_id)
+                except Exception as exc:
+                    undone = False
+                    print(f"Error del portal: no se pudo deshacer la importación {job_id}: {exc}. Saldrá en el "
+                          "historial al reabrir el portal; bórrala desde allí.", file=sys.stderr)
+            if undone:
+                shutil.rmtree(directory, ignore_errors=True)
             raise
         return self.detail(job_id)
 

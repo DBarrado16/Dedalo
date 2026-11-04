@@ -1623,6 +1623,20 @@ class PortalTests(unittest.TestCase):
             self.assertEqual(con.execute("SELECT COUNT(*) FROM ejecucion").fetchone()[0], 0)
             self.assertEqual(con.execute("SELECT COUNT(*) FROM activo").fetchone()[0], 0)
 
+    def test_undoing_an_import_whose_database_also_fails_keeps_its_folder(self):
+        # Base primero, carpeta después: si la base no deja deshacer, la ejecución sigue entera
+        # (sale al reabrir y se puede borrar) en vez de quedar una fila sin carpeta.
+        with patch("dedalo.web.write_scope_files", side_effect=OSError("Archivo ocupado")), \
+                patch("dedalo.web.auditoria.delete_execution", side_effect=sqlite3.OperationalError("database is locked")), \
+                redirect_stderr(io.StringIO()):
+            self.assertEqual(self.request("/api/jobs", self.payload())[0], 500)
+        with closing(self.store.database()) as con:
+            job_id = con.execute("SELECT id FROM ejecucion").fetchone()[0]
+        self.assertTrue((self.store.directory(job_id) / "entradas" / "nmap-00.txt").is_file())
+        self.reopen()
+        self.assertEqual(self.request("/api/jobs/" + job_id + "/delete", {})[0], 200)
+        self.assertEqual([p.name for p in Path(self.temp.name).iterdir() if p.is_dir()], [])
+
     def test_upload_with_only_non_web_services_retains_inventory(self):
         data = self.payload()
         data["archivos"][0]["contenido"] = "Nmap scan report for 192.0.2.1\n22/tcp open ssh OpenSSH 9.6\n53/udp open domain\n"
