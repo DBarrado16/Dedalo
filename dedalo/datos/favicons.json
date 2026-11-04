@@ -1,6 +1,6 @@
 {
   "version": "2026-11-04",
-  "nota": "Huellas mmh3 al estilo Shodan (http.favicon.hash) de la lista pública de FavFreak, licencia MIT (Copyright (c) 2020 Devansh Batham). Solo dicen el producto, no la versión. La implementación de dedalo/favicones.py se validó contra ella: el favicon de Jenkins de su repositorio da 81586312, igual que la lista. Fuera las entradas que la propia lista marca como dudosas («?»).",
+  "nota": "Huellas mmh3 al estilo Shodan (http.favicon.hash) de la lista pública de FavFreak, licencia MIT (Copyright (c) 2020 Devansh Batham; texto completo en LICENCIA-favfreak.txt). Solo dicen el producto, no la versión. La implementación de dedalo/favicones.py se validó contra ella: el favicon de Jenkins de su repositorio da 81586312, igual que la lista. Fuera las entradas que la propia lista marca como dudosas («?»).",
   "entradas": [
     {"mmh3": 970132176, "producto": "3CX Phone System", "version": "", "fuente": "FavFreak (github.com/devanshbatham/FavFreak, MIT, (c) 2020 Devansh Batham)"},
     {"mmh3": -166151761, "producto": "Abilis (Network/Automation)", "version": "", "fuente": "FavFreak (github.com/devanshbatham/FavFreak, MIT, (c) 2020 Devansh Batham)"},
