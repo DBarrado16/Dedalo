@@ -816,6 +816,27 @@ class PortalTests(unittest.TestCase):
         self.assertEqual({r["url"]: r["estado"] for r in rows}[target["url"]], "capturada")
         self.assertNotIn(other, [r["url"] for r in rows])
 
+    def test_detalle_lleva_los_cortes_del_proxy(self):
+        job = self.create()
+        meta = self.store.jobs[job["id"]]
+        root = self.store.directory(job["id"]) / "resultado"
+        group = meta["grupos"][0]
+        target = group["objetivos"][0]
+        fake_database(root / group["carpeta"], [target["url"]])
+        report.collect_group(root, group)
+        corte = {"destino": "10.20.0.5:443", "ip": "10.20.0.5", "puerto": 443, "motivo": "excluida"}
+        suelto = {"destino": "10.20.0.9:80", "ip": "10.20.0.9", "puerto": 80, "motivo": "fuera_de_alcance"}
+        group["resultados"][0]["bloqueos"] = [corte]
+        group["bloqueos_sin_pagina"] = [suelto]
+        report.write_index(root, {"version": 1, "grupos": meta["grupos"]})
+        detalle = json.loads(self.request("/api/jobs/" + job["id"])[1])
+        grupo = detalle["grupos"][0]
+        self.assertEqual(grupo["objetivos"][0]["bloqueos"], [corte])
+        self.assertEqual(grupo["bloqueos_sin_pagina"], [suelto])
+        # Sin esos campos en el manifiesto (versiones antiguas) salen vacíos.
+        for otro in grupo["objetivos"][1:]:
+            self.assertEqual(otro["bloqueos"], [])
+
     def test_version_detection_reads_the_fingerprint_of_the_other_scheme(self):
         job = self.create()
         meta = self.store.jobs[job["id"]]

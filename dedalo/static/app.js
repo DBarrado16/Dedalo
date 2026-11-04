@@ -26,6 +26,15 @@ systemTheme.addEventListener("change", event => {
   if (!savedTheme) applyTheme(event.matches ? "dark" : "light");
 });
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
+// Lo que el proxy de alcance cortó: el destino lo escribe el servidor, así que todo pasa por escapeHtml.
+const cutReason = (cut) => cut.motivo === "excluida" ? "excluida" : "fuera de alcance";
+const cutText = (cut) => cut.motivo === "alcance_ilegible"
+  ? `No se pudo comprobar el alcance; se cortó ${cut.destino}.`
+  : `Intentó contactar con ${cut.destino} (${cutReason(cut)}); se cortó.`;
+const cutNotes = (cuts) => cuts?.length
+  ? `<div class="cuts"><span class="badge error">Conexiones cortadas</span>${cuts.map(cut => `<p class="cut-line">${escapeHtml(cutText(cut))}</p>`).join("")}</div>` : "";
+const subnetCutsLine = (cuts) => cuts?.length
+  ? `<p class="cut-line">En esta subred se cortaron conexiones a: ${escapeHtml(cuts.map(cut => cut.destino + (cut.motivo === "alcance_ilegible" ? " (alcance ilegible)" : " (" + cutReason(cut) + ")")).join(", "))}</p>` : "";
 const labels = {preparada:"Preparada",en_cola:"En cola",en_curso:"Capturando",deteniendo:"Deteniendo",completa:"Completada",parcial:"Con incidencias",error:"Error",cancelada:"Cancelada",interrumpida:"Interrumpida",pendiente:"Pendiente",capturada:"Capturada",sin_captura:"Sin captura",completo:"Completada",alta:"Alta",media:"Media",baja:"Baja",sin_analisis:"Sin análisis",entrada:"Entró",fallo:"No entró"};
 const activeStates = new Set(["en_cola","en_curso","deteniendo"]);
 let token = "", currentId = "", current = null, activeTab = "gallery", files = [], shown = 60, engine = {};
@@ -165,7 +174,7 @@ function updateFilters() {
 function rows() {
   if (!current) return [];
   const query = $("search").value.toLowerCase().trim(), range = $("range-filter").value, subnet = $("subnet-filter").value, status = $("status-filter").value;
-  return current.grupos.flatMap((group, gi) => group.objetivos.map((target, ti) => ({...target,range:group.rango,subnet:group.subred,key:gi+"-"+ti})))
+  return current.grupos.flatMap((group, gi) => group.objetivos.map((target, ti) => ({...target,range:group.rango,subnet:group.subred,subnetCuts:group.bloqueos_sin_pagina || [],key:gi+"-"+ti})))
     .filter(row => (!range || row.range === range) && (!subnet || row.subnet === subnet) && (!status || (status === "pendiente" ? ["pendiente","en_curso"].includes(row.estado) : row.estado === status)) && (!query || [row.ip,row.url,row.titulo,row.subnet].join(" ").toLowerCase().includes(query)));
 }
 function render() {
@@ -530,10 +539,10 @@ function renderResults() {
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key).push(row);
   }
-  $("results").innerHTML = [...grouped.values()].map(items => `<section class="network-section"><header class="network-heading"><div><h3>Subred <span>${escapeHtml(items[0].subnet)}</span></h3><p>${items[0].range === "fuera_de_rango" ? "Sin rango asignado" : "Rango " + escapeHtml(items[0].range)}</p></div>${networkActions(items)}</header><div class="card-grid">${items.map(row => `<article class="capture-card">
+  $("results").innerHTML = [...grouped.values()].map(items => `<section class="network-section"><header class="network-heading"><div><h3>Subred <span>${escapeHtml(items[0].subnet)}</span></h3><p>${items[0].range === "fuera_de_rango" ? "Sin rango asignado" : "Rango " + escapeHtml(items[0].range)}</p>${subnetCutsLine(items[0].subnetCuts)}</div>${networkActions(items)}</header><div class="card-grid">${items.map(row => `<article class="capture-card">
     <div class="card-top"><strong>${escapeHtml(row.ip)}</strong><span class="protocol">${row.url.startsWith("https:") ? "HTTPS" : "HTTP"} :${row.puerto}</span></div>
     ${row.imagen ? `<button class="shot-button" data-image="${row.key}" aria-label="Ampliar captura de ${escapeHtml(row.ip)} puerto ${row.puerto}"><img src="${row.imagen}" alt="Captura de ${escapeHtml(row.url)}" loading="lazy"><span class="shot-hint">Ampliar captura</span></button>` : `<div class="shot-placeholder"><span>${labels[row.estado] || row.estado}</span>${row.error ? `<p class="capture-error">${escapeHtml(row.error)}</p>` : ""}</div>`}
-    <div class="card-info"><p class="card-title" title="${escapeHtml(row.titulo)}">${escapeHtml(row.titulo || (row.imagen ? "Página sin título" : row.estado === "sin_captura" ? "No se pudo obtener la imagen" : "Pendiente de captura"))}</p><div class="card-bottom"><p class="card-url">${escapeHtml(row.url)}</p>${row.codigo ? `<span class="response-code">HTTP ${row.codigo}</span>` : ""}</div>${versionTags(row.ip, row.puerto)}</div>
+    <div class="card-info"><p class="card-title" title="${escapeHtml(row.titulo)}">${escapeHtml(row.titulo || (row.imagen ? "Página sin título" : row.estado === "sin_captura" ? "No se pudo obtener la imagen" : "Pendiente de captura"))}</p><div class="card-bottom"><p class="card-url">${escapeHtml(row.url)}</p>${row.codigo ? `<span class="response-code">HTTP ${row.codigo}</span>` : ""}</div>${cutNotes(row.bloqueos)}${versionTags(row.ip, row.puerto)}</div>
     </article>`).join("")}</div></section>`).join("");
 }
 function renderInventory() {

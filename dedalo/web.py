@@ -802,10 +802,12 @@ class PortalStore:
                     "estado": "capturada" if captured else row.get("estado", group["estado"] if group["estado"] == "en_curso" else "pendiente"),
                     "error": "" if captured else gowitness.find_error(errors, target["url"]) or row.get("error", ""),
                     "imagen": f"/api/jobs/{job_id}/image/{index}/{number}" if captured else "",
+                    "bloqueos": row.get("bloqueos") or [],
                 })
             response["grupos"].append({
                 "rango": group["rango"], "subred": group["subred"], "estado": group["estado"],
                 "capturas": sum(bool(t["imagen"]) for t in targets), "objetivos": targets, "error": group.get("error", ""),
+                "bloqueos_sin_pagina": group.get("bloqueos_sin_pagina") or [],
             })
         response["capturas"] = sum(g["capturas"] for g in response["grupos"])
         with closing(self.database()) as con:

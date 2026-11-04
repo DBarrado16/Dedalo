@@ -175,6 +175,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--action); }
 .card-bottom { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; }
 .card-url { font-family: var(--font-data); font-size: 13px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; margin: 0; }
 .response-code { flex-shrink: 0; }
+.cuts { margin-top: 8px; }
+.cuts .badge { padding: 0 0 2px; }
+.cut-line { color: var(--warning); font-size: 12px; line-height: 1.5; margin: 0; overflow-wrap: anywhere; }
+.network-heading .cut-line { color: var(--warning); font-size: 12px; margin: 6px 0 0; }
 .table-wrap { overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; }
 .inventory-tools { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
 .inventory-tools p { font-size: 12px; color: var(--muted); margin: 0; flex: 1 1 260px; }
