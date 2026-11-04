@@ -351,7 +351,7 @@ def _leer_feed(ruta: Path) -> list[dict]:
     with (gzip.open(ruta, "rb") if gz else ruta.open("rb")) as crudo:
         lector = _LectorFeed(crudo)
         lector.consumir("{")
-        separador = "}" if lector.siguiente() == "}" else ","
+        separador = lector.consumir("}") if lector.siguiente() == "}" else ","
         while separador == ",":
             clave = lector.valor()
             lector.consumir(":")
