@@ -173,11 +173,14 @@ def remembered_block(path: str | None, binary: str) -> str | None:
 
 def remember_block(path: str, binary: str, reason: str) -> None:
     # Ligado a la huella de gowitness: con otro binario se vuelve a probar gorod.
+    target = Path(path)
+    temporary = target.with_name(target.name + ".tmp")
     try:
-        Path(path).write_text(json.dumps({
+        temporary.write_text(json.dumps({
             "gowitness": gowitness.sha256_of(Path(binary)),
             "fecha": datetime.now(timezone.utc).isoformat(), "motivo": reason,
         }, ensure_ascii=False, indent=2), encoding="utf-8")
+        report.replace(temporary, target)
     except OSError as exc:
         print(f"  No se pudo guardar que gorod está bloqueado en {path}: {exc}", file=sys.stderr)
 
@@ -254,8 +257,10 @@ def capture(args) -> int:
             try:
                 gowitness.scan_subnet(binary, directory, urls, engine)
             except gowitness.GorodBlocked as blocked:
-                # gorod no llegó a conectar con nadie: se repite la subred.
+                # gorod no llegó a conectar con nadie: se repite la subred, salvo que se haya pedido parar.
                 gorod_blocked(blocked)
+                if getattr(args, "stop_file", None) and Path(args.stop_file).exists():
+                    raise KeyboardInterrupt from None
                 gowitness.scan_subnet(binary, directory, urls, engine)
             stopping = getattr(args, "stop_file", None) and Path(args.stop_file).exists()
             # Error típico de esquema equivocado: se prueba una vez el otro esquema en el mismo
@@ -268,6 +273,8 @@ def capture(args) -> int:
                 try:
                     gowitness.scan_subnet(binary, directory, alternatives, engine,
                                           gowitness.SCHEME_URLS, gowitness.SCHEME_LOG)
+                except gowitness.GorodBlocked as blocked:
+                    gorod_blocked(blocked)
                 except (OSError, subprocess.CalledProcessError) as exc:
                     print(f"  La prueba del otro esquema no pudo completarse: {exc}. Consulta {gowitness.SCHEME_LOG}", file=sys.stderr)
                 stopping = getattr(args, "stop_file", None) and Path(args.stop_file).exists()

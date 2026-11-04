@@ -492,6 +492,16 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual([c for c in calls if c[1] == gowitness.SCHEME_LOG],
                              [("chromedp", gowitness.SCHEME_LOG, ["https://10.10.6.20:8443/"])])
 
+    def test_blocked_gorod_is_not_repeated_after_a_stop(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            calls, stop = [], Path(temporary) / "parar"
+            blocked = blocked_gorod(calls, self.fake_engine(calls))
+            def scan(*args, **kwargs):
+                stop.touch()  # el operador pide parar mientras gorod intenta arrancar
+                return blocked(*args, **kwargs)
+            self.run_with(Path(temporary) / "salida", scan, ["--stop-file", str(stop)])
+            self.assertEqual([c[0] for c in calls], ["gorod"])  # sin repetir con chromedp
+
     def test_blocked_gorod_retry_is_tried_only_once(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination, calls = Path(temporary) / "salida", []
