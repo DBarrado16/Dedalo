@@ -281,8 +281,13 @@ class PortalStore:
             # capturas se siguen viendo desde su carpeta.
             print(f"Aviso: la captura de {job_id} se registra sin sus resultados: {type(exc).__name__}: {exc}",
                   file=sys.stderr)
-            auditoria.import_capture_history(con, job_id, meta["opciones"], [], state, error,
-                                             meta["fecha"], meta.get("fin"), None, result, self.root)
+            capture_id, _ = auditoria.import_capture_history(con, job_id, meta["opciones"], [], state, error,
+                                                             meta["fecha"], meta.get("fin"), None, result, self.root)
+            # Su plan sale del manifiesto al abrirla (_load_plan); el arranque no reintenta registrarlo
+            # hasta que cambie, porque volvería a fallar igual.
+            mark = self._manifest_mark(job_id)
+            if mark is not None:
+                auditoria.set_manifest_mark(con, capture_id, mark)
         else:
             self._report_missing_images(job_id, missing)
 
@@ -382,8 +387,17 @@ class PortalStore:
             self._plan_unlaunched(con, meta)
             return
         # Lo lanzado no cambia: las URL quedaron en la base y la agrupación en su rangos.txt.
-        hosts = auditoria.observed_hosts(con, meta["id"])
         planned = auditoria.planned_urls(con, capture_id)
+        manifest = None if planned else self._manifest(meta)
+        if manifest:
+            # Captura antigua migrada solo con su estado (sus objetivos no casaban con el inventario):
+            # su plan es el que siguió el motor. Solo se muestra; no se vuelve a conectar con nada.
+            groups = [{"rango": g["rango"], "subred": g["subred"], "carpeta": g["carpeta"], "estado": "pendiente",
+                       "objetivos": g["objetivos"]} for g in manifest["grupos"] if g["objetivos"]]
+            meta.update(grupos=groups, total=sum(len(g["objetivos"]) for g in groups), subredes=len(groups),
+                        fuera_alcance=None)
+            return
+        hosts = auditoria.observed_hosts(con, meta["id"])
         ranges_file = self.directory(meta["id"]) / "rangos.txt"
         ranges = targets.read_networks_file(ranges_file) if ranges_file.is_file() else []
         options = meta["opciones"]

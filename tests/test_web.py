@@ -1206,6 +1206,39 @@ class PortalTests(unittest.TestCase):
         with patch("dedalo.web.auditoria.record_captures", side_effect=AssertionError("ya estaba registrado")):
             self.reopen()
 
+    def make_legacy(self, job_id):
+        """Deja una ejecución como la guardaban las versiones anteriores: trabajo.json y nada en la base."""
+        path = self.store.directory(job_id) / "trabajo.json"
+        path.write_text(json.dumps(self.store.jobs[job_id], ensure_ascii=False), encoding="utf-8")
+        with closing(self.store.database()) as con:
+            auditoria.delete_execution(con, job_id)
+
+    def test_an_old_capture_migrated_without_its_results_still_shows_its_captures(self):
+        job = self.create()
+        self.run_engine(job["id"])
+        before = self.store.detail(job["id"])
+        self.make_legacy(job["id"])
+        # Su Nmap ya no trae 10.10.6.20:80, que el motor capturó: sus objetivos no casan con el inventario.
+        entrada = self.store.directory(job["id"]) / "entradas" / "nmap-00.txt"
+        texto = entrada.read_text(encoding="utf-8")
+        quitado = '<port protocol="tcp" portid="80"><state state="open"/><service name="http"/></port>'
+        self.assertEqual(texto.count(quitado), 1)
+        entrada.write_text(texto.replace(quitado, ""), encoding="utf-8")
+        with redirect_stderr(io.StringIO()) as errors:
+            self.reopen()
+        self.assertIn("se registra sin sus resultados", errors.getvalue())
+        self.assertEqual(errors.getvalue().count(job["id"]), 1)  # un solo aviso: el arranque no lo reintenta
+        detail = self.store.detail(job["id"])
+        self.assertEqual({k: detail[k] for k in ("estado", "total", "subredes", "capturas")},
+                         {k: before[k] for k in ("estado", "total", "subredes", "capturas")})
+        self.assertEqual(detail["grupos"], before["grupos"])
+        image = detail["grupos"][0]["objetivos"][0]["imagen"]
+        self.assertEqual(self.request(image)[0], 200)
+        # Al reabrir no se avisa otra vez: nada ha cambiado.
+        with redirect_stderr(io.StringIO()) as errors:
+            self.reopen()
+        self.assertNotIn(job["id"], errors.getvalue())
+
     def test_scope_hint_says_how_to_authorize_all_ranges(self):
         page = self.request("/")[1]
         self.assertIn(b"0.0.0.0/0", page)
