@@ -78,6 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--stop-file", help=argparse.SUPPRESS)
     # Alcance vigente que el portal reescribe si cambia la ficha: se relee antes de cada pasada.
     capture.add_argument("--alcance-vivo", help=argparse.SUPPRESS)
+    capture.add_argument("--memoria-motor", help=argparse.SUPPRESS)
 
     portal = subcommands.add_parser("web", help="Operar desde el portal web local")
     portal.add_argument("--puerto", type=port_number, default=8787)
@@ -176,6 +177,40 @@ def group_hosts(hosts, ranges, extra_ports="", by_service=False) -> list[dict]:
     return list(grouped.values())
 
 
+def gorod_notice(reason: str, since: str = "") -> str:
+    cause = f" («{reason}»)" if reason else ""
+    when = f" desde el {since[:10]}" if since else ""
+    return (f"El motor gorod no puede arrancar en este equipo{when}: el sistema no deja ejecutar su "
+            f"ayudante leakless{cause}. Se captura con chromedp, sin reintentos con gorod.")
+
+
+def remembered_block(path: str | None, binary: str) -> str | None:
+    """Aviso del bloqueo de leakless que guardó una captura anterior con este mismo gowitness."""
+    if not path:
+        return None
+    try:
+        saved = json.loads(Path(path).read_text(encoding="utf-8"))
+        if saved["gowitness"] == gowitness.sha256_of(Path(binary)):
+            return gorod_notice(str(saved.get("motivo") or ""), str(saved.get("fecha") or ""))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass
+    return None
+
+
+def remember_block(path: str, binary: str, reason: str) -> None:
+    # Ligado a la huella de gowitness: con otro binario se vuelve a probar gorod.
+    target = Path(path)
+    temporary = target.with_name(target.name + ".tmp")
+    try:
+        temporary.write_text(json.dumps({
+            "gowitness": gowitness.sha256_of(Path(binary)),
+            "fecha": datetime.now(timezone.utc).isoformat(), "motivo": reason,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        report.replace(temporary, target)
+    except OSError as exc:
+        print(f"  No se pudo guardar que gorod está bloqueado en {path}: {exc}", file=sys.stderr)
+
+
 def capture(args) -> int:
     groups = plan(args)
     count = sum(len(g["objetivos"]) for g in groups)
@@ -211,6 +246,24 @@ def capture(args) -> int:
                 "inicio": datetime.now(timezone.utc).isoformat(), "estado": "en_curso",
                 "entradas": [str(Path(p).resolve()) for p in args.ficheros],
                 "rangos": args.rangos, "opciones": opts, "grupos": groups}
+    # Motor efectivo; el manifiesto guarda el pedido. Hay equipos cuyo antivirus no deja
+    # ejecutar leakless, el ayudante de gorod: desde que se sabe, todo va con chromedp.
+    engine = dict(opts)
+
+    def use_chromedp(notice):
+        engine.update(driver="chromedp", retry=False)
+        manifest["aviso"] = notice
+        print(notice, flush=True)
+
+    def gorod_blocked(blocked):
+        use_chromedp(gorod_notice(blocked.reason))
+        report.save_manifest(root, manifest)  # el portal lo enseña sin esperar a que acabe la subred
+        if args.memoria_motor:
+            remember_block(args.memoria_motor, binary, blocked.reason)
+
+    if engine["driver"] == "gorod" or engine["retry"]:
+        if notice := remembered_block(args.memoria_motor, binary):
+            use_chromedp(notice)
     report.write_index(root, manifest)
     print(f"Salida: {root}", flush=True)
     print(f"Navegador: {chrome or 'descarga automática de gowitness'}", flush=True)
@@ -230,29 +283,44 @@ def capture(args) -> int:
         error = ""
         try:
             if urls:
-                gowitness.scan_subnet(binary, directory, urls, opts)
+                try:
+                    gowitness.scan_subnet(binary, directory, urls, engine)
+                except gowitness.GorodBlocked as blocked:
+                    # gorod no llegó a conectar con nadie: se repite la subred, salvo que se haya pedido parar.
+                    gorod_blocked(blocked)
+                    if getattr(args, "stop_file", None) and Path(args.stop_file).exists():
+                        raise KeyboardInterrupt from None
+                    urls = in_live_scope(args.alcance_vivo, urls)  # el alcance pudo cambiar entretanto
+                    if urls:
+                        gowitness.scan_subnet(binary, directory, urls, engine)
             stopping = getattr(args, "stop_file", None) and Path(args.stop_file).exists()
             # Error típico de esquema equivocado: se prueba una vez el otro esquema en el mismo
             # IP:puerto. Las candidatas salen de los objetivos (ya en alcance), no del log.
+            # Va con el interruptor pedido (opts) pero con el motor efectivo (engine): no es
+            # un reintento de gorod, y sigue haciendo falta aunque gorod esté bloqueado.
             alternatives = gowitness.scheme_candidates(directory, urls) if opts["retry"] and not stopping and urls else []
             alternatives = in_live_scope(args.alcance_vivo, alternatives) if alternatives else []
             if alternatives:
                 print(f"  {len(alternatives)} sin respuesta; se prueban con el otro esquema (http/https)...", flush=True)
                 try:
-                    gowitness.scan_subnet(binary, directory, alternatives, opts,
+                    gowitness.scan_subnet(binary, directory, alternatives, engine,
                                           gowitness.SCHEME_URLS, gowitness.SCHEME_LOG)
+                except gowitness.GorodBlocked as blocked:
+                    gorod_blocked(blocked)
                 except (OSError, subprocess.CalledProcessError) as exc:
                     print(f"  La prueba del otro esquema no pudo completarse: {exc}. Consulta {gowitness.SCHEME_LOG}", file=sys.stderr)
                 stopping = getattr(args, "stop_file", None) and Path(args.stop_file).exists()
-            retry = gowitness.retry_candidates(directory, urls + alternatives) if opts["retry"] and not stopping else []
+            retry = gowitness.retry_candidates(directory, urls + alternatives) if engine["retry"] and not stopping else []
             retry = in_live_scope(args.alcance_vivo, retry) if retry else []
             if retry:
                 # La página respondió pero no hubo imagen: el otro motor a veces sí la obtiene.
-                other = gowitness.other_driver(opts["driver"])
+                other = gowitness.other_driver(engine["driver"])
                 print(f"  {len(retry)} sin imagen; se reintentan con el motor {other}...", flush=True)
                 try:
-                    gowitness.scan_subnet(binary, directory, retry, {**opts, "driver": other},
+                    gowitness.scan_subnet(binary, directory, retry, {**engine, "driver": other},
                                           gowitness.RETRY_URLS, gowitness.RETRY_LOG)
+                except gowitness.GorodBlocked as blocked:
+                    gorod_blocked(blocked)
                 except (OSError, subprocess.CalledProcessError) as exc:
                     # Lo capturado en la primera pasada sigue siendo válido.
                     print(f"  El reintento no pudo completarse: {exc}. Consulta {gowitness.RETRY_LOG}", file=sys.stderr)

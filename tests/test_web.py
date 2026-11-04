@@ -20,7 +20,7 @@ import zipfile
 
 from dedalo import auditoria, cli, cve, favicones, gowitness, report, web
 from dedalo.web import PortalStore, PortalServer
-from tests.test_dedalo import ROOT, fake_database
+from tests.test_dedalo import LEAKLESS_REASON, ROOT, blocked_gorod, fake_database
 from tests.test_gowitness_fingerprint import build_gowitness_db
 
 
@@ -921,22 +921,23 @@ class PortalTests(unittest.TestCase):
         finally:
             release.set()
 
-    def run_engine(self, job_id, stop_after_first=False):
+    def run_engine(self, job_id, stop_after_first=False, engine=None, binary="fake"):
         """Arranca la captura con el motor real de la consola y un gowitness simulado.
 
-        Con stop_after_first se pulsa «Detener» durante la primera subred."""
+        Con stop_after_first se pulsa «Detener» durante la primera subred. engine sustituye
+        al gowitness simulado y binary, a la ruta de gowitness."""
         def run(command, **kwargs):
             from contextlib import redirect_stdout
             def scan(binary, directory, urls, opts):
                 fake_database(directory, urls)
                 if stop_after_first:
                     Path(command[command.index("--stop-file") + 1]).touch()
-            with patch("dedalo.cli.gowitness.scan_subnet", side_effect=scan), redirect_stdout(io.StringIO()):
+            with patch("dedalo.cli.gowitness.scan_subnet", side_effect=engine or scan), redirect_stdout(io.StringIO()):
                 code = cli.main(command[4:])  # sin «python -u -m dedalo»
             class Result:
                 returncode = code
             return Result()
-        with patch("dedalo.web.gowitness.find_gowitness", return_value="fake"), \
+        with patch("dedalo.web.gowitness.find_gowitness", return_value=binary), \
                 patch("dedalo.web.gowitness.find_chrome", return_value="fake"), \
                 patch("dedalo.web.subprocess.run", side_effect=run):
             self.assertEqual(self.request("/api/jobs/" + job_id + "/start", {})[0], 202)
@@ -977,6 +978,30 @@ class PortalTests(unittest.TestCase):
         with closing(self.store.database()) as con:
             for table in ("ejecucion", "captura", "evidencia", "activo"):
                 self.assertEqual(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0, table)
+
+    def test_blocked_gorod_is_explained_and_remembered(self):
+        calls = []
+        def captured(binary, directory, urls, opts, urls_file=gowitness.URLS_FILE, log_name=gowitness.LOG_NAME):
+            calls.append((opts["driver"], log_name, list(urls)))
+            fake_database(directory, urls)
+        engine = blocked_gorod(calls, captured)
+        with tempfile.TemporaryDirectory() as other:
+            binary = Path(other) / "gowitness.exe"
+            binary.write_bytes(b"gowitness 3.2.0")
+            first = self.create()
+            self.run_engine(first["id"], engine=engine, binary=str(binary))
+            self.assertEqual(calls[0][0], "gorod")
+            job = self.store.detail(first["id"])
+            self.assertEqual(job["estado"], "completa")
+            self.assertIn(LEAKLESS_REASON, job["aviso"])
+            # La siguiente captura ya no intenta gorod y explica por qué.
+            tried = len(calls)
+            second = self.create()
+            self.run_engine(second["id"], engine=engine, binary=str(binary))
+            self.assertEqual({c[0] for c in calls[tried:]}, {"chromedp"})
+            self.assertIn(LEAKLESS_REASON, self.store.detail(second["id"])["aviso"])
+        # Repetir con chromedp no amplía el alcance: 192.168.1.8 queda fuera de la ficha.
+        self.assertEqual({url for c in calls for url in c[2]}, {"http://10.10.5.10/", "https://10.10.5.10/", "http://10.10.6.20/"})
 
     def test_interrupted_capture_keeps_unreached_targets_pending(self):
         job = self.create()

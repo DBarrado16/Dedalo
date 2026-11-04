@@ -690,7 +690,7 @@ class PortalStore:
         }
         response.update(archivos=meta["archivos"], opciones=meta["opciones"], grupos=[],
                         csv=(root / "indice.csv").is_file(), auditoria=self._owners([job_id])[job_id],
-                        fuera_alcance=meta.get("fuera_alcance"))
+                        fuera_alcance=meta.get("fuera_alcance"), aviso=(manifest or {}).get("aviso", ""))
         for index, group in enumerate(groups):
             rows = {r["url"]: r for r in group.get("resultados", [])}
             errors = gowitness.read_errors(report.inside(root, group["carpeta"]))
@@ -1382,6 +1382,8 @@ class PortalStore:
                         "-o", str(directory / "resultado"),
                         "--gowitness", binary, "--stop-file", str(directory / "parar"),
                         "--alcance-vivo", str(directory / LIVE_SCOPE),
+                        # Si gorod no puede arrancar en este equipo, las siguientes capturas lo saben.
+                        "--memoria-motor", str(self.root / "gorod-bloqueado.json"),
                         "--puertos", options["puertos"], "--formato", options["formato"],
                         "--hilos", str(options["hilos"]), "--timeout", str(options["timeout"]),
                         "--delay", str(options["delay"]),

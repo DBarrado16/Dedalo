@@ -39,7 +39,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 VERSION = "3.2.0"
 RELEASE_URL = "https://github.com/sensepost/gowitness/releases/download/{version}/{name}"
 # Huellas SHA-256 que publica GitHub para cada binario oficial de la versión
-# fijada. Al cambiar de versión hay que actualizarlas y repetir la integración.
+# fijada. Al cambiar de versión hay que actualizarlas y repetir la integración, y
+# comprobar que leakless_blocked sigue reconociendo el error de arranque de gorod.
 RELEASES = {
     ("windows", "amd64"): ("gowitness-3.2.0-windows-amd64.exe", "6aaa0cfedd255685824402bad07a295013919d4417af06431978214cd4402f4c"),
     ("windows", "arm64"): ("gowitness-3.2.0-windows-arm64.exe", "c0cc196fa7650c06250009160586b407e70ce3ff00d37edbba71cfa26758630a"),
@@ -172,10 +173,22 @@ def find_chrome(explicit: str | None) -> str | None:
     return None
 
 
+class GorodBlocked(subprocess.CalledProcessError):
+    """gorod no llegó a arrancar porque el sistema no dejó ejecutar leakless; no conectó con nadie."""
+
+    def __init__(self, returncode, cmd, reason: str):
+        super().__init__(returncode, cmd)
+        self.reason = reason
+
+
 def scan_subnet(binary: str, workdir: str | Path, urls: list[str], opts: dict,
                 urls_file: str = URLS_FILE, log_name: str = LOG_NAME) -> None:
-    """Captura las URL en la base de la subred; una segunda pasada añade filas a la misma base."""
+    """Captura las URL en la base de la subred; una segunda pasada añade filas a la misma base.
+
+    Lanza GorodBlocked si gorod no pudo arrancar por leakless.
+    """
     directory = Path(workdir)
+    driver = opts.get("driver") or DRIVERS[0]
     (directory / SHOTS_DIR).mkdir(parents=True, exist_ok=True)
     # gowitness expande a 80 Y 443 las URLs sin puerto explícito. Escribirlo
     # siempre, incluso para los puertos estándar, limita la captura a nmap.
@@ -186,7 +199,7 @@ def scan_subnet(binary: str, workdir: str | Path, urls: list[str], opts: dict,
         "--write-db", "--write-db-uri", f"sqlite://{DB_NAME}",
         "-s", SHOTS_DIR, "-t", str(opts["threads"]), "-T", str(opts["timeout"]),
         "--delay", str(opts["delay"]), "--screenshot-format", opts["format"],
-        "--driver", opts.get("driver") or DRIVERS[0],
+        "--driver", driver,
         "--log-scan-errors", "--no-log-color",
     ]
     if opts.get("chrome"):
@@ -198,8 +211,14 @@ def scan_subnet(binary: str, workdir: str | Path, urls: list[str], opts: dict,
         # Edge se relanza al heredar capas de compatibilidad y pierde el canal
         # DevTools que espera gowitness. El ajuste solo afecta a este proceso.
         environment.pop("__COMPAT_LAYER", None)
-    with (directory / log_name).open("w", encoding="utf-8") as log:
-        subprocess.run(cmd, cwd=directory, check=True, stdout=log, stderr=subprocess.STDOUT, env=environment)
+    try:
+        with (directory / log_name).open("w", encoding="utf-8") as log:
+            subprocess.run(cmd, cwd=directory, check=True, stdout=log, stderr=subprocess.STDOUT, env=environment)
+    except subprocess.CalledProcessError as exc:
+        reason = leakless_blocked(directory / log_name) if driver == "gorod" else None
+        if reason is None:
+            raise
+        raise GorodBlocked(exc.returncode, exc.cmd, reason) from exc
 
 
 def other_driver(driver: str) -> str:
@@ -251,6 +270,24 @@ def scheme_candidates(directory: Path, urls: list[str]) -> list[str]:
         return []
     captured = read_results(Path(directory) / DB_NAME)
     return [other_scheme(url) for url in urls if normalize_url(url) in wrong and normalize_url(url) not in captured]
+
+
+def leakless_blocked(log_path: Path) -> str | None:
+    """Motivo por el que el sistema no dejó ejecutar leakless; None si gowitness falló por otra cosa.
+
+    gorod lanza el navegador a través de leakless, un ayudante que extrae en la carpeta
+    temporal, y hay antivirus que lo bloquean: gowitness no llega a arrancar. El error sale
+    en una caja partida en líneas y en el idioma del sistema, así que se busca en el texto
+    sin cortes. Devuelve "" si un corte dentro del nombre impide leer el motivo.
+    """
+    try:
+        words = log_path.read_text(encoding="utf-8", errors="replace").split()
+    except OSError:
+        return None
+    if not re.search(r"fork/exec.{0,300}?leakless(?:\.exe)?:", "".join(words)):
+        return None
+    reason = re.search(r"leakless(?:\.exe)?: (.{1,300})", " ".join(words))
+    return reason[1] if reason else ""
 
 
 def explicit_port(url: str) -> str:

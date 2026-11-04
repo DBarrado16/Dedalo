@@ -238,6 +238,7 @@ function render() {
     title = "La ejecución necesita revisión";
     description = current.error;
   }
+  if (current.aviso) description += " " + current.aviso;
   $("run-title").textContent = title;
   $("run-description").textContent = description;
   updateFilters();
