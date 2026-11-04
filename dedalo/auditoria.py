@@ -766,12 +766,31 @@ def record_captures(con: sqlite3.Connection, execution_id: str, manifest: dict, 
                      "capturada" if shot else "sin_captura", row.get("url_final") or "",
                      int(code) if str(code or "").isdigit() else None, row.get("titulo") or "",
                      error, shot, stamp))
+                # Los cortes del proxy se sustituyen por los del manifiesto: repetir el volcado no los duplica.
+                capture_id = con.execute("SELECT id FROM captura WHERE ejecucion_id = ? AND url = ?",
+                                         (execution_id, row["url"])).fetchone()[0]
+                con.execute("DELETE FROM captura_bloqueo WHERE captura_id = ?", (capture_id,))
+                con.executemany(
+                    "INSERT INTO captura_bloqueo (captura_id, destino, ip, puerto, motivo) VALUES (?, ?, ?, ?, ?)",
+                    [(capture_id, cut["destino"], cut.get("ip"), cut.get("puerto"), cut["motivo"])
+                     for cut in row.get("bloqueos") or []])
         for path in logs:
             if Path(path).is_file():
                 _evidence(con, execution_id, "registro", Path(path), root, stamp)
         if mark is not None:
             _set_manifest_mark(con, execution_id, mark)
     return missing
+
+
+def capture_blocks(con: sqlite3.Connection, execution_id: str) -> dict[str, list[dict]]:
+    """Lo que el proxy cortó en cada web de una captura: URL -> cortes (solo las webs que tuvieron alguno)."""
+    blocks: dict[str, list[dict]] = {}
+    for row in con.execute("SELECT c.url, b.destino, b.ip, b.puerto, b.motivo FROM captura_bloqueo b "
+                           "JOIN captura c ON c.id = b.captura_id WHERE c.ejecucion_id = ? ORDER BY b.id",
+                           (execution_id,)):
+        blocks.setdefault(row["url"], []).append(
+            {"destino": row["destino"], "ip": row["ip"], "puerto": row["puerto"], "motivo": row["motivo"]})
+    return blocks
 
 
 def _set_manifest_mark(con: sqlite3.Connection, execution_id: str, mark: int) -> None:

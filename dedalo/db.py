@@ -328,6 +328,18 @@ CREATE INDEX vulnerabilidad_ejecucion ON vulnerabilidad (ejecucion_id);
     7: """
 ALTER TABLE ejecucion ADD COLUMN manifiesto_registrado INTEGER;
 """,
+    # Lo que el proxy de alcance cortó en cada web capturada (destino, IP y puerto si se conocen, y motivo).
+    8: """
+CREATE TABLE captura_bloqueo (
+  id         INTEGER PRIMARY KEY,
+  captura_id INTEGER NOT NULL REFERENCES captura(id) ON DELETE CASCADE,
+  destino    TEXT NOT NULL,
+  ip         TEXT,
+  puerto     INTEGER,
+  motivo     TEXT NOT NULL CHECK (motivo IN ('excluida', 'fuera_de_alcance', 'alcance_ilegible'))
+);
+CREATE INDEX captura_bloqueo_captura ON captura_bloqueo (captura_id);
+""",
 }
 
 
