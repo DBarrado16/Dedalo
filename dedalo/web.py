@@ -1516,8 +1516,12 @@ class PortalStore:
         try:
             shutil.rmtree(trash)
         except OSError as exc:
+            # El arranque siguiente termina de borrarla (_finish_deletes); el navegador también lo dice.
             print(f"Aviso: la ejecución {job_id} se borró del historial, pero no su carpeta {trash}: {exc}. "
-                  "Bórrala a mano.", file=sys.stderr)
+                  "Se borrará al volver a abrir el portal.", file=sys.stderr)
+            return {"eliminada": job_id,
+                    "aviso": "Su carpeta no se pudo borrar ahora (quizá algún archivo está abierto); "
+                             "se borrará al volver a abrir el portal."}
         return {"eliminada": job_id}
 
     def _group(self, job_id, group_index):

@@ -197,6 +197,22 @@ class PortalTests(unittest.TestCase):
         self.assertFalse(directory.exists())
         self.assertFalse(self.stored(job["id"]))
 
+    def test_a_delete_that_cannot_remove_the_folder_tells_the_browser(self):
+        job = self.create()
+        with patch("dedalo.web.shutil.rmtree", side_effect=PermissionError("Archivo ocupado")), \
+                redirect_stderr(io.StringIO()):
+            status, content = self.request("/api/jobs/" + job["id"] + "/delete", {})
+        self.assertEqual(status, 200, content)
+        answer = json.loads(content)
+        self.assertEqual(answer["eliminada"], job["id"])
+        self.assertIn("carpeta", answer["aviso"])
+        self.assertIn("se borrará al volver a abrir el portal", answer["aviso"])
+        self.assertNotIn("aviso", json.loads(self.request("/api/jobs/" + self.create()["id"] + "/delete", {})[1]))
+        # La página lo enseña como texto, nunca como HTML.
+        self.assertIn(b"answer.aviso", self.request("/app.js")[1])
+        self.reopen()  # el arranque termina el borrado
+        self.assertEqual([p.name for p in Path(self.temp.name).iterdir() if p.is_dir()], [])
+
     def test_reopening_restores_a_run_whose_folder_could_not_go_back(self):
         job = self.create()
         rename, calls = Path.rename, []

@@ -838,7 +838,7 @@ $("confirm-delete").addEventListener("click", async () => {
   $("confirm-delete").textContent = "Borrando…";
   let deleted = false;
   try {
-    await request("/api/jobs/" + target.id + "/delete", {});
+    const answer = await request("/api/jobs/" + target.id + "/delete", {});
     deleted = true;
     if (currentId === target.id) {
       currentId = ""; current = null;
@@ -846,7 +846,8 @@ $("confirm-delete").addEventListener("click", async () => {
     }
     $("delete-dialog").close();
     deletionTarget = null;
-    notice("Ejecución borrada: " + target.nombre);
+    // notice() escribe con textContent: el aviso del portal nunca entra como HTML.
+    notice("Ejecución borrada: " + target.nombre + (answer.aviso ? ". " + answer.aviso : ""));
   } catch (error) {
     $("delete-error").textContent = error.message;
     $("delete-error").hidden = false;
