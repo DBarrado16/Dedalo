@@ -63,7 +63,7 @@ Para cada conexión que pida el navegador, justo antes de conectar y con el alca
 - **Base.** Migración nueva (la 8, tras la 7 de la PR #15) con una tabla `captura_bloqueo` (`captura_id` con borrado en cascada, `destino`, `ip`, `puerto`, `motivo`), que `record_captures` rellena de forma repetible (la reconciliación al arrancar vuelve a volcar). Los cortes sin página de cada subred se leen del manifiesto y no van a la base (decisión del agente). Se documenta en `docs/MODELO_DATOS.md`.
 - **Portal.** En el detalle de cada captura, junto a la web, un aviso: «Esta web intentó contactar con 10.20.0.5:443 (excluida) y se cortó», uno por destino. En la lista de capturas, una marca visible en las que tengan alguno. Diseño según `DESIGN.md` y las skills de interfaz del proyecto.
 - **Exportar.** Una columna nueva en `indice.csv` con los destinos cortados de cada web, en todos los sitios donde se escribe (`report._write_rows`, que usan el portal y el ZIP por subred).
-- **Errores de los objetivos.** Los mensajes de error de las URL objetivo no cambian respecto a hoy (anti-objetivo); el proxy no los reescribe (decisión del agente).
+- **Errores de los objetivos.** Los mensajes de error de las URL objetivo no cambian respecto a hoy (anti-objetivo). Tras el proxy, un puerto cerrado o caído llega a Chrome como fallo del túnel; el proxy anota sus fallos de conexión (`rechazada`, `sin_respuesta`) y, al leer los errores, el código de esa URL se vuelve a escribir como el que daría Chrome sin proxy (decisión del agente, al planificar).
 
 ## Límites que quedan (se escriben en CONTRATOS §0.3)
 
