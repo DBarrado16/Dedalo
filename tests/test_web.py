@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import sqlite3
 import threading
@@ -212,6 +213,26 @@ class PortalTests(unittest.TestCase):
         self.assertFalse(self.store.directory(job["id"]).exists())
         self.reopen()
         self.assert_whole(job["id"])
+
+    def test_a_run_whose_folder_is_gone_says_so_and_can_be_deleted(self):
+        gone, healthy = self.create(), self.create()
+        shutil.rmtree(self.store.directory(gone["id"]))
+        with redirect_stderr(io.StringIO()):
+            self.reopen()
+        self.assertEqual({item["id"] for item in self.store.list()}, {gone["id"], healthy["id"]})
+        detail = self.store.detail(gone["id"])
+        self.assertEqual((detail["estado"], detail["total"]), ("error", 0))
+        self.assertIn("su carpeta ya no está", detail["error"])
+        # Borrarla quita de la base la ejecución y el Nmap que solo ella aportaba.
+        self.assertEqual(self.request("/api/jobs/" + gone["id"] + "/delete", {})[0], 200)
+        self.assertFalse(self.stored(gone["id"]))
+        self.assert_whole(healthy["id"])
+        # También si la carpeta desaparece con el portal abierto.
+        shutil.rmtree(self.store.directory(healthy["id"]))
+        self.assertEqual(self.request("/api/jobs/" + healthy["id"] + "/delete", {})[0], 200)
+        self.assertFalse(self.stored(healthy["id"]))
+        with closing(self.store.database()) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM activo").fetchone()[0], 0)
 
     def test_reopening_never_follows_a_link_named_like_a_set_aside_run(self):
         outside = Path(self.temp.name) / "fuera"

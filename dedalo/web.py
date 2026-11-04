@@ -302,8 +302,6 @@ class PortalStore:
                 print(f"Aviso: no se pudo cargar el catálogo de credenciales: {exc}. El resto del portal "
                       "funciona; probar credenciales no estará disponible hasta arreglarlo.", file=sys.stderr)
             for row in auditoria.portal_jobs(con):
-                if not (self.root / row["id"]).is_dir():
-                    continue  # importación sin carpeta del portal
                 meta = self._load_run(con, row)
                 if meta is not None:
                     self.jobs[meta["id"]] = meta
@@ -321,6 +319,10 @@ class PortalStore:
                 "grupos": None, "total": 0, "subredes": 0, "fuera_alcance": None}
         failure = None
         try:
+            if not (self.root / row["id"]).is_dir():
+                # Sale en el historial para que se pueda borrar: su Nmap sigue en el inventario de la ficha.
+                raise ValueError("su carpeta ya no está en la carpeta de datos del portal. "
+                                 "Bórrala para quitar del inventario lo que solo aportaba ella.")
             options = json.loads(row["opciones"])
             if "captura" not in options:
                 return None  # importación que no se pudo migrar: se avisa en migration_failures
@@ -1484,6 +1486,12 @@ class PortalStore:
             source = self.root / job_id
             if source.is_symlink() or source.is_junction():
                 raise ValueError("No se puede borrar una ejecución enlazada a otra carpeta")
+            if not source.exists():
+                # Su carpeta ya no está: basta con quitarla de la base, o no se podría borrar nunca.
+                with closing(self.database()) as con:
+                    auditoria.delete_execution(con, job_id)
+                del self.jobs[job_id]
+                return {"eliminada": job_id}
             # La carpeta se aparta antes de tocar la base, con un nombre que ni se carga ni se
             # migra al arrancar. Si la base falla, vuelve a su sitio y la ejecución sigue entera;
             # si algo queda a medias, el próximo arranque lo termina (_finish_deletes).
