@@ -31,8 +31,9 @@ const cutReason = (cut) => cut.motivo === "excluida" ? "excluida" : "fuera de al
 const cutText = (cut) => cut.motivo === "alcance_ilegible"
   ? `No se pudo comprobar el alcance; se cortó ${cut.destino}.`
   : `Intentó contactar con ${cut.destino} (${cutReason(cut)}); se cortó.`;
+const cutBadge = (cuts, detail = true) => cuts?.length ? `<span class="badge error"${detail ? ` title="${escapeHtml(cuts.map(cutText).join(" "))}"` : ""}>Conexiones cortadas</span>` : "";
 const cutNotes = (cuts) => cuts?.length
-  ? `<div class="cuts"><span class="badge error">Conexiones cortadas</span>${cuts.map(cut => `<p class="cut-line">${escapeHtml(cutText(cut))}</p>`).join("")}</div>` : "";
+  ? `<div class="cuts">${cutBadge(cuts, false)}${cuts.map(cut => `<p class="cut-line">${escapeHtml(cutText(cut))}</p>`).join("")}</div>` : "";
 const subnetCutsLine = (cuts) => cuts?.length
   ? `<p class="cut-line">En esta subred se cortaron conexiones a: ${escapeHtml(cuts.map(cut => cut.destino + (cut.motivo === "alcance_ilegible" ? " (alcance ilegible)" : " (" + cutReason(cut) + ")")).join(", "))}</p>` : "";
 const labels = {preparada:"Preparada",en_cola:"En cola",en_curso:"Capturando",deteniendo:"Deteniendo",completa:"Completada",parcial:"Con incidencias",error:"Error",cancelada:"Cancelada",interrumpida:"Interrumpida",pendiente:"Pendiente",capturada:"Capturada",sin_captura:"Sin captura",completo:"Completada",alta:"Alta",media:"Media",baja:"Baja",sin_analisis:"Sin análisis",entrada:"Entró",fallo:"No entró"};
@@ -530,7 +531,7 @@ function renderResults() {
   }
   if (activeTab === "targets") {
     $("results").innerHTML = '<div class="table-wrap"><table><thead><tr><th>IP / Puerto</th><th>Protocolo</th><th>Rango</th><th>Subred</th><th>Estado</th><th>HTTP</th></tr></thead><tbody>' +
-    visible.map(row => `<tr><td>${escapeHtml(row.ip)}:${row.puerto}</td><td>${row.url.startsWith("https:") ? "HTTPS" : "HTTP"}</td><td>${escapeHtml(rangeText(row.range))}</td><td>${escapeHtml(row.subnet)}</td><td><span class="badge ${badgeClass(row.estado)}">${labels[row.estado] || row.estado}</span></td><td>${row.codigo || "—"}</td></tr>`).join("") + "</tbody></table></div>";
+    visible.map(row => `<tr><td>${escapeHtml(row.ip)}:${row.puerto}</td><td>${row.url.startsWith("https:") ? "HTTPS" : "HTTP"}</td><td>${escapeHtml(rangeText(row.range))}</td><td>${escapeHtml(row.subnet)}</td><td><span class="badge ${badgeClass(row.estado)}">${labels[row.estado] || row.estado}</span> ${cutBadge(row.bloqueos)}</td><td>${row.codigo || "—"}</td></tr>`).join("") + "</tbody></table></div>";
     return;
   }
   const grouped = new Map();
