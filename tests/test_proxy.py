@@ -1,5 +1,7 @@
 """Regla de paso del proxy de alcance y sus fuentes de alcance."""
 
+from contextlib import redirect_stderr
+import io
 import json
 import socket
 import tempfile
@@ -368,6 +370,31 @@ class ServidorProxyTests(unittest.TestCase):
         self.assertEqual(self.lineas(), [
             {"destino": "nadie.test:443", "ip": None, "puerto": 443, "fallo": "error"}])
 
+    def test_resolvedor_con_respuesta_mal_formada_502_sin_conectar(self):
+        conectar = prohibido()
+        for roto in ([("roto",)], [None]):
+            with self.subTest(roto=roto):
+                servidor = self.arrancar(conectar=conectar, resolver=mock.Mock(return_value=roto))
+                _, cabecera = self.pedir(servidor, b"CONNECT raro.test:443 HTTP/1.1\r\n\r\n")
+                self.assertTrue(cabecera.startswith("HTTP/1.1 502 "), cabecera)
+        conectar.assert_not_called()
+        self.assertEqual([l["fallo"] for l in self.lineas()], ["error", "error"])
+
+    def test_fallo_interno_responde_y_no_conecta(self):
+        conectar = prohibido()
+        alcance = mock.Mock(actual=mock.Mock(side_effect=RuntimeError("roto")))
+        servidor = self.arrancar(alcance, conectar=conectar)
+        errores = io.StringIO()
+        with redirect_stderr(errores):
+            _, cabecera = self.pedir(servidor, b"CONNECT 10.10.1.1:443 HTTP/1.1\r\n\r\n")
+            with mock.patch.object(proxy, "_analizar", side_effect=RuntimeError("roto")):
+                _, otra = self.pedir(servidor, b"CONNECT 10.10.1.1:443 HTTP/1.1\r\n\r\n")
+        self.assertTrue(cabecera.startswith("HTTP/1.1 502 "), cabecera)
+        self.assertTrue(otra.startswith("HTTP/1.1 400 "), otra)
+        conectar.assert_not_called()
+        self.assertNotIn("Traceback", errores.getvalue())
+        self.assertIn("fallo interno con 10.10.1.1:443", errores.getvalue())
+
     # --- Fallos de conexión ---
 
     def test_puerto_cerrado_502_y_fallo_anotado(self):
@@ -450,6 +477,8 @@ class ServidorProxyTests(unittest.TestCase):
         for peticion in (b"GET /relativa HTTP/1.1\r\nHost: x\r\n\r\n",
                          b"GET https://10.10.1.1/ HTTP/1.1\r\n\r\n",
                          b"GET http://10.10.1.1:0/ HTTP/1.1\r\n\r\n",
+                         b"GET http://[x/ HTTP/1.1\r\n\r\n",
+                         b"GET http://[10.10.1.1]/ HTTP/1.1\r\n\r\n",
                          b"CONNECT 10.10.1.1 HTTP/1.1\r\n\r\n",
                          b"CONNECT 10.10.1.1:99999 HTTP/1.1\r\n\r\n",
                          b"CONNECT 10.10.1.1:443\r\n\r\n",

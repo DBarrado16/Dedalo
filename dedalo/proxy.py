@@ -201,12 +201,13 @@ def _analizar(cabecera: bytes) -> _Peticion:
     # Ni espacios ni controles: urlsplit los quitaría y la ruta reenviada sería otra.
     if objetivo[:7].lower() != "http://" or any(c <= " " or c == "\x7f" for c in objetivo):
         raise _PeticionNoValida("se espera una URL http:// absoluta")
-    url = urlsplit(objetivo)
     try:
-        numero = 80 if url.port is None else url.port
-    except ValueError:
-        numero = None
-    host, puerto = _host(url.hostname), _puerto(numero)
+        # urlsplit rechaza con ValueError corchetes rotos o una IPv4 entre corchetes.
+        url = urlsplit(objetivo)
+        host, numero = url.hostname, 80 if url.port is None else url.port
+    except ValueError as error:
+        raise _PeticionNoValida("URL no válida") from error
+    host, puerto = _host(host), _puerto(numero)
     ruta = objetivo.partition("#")[0][7 + len(url.netloc):]
     if not ruta.startswith("/"):
         ruta = "/" + ruta
@@ -380,8 +381,8 @@ class Proxy:
         linea = {"destino": peticion.destino, "ip": None, "puerto": peticion.puerto}
         try:
             direcciones = self._direcciones(peticion.host, peticion.puerto)
-        except (OSError, UnicodeError, ValueError):
-            direcciones = []
+        except (OSError, UnicodeError, ValueError, IndexError, TypeError):
+            direcciones = []    # sin resolver o con una respuesta mal formada
         if not direcciones:
             linea["fallo"] = "error"
             self._anotar(linea)
@@ -414,15 +415,36 @@ class Proxy:
         return None
 
     def _atender(self, cliente: socket.socket) -> None:
+        # Red de seguridad: un fallo inesperado antes de responder no cierra en silencio
+        # (Chrome lo daría como ERR_EMPTY_RESPONSE) ni deja pasar nada.
         try:
             cabecera, sobrante = self._leer_cabecera(cliente)
-            peticion = _analizar(cabecera)
         except _SinPeticion:
             return
         except _PeticionNoValida:
             cliente.sendall(_NO_VALIDA)
             return
-        servidor = self._abrir(cliente, peticion)
+        try:
+            peticion = _analizar(cabecera)
+        except _PeticionNoValida:
+            cliente.sendall(_NO_VALIDA)
+            return
+        except Exception as error:
+            print(f"Proxy: petición que no se pudo analizar: {error!r}", file=sys.stderr)
+            cliente.sendall(_NO_VALIDA)
+            return
+        try:
+            # _abrir solo envía al final, así que un fallo dentro llega aún sin respuesta.
+            servidor = self._abrir(cliente, peticion)
+        except OSError:
+            # Casi siempre es el navegador que ya cerró: este envío también falla y lo
+            # recoge `handle`; si no, recibe su 502.
+            cliente.sendall(_SIN_CONEXION)
+            return
+        except Exception as error:
+            print(f"Proxy: fallo interno con {peticion.destino}: {error!r}", file=sys.stderr)
+            cliente.sendall(_SIN_CONEXION)
+            return
         if servidor is None:
             return
         with servidor:
