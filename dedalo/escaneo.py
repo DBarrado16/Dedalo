@@ -12,6 +12,7 @@ import subprocess
 import time
 
 from .gowitness import _executable
+from .parser import Host
 from .targets import Scope
 
 
@@ -125,3 +126,18 @@ def escanear_trozo(nmap: str, preset: str, dentro: list[str], excluidas: list[st
                 proc.wait()
     fin = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return {"comando": comando, "codigo": proc.returncode, "inicio": inicio, "fin": fin, "relanzado": relanzado}
+
+
+def limpiar_hosts(hosts: list[Host], tope_puertos: int = 1000) -> list[Host]:
+    """Descarta hosts sin puertos abiertos (fantasmas de -Pn) y vacía los que responden en todo."""
+    limpios = []
+    for host in hosts:
+        if not host.ports and not host.udp_ports:
+            continue
+        if len(host.ports) > tope_puertos:
+            abiertos = len(host.ports)
+            host.ports = {}
+            host.scripts.append({"id": "dedalo-todos-los-puertos",
+                                 "output": f"responde en todos los puertos ({abiertos} abiertos)"})
+        limpios.append(host)
+    return limpios

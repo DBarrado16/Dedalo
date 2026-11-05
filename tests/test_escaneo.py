@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from dedalo import escaneo, targets
+from dedalo import escaneo, parser, targets
 
 # Cambiar os.name a "posix" en Windows rompe pathlib: se sustituye solo el os del módulo.
 POSIX = SimpleNamespace(name="posix", environ=os.environ)
@@ -199,6 +199,29 @@ class EscanearTrozoTests(unittest.TestCase):
             r = escaneo.escanear_trozo(self.nmap, "rapido", ["10.0.0.1"], [], self.carpeta, parar=lambda: True)
         self.assertTrue(r["relanzado"])
         self.assertFalse((self.carpeta / "salida.xml").exists())
+
+
+class LimpiarHostsTests(unittest.TestCase):
+    def test_quita_hosts_sin_puertos(self):
+        h = [parser.Host(ip="10.0.0.1"), parser.Host(ip="10.0.0.2", ports={80: parser.Port(80)})]
+        self.assertEqual([x.ip for x in escaneo.limpiar_hosts(h)], ["10.0.0.2"])
+
+    def test_conserva_host_con_solo_udp(self):
+        h = [parser.Host(ip="10.0.0.4", udp_ports={53: parser.Port(53)})]
+        self.assertEqual([x.ip for x in escaneo.limpiar_hosts(h)], ["10.0.0.4"])
+
+    def test_vacia_host_con_demasiados_puertos(self):
+        h = parser.Host(ip="10.0.0.3", ports={n: parser.Port(n) for n in range(1, 1500)})
+        out = escaneo.limpiar_hosts([h], tope_puertos=1000)[0]
+        self.assertEqual(out.ports, {})
+        self.assertIn({"id": "dedalo-todos-los-puertos",
+                       "output": "responde en todos los puertos (1499 abiertos)"}, out.scripts)
+
+    def test_en_el_tope_no_se_vacia(self):
+        h = parser.Host(ip="10.0.0.5", ports={n: parser.Port(n) for n in range(1, 1001)})
+        out = escaneo.limpiar_hosts([h], tope_puertos=1000)[0]
+        self.assertEqual(len(out.ports), 1000)
+        self.assertEqual(out.scripts, [])
 
 
 if __name__ == "__main__":
