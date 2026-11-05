@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import errno
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
+import ipaddress
 import json
 import mimetypes
 import os
@@ -29,8 +30,9 @@ import webbrowser
 from xml.etree.ElementTree import ParseError
 import zipfile
 
-from . import (auditoria, catalogo, cli, credenciales, cve, db, descubrimiento, exploits, favicones, fingerprint,
-               gowitness, inventory, modelo, parser, prioridad, probador, redes, report, targets, vulnerabilidades)
+from . import (auditoria, catalogo, cli, credenciales, cve, db, descubrimiento, escaneo, exploits, favicones,
+               fingerprint, gowitness, inventory, modelo, parser, prioridad, probador, redes, report, targets,
+               vulnerabilidades)
 
 VERSION_AVISO = ("Con la API de Claude, el HTML y las cabeceras de cada captura salen de tu equipo "
                  "hacia la nube de Anthropic. La clave va en la variable de entorno ANTHROPIC_API_KEY.")
@@ -134,7 +136,7 @@ class _AlcanceVivo:
 
 
 class PortalStore:
-    def __init__(self, root, binary=None, chrome=None, model=modelo.DEFAULT_MODEL, ollama=modelo.OLLAMA,
+    def __init__(self, root, binary=None, chrome=None, nmap=None, model=modelo.DEFAULT_MODEL, ollama=modelo.OLLAMA,
                  dns_dominio="example.com", catalogo_ruta=catalogo.RUTA, sin_internet=None):
         self.root = Path(root).resolve()
         # Interruptor de las salidas a internet del cruce de vulnerabilidades (NVD, CISA KEV, Exploit-DB, GitHub):
@@ -149,6 +151,8 @@ class PortalStore:
         self.catalogo_ruta = Path(catalogo_ruta)
         self.root.mkdir(parents=True, exist_ok=True)
         self.binary_option, self.chrome_option = binary, chrome
+        # Ruta a Nmap para el escaneo desde el portal (--nmap, que llega en una tarea posterior); None lo busca solo.
+        self.nmap_option = nmap
         self.model_option, self.model_host = model, ollama
         self.lock = threading.RLock()
         self.imports = threading.Lock()
@@ -1326,6 +1330,240 @@ class PortalStore:
             catalogo.cargar(con, self.catalogo_ruta)
         return {"anadida": True}
 
+    def _scan_targets(self, rangos, scope):
+        """Redes IPv4 que escaneará el trabajo: los rangos pedidos (⊆ incluir de la ficha) o todo el alcance."""
+        incluir = [net for net in scope.include if net.version == 4]
+        if not rangos:
+            return list(incluir)
+        redes = []
+        for texto in rangos:
+            try:
+                red = ipaddress.ip_network(texto, strict=False)
+            except ValueError as exc:
+                raise ValueError(f"Rango inválido: {texto}") from exc
+            if red.version != 4:
+                raise ValueError("Solo se escanean rangos IPv4")
+            if not any(red.subnet_of(net) for net in incluir):
+                raise ValueError(f"El rango {red} no está dentro del alcance de la ficha")
+            redes.append(red)
+        return redes
+
+    def _scan_detail(self, scan_id):
+        """La ficha del escaneo (estado, error y la importación que haya producido)."""
+        with closing(self.database()) as con:
+            estado = auditoria.scan_status(con, scan_id)
+            audit_id = auditoria.audit_of(con, scan_id)
+        if estado is None:
+            raise FileNotFoundError("Escaneo no encontrado")
+        return {"id": scan_id, "auditoria": audit_id, "estado": estado["estado"],
+                "error": estado["error"], "importacion": estado["importacion"]}
+
+    def scan(self, audit_id, payload):
+        """Encola un escaneo Nmap de la ficha; valida la carga y que haya Nmap y alcance antes de nada."""
+        if not isinstance(payload, dict):
+            raise ValueError("Carga inválida")
+        presets = payload.get("presets")
+        if not isinstance(presets, list) or not presets or any(p not in escaneo.PRESETS for p in presets):
+            raise ValueError("Elige al menos un perfil de escaneo válido")
+        capturar = payload.get("capturar", False)
+        if not isinstance(capturar, bool):
+            raise ValueError("capturar: valor inválido")
+        rangos = payload.get("rangos", [])
+        if not isinstance(rangos, list):
+            raise ValueError("Rangos inválidos")
+        with self.lock:
+            if self.closing:
+                raise Conflict("El portal se está cerrando")
+            with closing(self.database()) as con:
+                if not auditoria.audit_exists(con, audit_id):
+                    raise ValueError("Elige una ficha de cliente existente")
+                scope = auditoria.scope(con, audit_id)
+            if not scope.include:
+                raise Conflict("Define el alcance de la ficha antes de escanear.")
+            objetivos = self._scan_targets(rangos, scope)  # valida que los rangos estén dentro del alcance
+            total = sum(red.num_addresses for red in objetivos)
+            if total > 65536:
+                raise ValueError("Demasiadas direcciones para un escaneo (máximo 65.536). Acota los rangos.")
+            try:
+                escaneo.find_nmap(self.nmap_option)
+            except ValueError as exc:
+                raise Conflict(str(exc)) from exc
+            options = {"rangos": [str(red) for red in objetivos], "presets": presets, "capturar": capturar}
+            with closing(self.database()) as con:
+                scan_id = auditoria.start_scan(con, audit_id, options)
+            self.pending.put(("escaneo", (scan_id, audit_id)))
+        return self._scan_detail(scan_id)
+
+    def stop_scan(self, scan_id):
+        with self.lock:
+            with closing(self.database()) as con:
+                if auditoria.stop_scan(con, scan_id) is None:
+                    raise Conflict("Este escaneo no está en marcha.")
+        return self._scan_detail(scan_id)
+
+    def _run_scan(self, scan_id, audit_id):
+        try:
+            self._scan(scan_id, audit_id)
+        except Exception as exc:
+            print(f"Error del portal: no se pudo completar el escaneo {scan_id}: {exc}", file=sys.stderr)
+            try:
+                with closing(self.database()) as con:
+                    auditoria.set_state(con, scan_id, "error",
+                                        "No se pudo completar el escaneo. Consulta la terminal del portal.")
+            except Exception as again:
+                print(f"Error del portal: no se pudo cerrar el escaneo {scan_id}: {again}", file=sys.stderr)
+
+    def _scan(self, scan_id, audit_id):
+        """Recorre presets × trozos releyendo el alcance vivo antes de cada trozo, importa lo escaneado y, si
+        se pidió, encola su captura. Solo llegan a Nmap las IP en alcance, comprobado justo antes de conectar."""
+        with closing(self.database()) as con:
+            if not auditoria.begin_scan(con, scan_id):
+                return  # se canceló en la cola
+            fila = con.execute("SELECT opciones FROM ejecucion WHERE id = ?", (scan_id,)).fetchone()
+        opciones = json.loads(fila["opciones"])
+        rangos, presets, capturar = opciones["rangos"], opciones["presets"], opciones["capturar"]
+        nmap = escaneo.find_nmap(self.nmap_option)
+        version = escaneo.nmap_version(nmap)
+        scan_dir = self.directory(scan_id)
+        scan_dir.mkdir(parents=True, exist_ok=True)
+        trozos = escaneo.trocear(rangos)
+
+        def leer_scope():
+            with closing(self.database()) as con:
+                return auditoria.scope(con, audit_id)
+
+        evidencia = []        # salida.xml de los trozos terminados con éxito
+        registro = []         # una entrada por trozo/preset para escaneo.json
+        hubo_error = False
+        alcance_ilegible = False
+        parada_final = None   # "usuario" o "cierre" si el escaneo se detiene a medias
+        parada = {"motivo": None}
+        salir = False
+        for preset in presets:
+            if salir:
+                break
+            for indice, bloque in enumerate(trozos):
+                if salir:
+                    break
+                while True:  # se repite si un cambio de alcance obliga a relanzar el trozo
+                    try:
+                        scope = leer_scope()
+                    except Exception as exc:
+                        print(f"Error del portal: no se pudo leer el alcance del escaneo {scan_id}: {exc}",
+                              file=sys.stderr)
+                        alcance_ilegible, salir = True, True
+                        break
+                    dentro, excluidas = escaneo.objetivos_del_trozo(bloque, scope)
+                    if not dentro:
+                        break  # nada en alcance en este trozo
+                    carpeta = scan_dir / f"{preset}-{indice:03d}"
+                    carpeta.mkdir(parents=True, exist_ok=True)
+                    (carpeta / "salida.xml").unlink(missing_ok=True)  # descarta un intento anterior a medias
+                    parada["motivo"] = None
+                    contador = self.scope_changes
+                    dentro_vivo = set(dentro)
+
+                    def parar(_contador=contador, _dentro=dentro_vivo):
+                        if self.closing:
+                            parada["motivo"] = "cierre"
+                            return True
+                        with closing(self.database()) as con:
+                            est = auditoria.scan_status(con, scan_id)
+                        if est is None or est["estado"] == "deteniendo":
+                            parada["motivo"] = "usuario"
+                            return True
+                        if self.scope_changes != _contador:
+                            try:
+                                nuevo = leer_scope()
+                            except Exception:
+                                parada["motivo"] = "alcance-ilegible"
+                                return True
+                            if any(nuevo.status(ip) != nuevo.IN for ip in _dentro):
+                                parada["motivo"] = "alcance"  # una IP del trozo dejó de estar en alcance
+                                return True
+                        return False
+
+                    resultado = escaneo.escanear_trozo(nmap, preset, dentro, excluidas, carpeta, parar=parar)
+                    registro.append({"preset": preset, "trozo": str(bloque),
+                                     **{k: resultado[k] for k in ("comando", "inicio", "fin", "codigo", "relanzado")}})
+                    if resultado["relanzado"]:
+                        (carpeta / "salida.xml").unlink(missing_ok=True)  # parcial: se descarta y se relanza
+                        motivo = parada["motivo"]
+                        if motivo == "alcance":
+                            continue  # mismo trozo con el alcance nuevo (sin la IP que salió)
+                        if motivo == "alcance-ilegible":
+                            alcance_ilegible = True
+                        else:
+                            parada_final = motivo  # "usuario" o "cierre"
+                        salir = True
+                        break
+                    salida = carpeta / "salida.xml"
+                    if resultado["codigo"] == 0 and salida.is_file():
+                        evidencia.append(salida)
+                    else:
+                        hubo_error = True
+                    break
+
+        (scan_dir / "escaneo.json").write_text(
+            json.dumps({"nmap": {"version": version, "ruta": nmap}, "trozos": registro}, ensure_ascii=False, indent=2),
+            encoding="utf-8")
+
+        import_id = self._importar_escaneo(scan_id, audit_id, evidencia) if evidencia else None
+
+        if parada_final == "cierre":
+            estado, error = (("parcial", "El portal se cerró durante el escaneo; se importó lo escaneado.")
+                             if import_id else ("interrumpida", "El portal se cerró antes de terminar el escaneo."))
+        elif parada_final == "usuario":
+            estado, error = (("parcial", "Escaneo detenido; se importó lo escaneado hasta la parada.")
+                             if import_id else ("cancelada", "Se detuvo el escaneo antes de importar nada."))
+        elif alcance_ilegible:
+            estado, error = (("parcial", "No se pudo leer el alcance a mitad; se importó lo escaneado.")
+                             if import_id else ("error", "No se pudo leer el alcance de la ficha durante el escaneo."))
+        elif hubo_error:
+            estado, error = (("parcial", "Algún trozo no se pudo escanear; se importó el resto.")
+                             if import_id else ("error", "Nmap no pudo escanear ningún trozo."))
+        else:
+            estado, error = "completa", ""
+
+        if capturar and import_id:
+            try:
+                self.start(import_id)  # encola la captura de la importación con las opciones por defecto
+            except Exception as exc:
+                print(f"Error del portal: no se pudo encolar la captura del escaneo {scan_id}: {exc}", file=sys.stderr)
+        with closing(self.database()) as con:
+            auditoria.set_state(con, scan_id, estado, error)
+
+    def _importar_escaneo(self, scan_id, audit_id, xmls):
+        """Une los XML de los trozos, limpia los hosts e importa a la misma ficha; devuelve el id de la importación.
+
+        La importación queda registrada como un trabajo preparado más: se puede abrir y capturar desde el portal.
+        """
+        import_id = uuid.uuid4().hex
+        import_dir = self.directory(import_id)
+        (import_dir / "entradas").mkdir(parents=True)
+        paths = []
+        for indice, xml in enumerate(xmls):
+            destino = import_dir / "entradas" / f"nmap-{indice:02d}.txt"
+            shutil.copyfile(xml, destino)
+            paths.append(destino)
+        hosts = escaneo.limpiar_hosts(parser.merge([parser.parse_file(path) for path in paths]))
+        opciones = options_from({})
+        stamp = now()
+        nombre = f"Escaneo Nmap · {stamp}"
+        with self.imports, closing(self.database()) as con:
+            auditoria.import_nmap(con, audit_id, import_id, nombre, hosts, paths, self.root, stamp,
+                                  {"archivos": [path.name for path in paths], "captura": opciones})
+            auditoria.link_scan_import(con, scan_id, import_id)
+        meta = {"id": import_id, "nombre": nombre, "fecha": stamp, "estado": "preparada",
+                "archivos": [path.name for path in paths], "opciones": opciones, "error": ""}
+        with self.lock:
+            with closing(self.database()) as con:
+                scope = auditoria.scope(con, audit_id)
+            self._plan(meta, hosts, scope)
+            write_scope_files(import_dir, scope)
+            self.jobs[import_id] = meta
+        return import_id
+
     def discover(self, job_id, payload=None):
         """Encola el descubrimiento DNS de los hosts en alcance; solo lee la base al encolar."""
         modo = payload.get("modo", "nombres") if isinstance(payload, dict) else "nombres"
@@ -1450,6 +1688,9 @@ class PortalStore:
                 continue
             if kind == "vuln":
                 self._run_vulns(*payload)
+                continue
+            if kind == "escaneo":
+                self._run_scan(*payload)
                 continue
             job_id, binary, chrome = payload
             with self.lock:
@@ -1770,6 +2011,14 @@ class PortalHandler(BaseHTTPRequestHandler):
                     return
                 if len(parts) == 3 and parts[:2] == ["api", "audits"] and re.fullmatch(r"[a-f0-9]{32}", parts[2]):
                     self.json(store.update_audit(parts[2], payload))
+                    return
+                if (len(parts) == 4 and parts[:2] == ["api", "audits"] and re.fullmatch(r"[a-f0-9]{32}", parts[2])
+                        and parts[3] == "escanear"):
+                    self.json(store.scan(parts[2], payload), 202)
+                    return
+                if (len(parts) == 4 and parts[:2] == ["api", "escaneos"] and re.fullmatch(r"[a-f0-9]{32}", parts[2])
+                        and parts[3] == "detener"):
+                    self.json(store.stop_scan(parts[2]))
                     return
                 if len(parts) == 4 and parts[:2] == ["api", "jobs"]:
                     if parts[3] == "start":

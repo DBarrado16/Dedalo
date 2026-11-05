@@ -15,6 +15,10 @@ def _valor(args: list[str], opcion: str) -> str | None:
 
 
 def main(args: list[str]) -> int:
+    if "--version" in args:
+        # Responde como Nmap sin tocar ficheros: `escaneo.nmap_version` lo llama sin -iL/-oX.
+        print("Nmap version 9.99 ( https://nmap.org )")
+        return 0
     print("fake nmap")
     print("aviso de prueba", file=sys.stderr)
     with open("args.json", "w", encoding="utf-8") as f:
