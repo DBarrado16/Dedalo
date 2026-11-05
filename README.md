@@ -293,7 +293,6 @@ Límite conocido: Chromium no manda por el proxy lo que va al propio equipo ni, 
 | `--sin-barra-url` | No quema la barra con la URL en las capturas (por defecto sí se quema). |
 | `--chrome RUTA` | Navegador que debe utilizar. |
 | `--gowitness RUTA` | Ejecutable de gowitness v3. |
-| `--nmap RUTA` | Ejecutable de Nmap (lo usa el escaneo del portal). |
 
 **Barra de URL (para informes).** Por defecto cada captura lleva quemada una **barra de direcciones** estilo navegador con su URL, para pegarla suelta en un informe y que se vea de qué objetivo es. La compone Chrome a partir de la imagen ya capturada (una pasada más por captura) y, con la barra activa, el formato de la imagen pasa a **PNG**. Se apaga con `--sin-barra-url` o con la casilla «Barra de URL en las capturas» del portal.
 
