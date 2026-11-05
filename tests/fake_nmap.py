@@ -15,6 +15,8 @@ def _valor(args: list[str], opcion: str) -> str | None:
 
 
 def main(args: list[str]) -> int:
+    print("fake nmap")
+    print("aviso de prueba", file=sys.stderr)
     with open("args.json", "w", encoding="utf-8") as f:
         json.dump(args, f)
     espera = float(os.environ.get("FAKE_NMAP_ESPERA", "0"))

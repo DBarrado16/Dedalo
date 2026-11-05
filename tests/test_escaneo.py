@@ -189,6 +189,11 @@ class EscanearTrozoTests(unittest.TestCase):
         self.assertEqual(str(visto.get("cwd")), str(self.carpeta))
         self.assertIsInstance(visto["args"], list)
 
+    def test_guarda_stdout_y_stderr_del_trozo(self):
+        escaneo.escanear_trozo(self.nmap, "rapido", ["10.0.0.1"], [], self.carpeta)
+        self.assertIn("fake nmap", (self.carpeta / "nmap.out").read_text())
+        self.assertTrue((self.carpeta / "nmap.err").is_file())
+
     def test_parar_mata_el_proceso_y_marca_relanzado(self):
         with patch.dict(os.environ, {"FAKE_NMAP_ESPERA": "10"}):
             r = escaneo.escanear_trozo(self.nmap, "rapido", ["10.0.0.1"], [], self.carpeta, parar=lambda: True)

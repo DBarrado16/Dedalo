@@ -101,24 +101,27 @@ def escanear_trozo(nmap: str, preset: str, dentro: list[str], excluidas: list[st
         (carpeta / "excluir.txt").write_text("\n".join(excluidas) + "\n", encoding="utf-8")
         comando += ["--excludefile", "excluir.txt"]
     inicio = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    proc = subprocess.Popen(comando, shell=False, cwd=carpeta,
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     relanzado = False
-    try:
-        while proc.poll() is None:
-            if parar is not None and parar():
-                relanzado = True
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
-                break
-            time.sleep(0.1)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
+    # La salida de Nmap queda como evidencia del trozo; sin entrada ni consola heredadas.
+    with open(carpeta / "nmap.out", "wb") as salida, open(carpeta / "nmap.err", "wb") as errores:
+        proc = subprocess.Popen(comando, shell=False, cwd=carpeta, stdin=subprocess.DEVNULL,
+                                stdout=salida, stderr=errores,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        try:
+            while proc.poll() is None:
+                if parar is not None and parar():
+                    relanzado = True
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                    break
+                time.sleep(0.1)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
     fin = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return {"comando": comando, "codigo": proc.returncode, "inicio": inicio, "fin": fin, "relanzado": relanzado}
