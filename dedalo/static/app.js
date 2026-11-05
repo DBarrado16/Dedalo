@@ -87,7 +87,6 @@ function renderAudits() {
 // --- Escaneos con Nmap de la ficha: lista con progreso y diálogo de lanzamiento ---
 const presetNames = {rapido: "Rápido", completo: "Completo", vpn: "Red difícil / VPN"};
 const scanLabels = {en_cola: "En cola", en_curso: "Escaneando", deteniendo: "Deteniendo", completa: "Completo", parcial: "Parcial", error: "Error", cancelada: "Cancelado", interrumpida: "Interrumpido"};
-const nmapHint = "Instala Nmap (https://nmap.org/download) o arranca el portal con --nmap RUTA.";
 const noScans = () => ({escaneos: [], nmap: {ok: true}});
 let scanInfo = noScans(), scanBlocked = "", scanSeq = 0;
 const scanRanges = (scan) => scan.rangos.length > 3 ? scan.rangos.slice(0, 3).join(", ") + ` y ${scan.rangos.length - 3} más` : scan.rangos.join(", ");
@@ -153,7 +152,7 @@ function openScan() {
   $("scan-capture").checked = false;
   $("scan-error").hidden = true;
   scanBlocked = !ranges.length ? "La ficha no tiene alcance IPv4 que escanear. Añade rangos con «Editar ficha»."
-    : !scanInfo.nmap.ok ? scanInfo.nmap.error + " " + nmapHint : "";
+    : !scanInfo.nmap.ok ? scanInfo.nmap.error : "";
   $("scan-block").textContent = scanBlocked;
   $("scan-block").hidden = !scanBlocked;
   updateScanSummary();
