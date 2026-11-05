@@ -2518,3 +2518,81 @@ class PortalEscaneoTests(unittest.TestCase):
             estado = self.wait_scan(scan_id)
         start.assert_called_once()
         self.assertEqual(start.call_args.args[1], estado["importacion"])
+
+    def _procesos_nmap(self):
+        """Envuelve Popen de escaneo para guardar los procesos que lanza."""
+        procesos = []
+        real = escaneo.subprocess.Popen
+
+        def lanzar(*args, **kwargs):
+            proc = real(*args, **kwargs)
+            if "-iL" in args[0]:  # solo los escaneos, no la consulta de versión
+                procesos.append(proc)
+            return proc
+
+        return procesos, patch.object(escaneo.subprocess, "Popen", side_effect=lanzar)
+
+    def _esperar_trozo(self, scan_id, procesos):
+        limite = time.monotonic() + 10
+        while not (self.objetivos(scan_id) and procesos) and time.monotonic() < limite:
+            time.sleep(0.02)
+        self.assertTrue(self.objetivos(scan_id) and procesos, "el trozo no llegó a arrancar")
+
+    def _estado_en_base(self, scan_id):
+        with closing(self.store.database()) as con:
+            return auditoria.scan_status(con, scan_id)
+
+    def test_cerrar_con_escaneo_mata_nmap_y_deja_interrumpida(self):
+        procesos, parche = self._procesos_nmap()
+        with patch.dict(os.environ, {"FAKE_NMAP_ESPERA": "20"}), parche:
+            scan_id = self.run_scan(rangos=["10.0.0.0/30"])
+            self._esperar_trozo(scan_id, procesos)
+            self.assertEqual(len(procesos), 1)
+            self.assertIsNone(procesos[0].poll())
+            self.store.close()
+        self.assertIsNotNone(procesos[0].poll(), "Nmap sobrevivió al cierre del portal")
+        estado = self._estado_en_base(scan_id)
+        self.assertEqual(estado["estado"], "interrumpida", estado)
+
+    def test_cerrar_no_arranca_los_escaneos_en_cola(self):
+        procesos, parche = self._procesos_nmap()
+        with patch.dict(os.environ, {"FAKE_NMAP_ESPERA": "20"}), parche:
+            primero = self.run_scan(rangos=["10.0.0.0/30"])
+            self._esperar_trozo(primero, procesos)
+            segundo = self.run_scan(rangos=["10.0.0.4/30"])
+            self.store.close()
+        self.assertEqual(len(procesos), 1, "se lanzó Nmap para un escaneo que seguía en cola")
+        self.assertFalse(self.objetivos(segundo))
+        self.assertEqual(self._estado_en_base(segundo)["estado"], "interrumpida")
+
+    def _escaneo_con_trozo(self, contenido=None):
+        """Cierra el portal y deja en la base un escaneo en curso (portal caído) con un XML en su carpeta."""
+        origen = self.run_scan(rangos=["10.0.0.0/30"])
+        self.wait_scan(origen)
+        xml = (self.store.directory(origen) / "rapido-000" / "salida.xml").read_text(encoding="utf-8")
+        raiz = self.store.root
+        self.store.close()
+        with closing(self.store.database()) as con:
+            scan_id = auditoria.start_scan(con, self.audit["id"],
+                                           {"rangos": ["10.0.0.0/30"], "presets": ["rapido"], "capturar": False})
+            auditoria.begin_scan(con, scan_id)
+        carpeta = raiz / scan_id / "rapido-000"
+        carpeta.mkdir(parents=True)
+        (carpeta / "salida.xml").write_text(xml if contenido is None else contenido, encoding="utf-8")
+        return raiz, scan_id
+
+    def test_reabrir_importa_trozos_terminados(self):
+        raiz, scan_id = self._escaneo_con_trozo()
+        self.store = PortalStore(raiz, nmap=self.nmap)
+        estado = self._estado_en_base(scan_id)
+        self.assertEqual(estado["estado"], "parcial", estado)
+        self.assertTrue(estado["importacion"])
+        self.assertIn("10.0.0.1", self.observados(estado["importacion"]))
+        self.assertIn(estado["importacion"], self.store.jobs)
+
+    def test_reabrir_sin_trozos_terminados_queda_interrumpida(self):
+        raiz, scan_id = self._escaneo_con_trozo(contenido='<?xml version="1.0"?><nmaprun><host>')
+        self.store = PortalStore(raiz, nmap=self.nmap)
+        estado = self._estado_en_base(scan_id)
+        self.assertEqual(estado["estado"], "interrumpida", estado)
+        self.assertFalse(estado["importacion"])

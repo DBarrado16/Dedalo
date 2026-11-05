@@ -648,6 +648,27 @@ def stop_scan(con, scan_id: str) -> str | None:
     return None
 
 
+def interrupt_scan(con, scan_id: str, error: str) -> bool:
+    """Un escaneo que seguía en cola pasa a interrumpido (el portal se cierra antes de lanzarlo)."""
+    with con:
+        return _is_scan(con, scan_id) and _set_state(con, scan_id, "interrumpida", error, only_from="en_cola")
+
+
+def close_interrupted_scans(con) -> None:
+    """Al arrancar, un escaneo que seguía en cola, en curso o parando se quedó a medias al caer el portal."""
+    with con:
+        con.execute("UPDATE ejecucion SET estado = 'interrumpida', terminada = ?, "
+                    "error = 'El portal se cerró antes de terminar el escaneo.' "
+                    "WHERE tipo = 'escaneo' AND estado IN ('en_cola', 'en_curso', 'deteniendo')", (now(),))
+
+
+def unimported_scans(con) -> list[dict]:
+    """Escaneos interrumpidos que aún no produjeron ninguna importación: (id, ficha)."""
+    return [{"id": row["id"], "auditoria_id": row["auditoria_id"]} for row in con.execute(
+        "SELECT id, auditoria_id, opciones FROM ejecucion WHERE tipo = 'escaneo' AND estado = 'interrumpida'")
+        if not json.loads(row["opciones"]).get("importacion")]
+
+
 def scan_status(con, scan_id: str) -> dict | None:
     row = con.execute("SELECT estado, error, opciones FROM ejecucion WHERE id = ? AND tipo = 'escaneo'",
                       (scan_id,)).fetchone()

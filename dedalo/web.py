@@ -310,6 +310,7 @@ class PortalStore:
         """Carga el historial desde la base y cierra lo que quedó a medias."""
         with closing(self.database()) as con:
             auditoria.close_interrupted_analyses(con)
+            auditoria.close_interrupted_scans(con)
             try:
                 catalogo.cargar(con, self.catalogo_ruta)  # vuelca el catálogo al abrir, si su fichero cambió
             except (OSError, ValueError) as exc:
@@ -323,6 +324,38 @@ class PortalStore:
                     # Una captura que estaba activa ya se registró al cerrarla (_close_interrupted).
                     if row["captura"] and row["estado"] not in ACTIVE:
                         self._reconcile(con, row)
+        self._reconcile_scans()
+
+    def _reconcile_scans(self):
+        """Un escaneo que se cortó (el portal cayó sin cerrarse) conserva sus trozos terminados: se importan ahora.
+
+        Un trozo está terminado si su XML llegó a cerrarse; el que Nmap dejó a medias no sirve y se ignora.
+        Queda `parcial` si algo se importó; si no, sigue `interrumpida`. Un fallo se avisa y no para el arranque.
+        """
+        with closing(self.database()) as con:
+            pendientes = auditoria.unimported_scans(con)
+        for scan in pendientes:
+            xmls = [xml for xml in sorted(self.directory(scan["id"]).glob("*/salida.xml")) if self._xml_terminado(xml)]
+            if not xmls:
+                continue
+            try:
+                self._importar_escaneo(scan["id"], scan["auditoria_id"], xmls)
+                with closing(self.database()) as con:
+                    auditoria.set_state(con, scan["id"], "parcial",
+                                        "El portal se cerró durante el escaneo; se importó lo escaneado.")
+            except Exception as exc:
+                print(f"Aviso: no se pudo importar lo escaneado en {scan['id']}: {type(exc).__name__}: {exc}. "
+                      "Se reintentará al volver a abrir el portal.", file=sys.stderr)
+
+    @staticmethod
+    def _xml_terminado(xml):
+        try:
+            with xml.open("rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - 256))
+                return b"</nmaprun>" in f.read()
+        except OSError:
+            return False
 
     def _load_run(self, con, row):
         """Una ejecución del historial, sin su plan: se calcula al abrirla (_ensure_plan).
@@ -1419,6 +1452,10 @@ class PortalStore:
         """Recorre presets × trozos releyendo el alcance vivo antes de cada trozo, importa lo escaneado y, si
         se pidió, encola su captura. Solo llegan a Nmap las IP en alcance, comprobado justo antes de conectar."""
         with closing(self.database()) as con:
+            if self.closing:
+                # El portal se cierra y este escaneo sigue en la cola: no se lanza Nmap.
+                auditoria.interrupt_scan(con, scan_id, "El portal se cerró antes de empezar el escaneo.")
+                return
             if not auditoria.begin_scan(con, scan_id):
                 return  # se canceló en la cola
             fila = con.execute("SELECT opciones FROM ejecucion WHERE id = ?", (scan_id,)).fetchone()
@@ -1459,6 +1496,9 @@ class PortalStore:
                     dentro, excluidas = escaneo.objetivos_del_trozo(bloque, scope)
                     if not dentro:
                         break  # nada en alcance en este trozo
+                    if self.closing:
+                        parada_final, salir = "cierre", True  # no se lanza otro Nmap con el portal cerrándose
+                        break
                     carpeta = scan_dir / f"{preset}-{indice:03d}"
                     carpeta.mkdir(parents=True, exist_ok=True)
                     (carpeta / "salida.xml").unlink(missing_ok=True)  # descarta un intento anterior a medias
