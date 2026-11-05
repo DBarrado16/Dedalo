@@ -23,6 +23,7 @@ auditoria ─┬─ alcance (reglas incluir/excluir)
 - **Prioridad** es lo que un análisis con IA dijo de un activo de su importación: rol probable, nivel (alta, media, baja, o `sin_analisis` si la respuesta del modelo no valía), motivo y siguiente paso sugerido. Es una opinión asesora: no cambia nada del inventario. Una importación guarda su último análisis completo y, como mucho, un intento posterior; el intento solo sustituye al completo, en la misma transacción en que guarda sus prioridades, si termina bien.
 - **Resultado de credenciales** es lo que una prueba de credenciales por defecto obtuvo de cada servicio en alcance: si entró (con qué usuario y clave), no entró o error. El catálogo de contraseñas de fábrica vive en `credencial_catalogo`, volcado desde un fichero versionado del repo (`credenciales.json`); también **crece desde el portal** (botón «Añadir al catálogo»): escribe una entrada en ese fichero y se recarga por huella, sin migración. Como el análisis, una importación guarda su última prueba completa y, como mucho, un intento posterior; solo se sustituye al terminar bien.
 - **Resultado del descubrimiento** son las observaciones que deja una ejecución `descubrimiento`: los nombres hallados (DNS inverso) van al activo como `observacion_activo.nombres`, y cada IP que responde como servidor DNS se anota como un servicio `udp/53` con su `observacion`. No hay tablas ni migración nuevas: reutiliza las de observación, igual que una importación.
+- **Escaneo** es una ejecución `escaneo` (Nmap lanzado desde el portal). No tiene tablas propias: su resultado es una ejecución `importacion` normal en la misma auditoría, creada por el mismo camino que un fichero subido. Sus `opciones` guardan los rangos elegidos, los presets, si capturar al terminar y, al importar, `importacion` (el id de la importación). A su vez, las `opciones` de esa importación guardan `escaneo` (el id del escaneo). El vínculo va en `opciones` y **no** en `origen_id`, cuya clave ajena borra en cascada: borrar el escaneo deja la importación (son los datos) y borrar la importación deja el escaneo apuntando a una importación borrada. La migración 9 añade `escaneo` al `CHECK` de `ejecucion.tipo`.
 
 ## Tablas
 
@@ -46,11 +47,11 @@ CREATE TABLE alcance (
 CREATE TABLE ejecucion (
   id           TEXT PRIMARY KEY,       -- uuid hex; en importaciones coincide con la carpeta de portal_datos
   auditoria_id TEXT NOT NULL REFERENCES auditoria(id) ON DELETE CASCADE,
-  tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'descubrimiento', 'analisis', 'credenciales', 'version', 'vuln')),
+  tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'descubrimiento', 'analisis', 'credenciales', 'version', 'vuln', 'escaneo')),
   origen_id    TEXT REFERENCES ejecucion(id) ON DELETE CASCADE,  -- captura o análisis -> importación de la que salen
   nombre       TEXT NOT NULL,
   estado       TEXT NOT NULL CHECK (estado IN (...)),  -- los nueve estados de CONTRATOS.md 0.4
-  opciones     TEXT NOT NULL DEFAULT '{}',      -- JSON: hilos, timeout, formato...
+  opciones     TEXT NOT NULL DEFAULT '{}',      -- JSON: hilos, timeout, formato...; escaneo: rangos, presets, capturar, importacion
   creada       TEXT NOT NULL,
   iniciada     TEXT,
   terminada    TEXT,
@@ -270,6 +271,7 @@ evidencia (imagen) ← captura → servicio 443/tcp → activo 10.10.5.3 → aud
 - `portal_datos/gorod-bloqueado.json` no es historial: recuerda que en este equipo el motor `gorod` no puede arrancar porque el antivirus bloquea su ayudante `leakless.exe` (README, «Detalles y límites»). Borrarlo hace que la siguiente captura vuelva a probar `gorod`.
 - Se abre con `PRAGMA foreign_keys = ON` y `journal_mode = WAL`, que permite leer mientras se escribe.
 - Las migraciones son funciones numeradas en `dedalo/db.py` (`1: esquema inicial`, `2: …`). La base guarda su versión en `PRAGMA user_version` y al abrirla se aplican en una transacción las que falten. Nunca se edita una migración ya publicada; se añade otra.
+- La migración 9 reconstruye `ejecucion` para añadir el tipo `escaneo` al `CHECK`, como las anteriores que cambiaron ese `CHECK`; no crea tablas nuevas.
 - Cambiar un `CHECK` (por ejemplo, añadir el tipo `descubrimiento`) obliga a reconstruir la tabla: `CREATE TABLE nueva_X`, copiar, `DROP TABLE X`, `ALTER TABLE nueva_X RENAME TO X`. `migrate()` desactiva las claves foráneas durante las migraciones para que ese `DROP` no borre en cascada lo que depende de la tabla, y rechaza la migración si `PRAGMA foreign_key_check` encuentra referencias rotas.
 - **Migración del historial:** la primera vez se crea la auditoría «Importadas». Cada carpeta antigua de `portal_datos/` genera una ejecución `importacion` (con sus Nmap como evidencia) y, si se capturó, una `captura` con sus resultados e imágenes. Las carpetas originales no se modifican (salvo el fichero `parar` de una ejecución que estaba activa; ver el paso 5).
 

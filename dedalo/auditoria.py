@@ -612,6 +612,101 @@ def discovery_status(con, import_id: str) -> dict | None:
     return {"estado": row["estado"], "error": row["error"]} if row else None
 
 
+def start_scan(con, audit_id: str, options: dict, created: str | None = None) -> str:
+    """Crea en cola un escaneo Nmap ligado a la ficha (no a una importación).
+
+    El vínculo con la importación que produzca va en `opciones` (link_scan_import), no en
+    `origen_id`: su FK borra en cascada y borrar el escaneo se llevaría la importación.
+    """
+    if not audit_exists(con, audit_id):
+        raise ValueError("La ficha no existe")
+    scan_id, stamp = uuid.uuid4().hex, created or now()
+    with con:
+        con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada) "
+                    "VALUES (?, ?, 'escaneo', NULL, ?, 'en_cola', ?, ?)",
+                    (scan_id, audit_id, f"Escaneo Nmap · {stamp}", json.dumps(options, ensure_ascii=False), stamp))
+    return scan_id
+
+
+def _is_scan(con, scan_id: str) -> bool:
+    return con.execute("SELECT 1 FROM ejecucion WHERE id = ? AND tipo = 'escaneo'", (scan_id,)).fetchone() is not None
+
+
+def begin_scan(con, scan_id: str) -> bool:
+    with con:
+        return _is_scan(con, scan_id) and _set_state(con, scan_id, "en_curso", only_from="en_cola")
+
+
+def stop_scan(con, scan_id: str) -> str | None:
+    with con:
+        if not _is_scan(con, scan_id):
+            return None
+        if _set_state(con, scan_id, "cancelada", "Se canceló antes de empezar.", only_from="en_cola"):
+            return "cancelada"
+        if _set_state(con, scan_id, "deteniendo", only_from="en_curso"):
+            return "deteniendo"
+    return None
+
+
+def interrupt_scan(con, scan_id: str, error: str) -> bool:
+    """Un escaneo que seguía en cola pasa a interrumpido (el portal se cierra antes de lanzarlo)."""
+    with con:
+        return _is_scan(con, scan_id) and _set_state(con, scan_id, "interrumpida", error, only_from="en_cola")
+
+
+def close_interrupted_scans(con) -> None:
+    """Al arrancar, un escaneo que seguía en cola, en curso o parando se quedó a medias al caer el portal."""
+    with con:
+        con.execute("UPDATE ejecucion SET estado = 'interrumpida', terminada = ?, "
+                    "error = 'El portal se cerró antes de terminar el escaneo.' "
+                    "WHERE tipo = 'escaneo' AND estado IN ('en_cola', 'en_curso', 'deteniendo')", (now(),))
+
+
+def unimported_scans(con) -> list[dict]:
+    """Escaneos interrumpidos que aún no produjeron ninguna importación: (id, ficha)."""
+    return [{"id": row["id"], "auditoria_id": row["auditoria_id"]} for row in con.execute(
+        "SELECT id, auditoria_id, opciones FROM ejecucion WHERE tipo = 'escaneo' AND estado = 'interrumpida'")
+        if not json.loads(row["opciones"]).get("importacion")]
+
+
+def scan_status(con, scan_id: str) -> dict | None:
+    row = con.execute("SELECT estado, error, opciones FROM ejecucion WHERE id = ? AND tipo = 'escaneo'",
+                      (scan_id,)).fetchone()
+    if row is None:
+        return None
+    return {"estado": row["estado"], "error": row["error"], "importacion": json.loads(row["opciones"]).get("importacion")}
+
+
+def scans(con, audit_id: str, limit: int = 50) -> list[dict]:
+    """Los escaneos Nmap de la ficha, el último primero, con lo que la portada necesita de cada uno."""
+    result = []
+    for row in con.execute("SELECT id, estado, error, opciones, creada, terminada FROM ejecucion "
+                           "WHERE auditoria_id = ? AND tipo = 'escaneo' ORDER BY creada DESC, rowid DESC LIMIT ?",
+                           (audit_id, limit)):
+        opciones = json.loads(row["opciones"])
+        result.append({"id": row["id"], "estado": row["estado"], "error": row["error"] or "",
+                       "creada": row["creada"], "terminada": row["terminada"],
+                       "presets": opciones.get("presets", []), "rangos": opciones.get("rangos", []),
+                       "capturar": bool(opciones.get("capturar")), "importacion": opciones.get("importacion")})
+    return result
+
+
+def link_scan_import(con, scan_id: str, import_id: str) -> None:
+    """Anota en cada lado el id del otro, en `opciones`; sin `origen_id` (su FK borra en cascada).
+
+    Valida los dos extremos antes de escribir y guarda ambos lados en una sola transacción.
+    """
+    pares = ((scan_id, import_id, "escaneo", "importacion"), (import_id, scan_id, "importacion", "escaneo"))
+    with con:
+        nuevas = []
+        for own, other, kind, key in pares:
+            row = con.execute("SELECT opciones FROM ejecucion WHERE id = ? AND tipo = ?", (own, kind)).fetchone()
+            if row is None:
+                raise ValueError(f"No hay {kind} con ese id")
+            nuevas.append((json.dumps({**json.loads(row["opciones"]), key: other}, ensure_ascii=False), own))
+        con.executemany("UPDATE ejecucion SET opciones = ? WHERE id = ?", nuevas)
+
+
 def finish_discovery(con, disc_id: str, rows: list[dict]) -> None:
     """Vuelca lo encontrado a observaciones (nombres y servidores DNS) y da el descubrimiento por completo."""
     audit_id = con.execute("SELECT auditoria_id FROM ejecucion WHERE id = ?", (disc_id,)).fetchone()["auditoria_id"]

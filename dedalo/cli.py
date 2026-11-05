@@ -85,6 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     portal.add_argument("--datos", default="portal_datos", help="Carpeta del historial y archivos subidos")
     portal.add_argument("--chrome", help="Navegador del servidor")
     portal.add_argument("--gowitness", help="Ejecutable de gowitness v3")
+    portal.add_argument("--nmap", help="Ejecutable de Nmap para escanear desde el portal (por defecto, el del sistema)")
     portal.add_argument("--abrir", action="store_true", help="Abrir el portal en el navegador")
     # argparse pasa por `type` también un valor por defecto de texto: DEDALO_MODELO se comprueba igual.
     # Sin espacios alrededor: en cmd, «set DEDALO_MODELO=modelo » guarda el espacio final.

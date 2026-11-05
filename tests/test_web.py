@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 import zipfile
 
-from dedalo import auditoria, cli, cve, favicones, gowitness, report, web
+from dedalo import auditoria, cli, cve, escaneo, favicones, gowitness, report, web
 from dedalo.web import PortalStore, PortalServer
 from tests.test_dedalo import LEAKLESS_REASON, ROOT, blocked_gorod, fake_database
 from tests.test_gowitness_fingerprint import build_gowitness_db
@@ -2219,7 +2219,7 @@ class PortTests(unittest.TestCase):
             store = PortalStore(first_data)
             server = PortalServer(("127.0.0.1", 0), store)
             try:
-                args = argparse.Namespace(datos=second_data, gowitness="indicado", chrome=None,
+                args = argparse.Namespace(datos=second_data, gowitness="indicado", chrome=None, nmap=None,
                                           puerto=server.server_address[1], abrir=False,
                                           modelo=web.modelo.DEFAULT_MODEL, ollama=web.modelo.OLLAMA, arrancar_ollama=False,
                                           dns_dominio="example.com", catalogo=None, sin_internet=False)
@@ -2369,3 +2369,417 @@ class StopTests(unittest.TestCase):
             self.assertEqual(manifest["estado"], "interrumpida")
             self.assertEqual(manifest["grupos"][0]["capturas"], 2)
             self.assertEqual(manifest["grupos"][1]["estado"], "pendiente")
+
+
+from dedalo import escaneo, parser
+from tests.test_escaneo import nmap_falso
+
+
+class PortalEscaneoTests(unittest.TestCase):
+    def setUp(self):
+        parche = patch("dedalo.web.exploits.actualizar_fuentes")
+        parche.start()
+        self.addCleanup(parche.stop)
+        # ignore_cleanup_errors: en Windows el Nmap falso que se mata al relanzar un trozo deja su proceso
+        # nieto huérfano un instante, aún con nmap.err abierto; no debe tumbar el borrado del temporal.
+        self.temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        binarios = base / "bin"
+        binarios.mkdir()
+        self.nmap = nmap_falso(binarios)
+        self.store = PortalStore(base / "datos", nmap=self.nmap)
+        self.addCleanup(self.store.close)
+        self.audit = self.store.create_audit({"nombre": "Cliente", "incluir": "10.0.0.0/24"})
+
+    def run_scan(self, **cambios):
+        datos = {"rangos": ["10.0.0.0/30"], "presets": ["rapido"], "capturar": False}
+        datos.update(cambios)
+        return self.store.scan(self.audit["id"], datos)["id"]
+
+    def wait_scan(self, scan_id, timeout=20):
+        limite = time.monotonic() + timeout
+        estado = None
+        while time.monotonic() < limite:
+            with closing(self.store.database()) as con:
+                estado = auditoria.scan_status(con, scan_id)
+            if estado and estado["estado"] not in web.ACTIVE:
+                return estado
+            time.sleep(0.05)
+        self.fail(f"el escaneo no terminó: {estado}")
+
+    def objetivos(self, scan_id):
+        return list(self.store.directory(scan_id).glob("**/objetivos.txt"))
+
+    def observados(self, import_id):
+        with closing(self.store.database()) as con:
+            return [h.ip for h in auditoria.observed_hosts(con, import_id)]
+
+    def test_importacion_fallida_no_deja_huerfana_ni_enlace(self):
+        # Si la importación falla tras registrarse en la base, se deshace entera y el escaneo queda
+        # sin enlazar (reimportable al reabrir), no una importación a medias en el historial.
+        scan_id = self.run_scan()
+        with patch("dedalo.web.write_scope_files", side_effect=OSError("disco lleno")), \
+                redirect_stderr(io.StringIO()):
+            self.wait_scan(scan_id)
+        with closing(self.store.database()) as con:
+            tipos = [r[0] for r in con.execute("SELECT tipo FROM ejecucion").fetchall()]
+            enlace = auditoria.scan_status(con, scan_id)["importacion"]
+        self.assertNotIn("importacion", tipos)
+        self.assertIsNone(enlace)
+
+    def test_scan_sin_incluir_no_lanza(self):
+        vacia = self.store.create_audit({"nombre": "Vacía", "incluir": ""})
+        with self.assertRaises(web.Conflict):
+            self.store.scan(vacia["id"], {"rangos": [], "presets": ["rapido"], "capturar": False})
+
+    def test_scan_solo_ipv6_no_lanza(self):
+        v6 = self.store.create_audit({"nombre": "IPv6", "incluir": "2001:db8::/64"})
+        with self.assertRaises(web.Conflict):
+            self.store.scan(v6["id"], {"rangos": [], "presets": ["rapido"], "capturar": False})
+
+    def test_scan_rechaza_mas_de_65536_direcciones(self):
+        grande = self.store.create_audit({"nombre": "Grande", "incluir": "10.0.0.0/8"})
+        with self.assertRaises(ValueError) as ctx:
+            self.store.scan(grande["id"], {"rangos": ["10.0.0.0/15"], "presets": ["rapido"], "capturar": False})
+        self.assertNotIsInstance(ctx.exception, web.Conflict)
+        self.assertIn("65.536", str(ctx.exception))
+
+    def test_scan_parada_del_usuario_importa_lo_terminado(self):
+        llamadas = []
+        real = escaneo.escanear_trozo
+
+        def lento_el_segundo(*args, **kwargs):
+            llamadas.append(args[1])
+            if len(llamadas) == 2:
+                os.environ["FAKE_NMAP_ESPERA"] = "20"  # el primer trozo ya terminó; el segundo se atasca
+            return real(*args, **kwargs)
+
+        with patch.dict(os.environ, {"FAKE_NMAP_ESPERA": "0"}), \
+                patch.object(escaneo, "escanear_trozo", side_effect=lento_el_segundo):
+            scan_id = self.run_scan(rangos=["10.0.0.0/30"], presets=["rapido", "vpn"])
+            limite = time.monotonic() + 10
+            while not list(self.store.directory(scan_id).glob("vpn-*/objetivos.txt")) \
+                    and time.monotonic() < limite:
+                time.sleep(0.02)
+            self.assertTrue(list(self.store.directory(scan_id).glob("vpn-*/objetivos.txt")),
+                            "el segundo trozo no llegó a arrancar")
+            self.store.stop_scan(scan_id)
+            estado = self.wait_scan(scan_id)
+        self.assertEqual(estado["estado"], "parcial", estado)
+        self.assertTrue(estado["importacion"])
+        self.assertIn("10.0.0.1", self.observados(estado["importacion"]))
+        self.assertFalse(list(self.store.directory(scan_id).glob("vpn-*/salida.xml")))
+
+    def test_scan_parada_del_usuario_sin_nada_terminado_se_cancela(self):
+        with patch.dict(os.environ, {"FAKE_NMAP_ESPERA": "20"}):
+            scan_id = self.run_scan(rangos=["10.0.0.0/30"])
+            limite = time.monotonic() + 10
+            while not self.objetivos(scan_id) and time.monotonic() < limite:
+                time.sleep(0.02)
+            self.assertTrue(self.objetivos(scan_id), "el trozo no llegó a arrancar")
+            self.store.stop_scan(scan_id)
+            estado = self.wait_scan(scan_id)
+        self.assertEqual(estado["estado"], "cancelada", estado)
+        self.assertFalse(estado["importacion"])
+
+    def test_scan_no_pasa_excluidas_a_nmap(self):
+        self.store.update_audit(self.audit["id"],
+                                {"nombre": "Cliente", "incluir": "10.0.0.0/24", "excluir": "10.0.0.5"})
+        scan_id = self.run_scan(rangos=["10.0.0.0/24"])
+        estado = self.wait_scan(scan_id)
+        ficheros = self.objetivos(scan_id)
+        self.assertTrue(ficheros)
+        for fichero in ficheros:
+            self.assertNotIn("10.0.0.5", fichero.read_text().split())
+        self.assertTrue(estado["importacion"])
+        self.assertNotIn("10.0.0.5", self.observados(estado["importacion"]))
+
+    def test_scan_exclusion_a_mitad_relanza_el_trozo(self):
+        with patch.dict(os.environ, {"FAKE_NMAP_ESPERA": "4"}):
+            scan_id = self.run_scan(rangos=["10.0.0.0/30"])
+            # Espera a que el trozo arranque: escanear_trozo escribe objetivos.txt antes de lanzar Nmap.
+            limite = time.monotonic() + 10
+            while not self.objetivos(scan_id) and time.monotonic() < limite:
+                time.sleep(0.02)
+            self.assertTrue(self.objetivos(scan_id), "el trozo no llegó a arrancar")
+            # A mitad del escaneo se excluye una IP del trozo; el relanzamiento ya no espera.
+            os.environ["FAKE_NMAP_ESPERA"] = "0"
+            self.store.update_audit(self.audit["id"],
+                                    {"nombre": "Cliente", "incluir": "10.0.0.0/24", "excluir": "10.0.0.1"})
+            estado = self.wait_scan(scan_id)
+        registro = json.loads((self.store.directory(scan_id) / "escaneo.json").read_text(encoding="utf-8"))
+        self.assertTrue(any(t["relanzado"] for t in registro["trozos"]), registro)
+        ultima = max(self.objetivos(scan_id), key=lambda p: p.stat().st_mtime)
+        self.assertNotIn("10.0.0.1", ultima.read_text().split())
+        self.assertTrue(estado["importacion"])
+        self.assertNotIn("10.0.0.1", self.observados(estado["importacion"]))
+
+    def test_scan_varios_presets_una_sola_importacion(self):
+        scan_id = self.run_scan(rangos=["10.0.0.0/30"], presets=["rapido", "vpn"])
+        estado = self.wait_scan(scan_id)
+        self.assertTrue(estado["importacion"])
+        xmls = list(self.store.directory(scan_id).glob("**/salida.xml"))
+        self.assertEqual(len(xmls), 2)
+        with closing(self.store.database()) as con:
+            importaciones = con.execute("SELECT COUNT(*) FROM ejecucion WHERE tipo = 'importacion'").fetchone()[0]
+        self.assertEqual(importaciones, 1)
+
+    def test_scan_capturar_al_terminar_encola_captura(self):
+        with patch.object(web.PortalStore, "start", autospec=True) as start:
+            scan_id = self.run_scan(rangos=["10.0.0.0/30"], capturar=True)
+            estado = self.wait_scan(scan_id)
+        start.assert_called_once()
+        self.assertEqual(start.call_args.args[1], estado["importacion"])
+
+    def _procesos_nmap(self):
+        """Envuelve Popen de escaneo para guardar los procesos que lanza."""
+        procesos = []
+        real = escaneo.subprocess.Popen
+
+        def lanzar(*args, **kwargs):
+            proc = real(*args, **kwargs)
+            if "-iL" in args[0]:  # solo los escaneos, no la consulta de versión
+                procesos.append(proc)
+            return proc
+
+        return procesos, patch.object(escaneo.subprocess, "Popen", side_effect=lanzar)
+
+    def _esperar_trozo(self, scan_id, procesos):
+        limite = time.monotonic() + 10
+        while not (self.objetivos(scan_id) and procesos) and time.monotonic() < limite:
+            time.sleep(0.02)
+        self.assertTrue(self.objetivos(scan_id) and procesos, "el trozo no llegó a arrancar")
+
+    def _estado_en_base(self, scan_id):
+        with closing(self.store.database()) as con:
+            return auditoria.scan_status(con, scan_id)
+
+    def test_cerrar_con_escaneo_mata_nmap_y_deja_interrumpida(self):
+        procesos, parche = self._procesos_nmap()
+        with patch.dict(os.environ, {"FAKE_NMAP_ESPERA": "20"}), parche:
+            scan_id = self.run_scan(rangos=["10.0.0.0/30"])
+            self._esperar_trozo(scan_id, procesos)
+            self.assertEqual(len(procesos), 1)
+            self.assertIsNone(procesos[0].poll())
+            self.store.close()
+        self.assertIsNotNone(procesos[0].poll(), "Nmap sobrevivió al cierre del portal")
+        estado = self._estado_en_base(scan_id)
+        self.assertEqual(estado["estado"], "interrumpida", estado)
+
+    def test_cerrar_no_arranca_los_escaneos_en_cola(self):
+        procesos, parche = self._procesos_nmap()
+        with patch.dict(os.environ, {"FAKE_NMAP_ESPERA": "20"}), parche:
+            primero = self.run_scan(rangos=["10.0.0.0/30"])
+            self._esperar_trozo(primero, procesos)
+            segundo = self.run_scan(rangos=["10.0.0.4/30"])
+            self.store.close()
+        self.assertEqual(len(procesos), 1, "se lanzó Nmap para un escaneo que seguía en cola")
+        self.assertFalse(self.objetivos(segundo))
+        self.assertEqual(self._estado_en_base(segundo)["estado"], "interrumpida")
+
+    def _escaneo_con_trozo(self, contenido=None):
+        """Cierra el portal y deja en la base un escaneo en curso (portal caído) con un XML en su carpeta."""
+        origen = self.run_scan(rangos=["10.0.0.0/30"])
+        self.wait_scan(origen)
+        xml = (self.store.directory(origen) / "rapido-000" / "salida.xml").read_text(encoding="utf-8")
+        raiz = self.store.root
+        self.store.close()
+        with closing(self.store.database()) as con:
+            scan_id = auditoria.start_scan(con, self.audit["id"],
+                                           {"rangos": ["10.0.0.0/30"], "presets": ["rapido"], "capturar": False})
+            auditoria.begin_scan(con, scan_id)
+        carpeta = raiz / scan_id / "rapido-000"
+        carpeta.mkdir(parents=True)
+        (carpeta / "salida.xml").write_text(xml if contenido is None else contenido, encoding="utf-8")
+        return raiz, scan_id
+
+    def test_reabrir_importa_trozos_terminados(self):
+        raiz, scan_id = self._escaneo_con_trozo()
+        self.store = PortalStore(raiz, nmap=self.nmap)
+        estado = self._estado_en_base(scan_id)
+        self.assertEqual(estado["estado"], "parcial", estado)
+        self.assertTrue(estado["importacion"])
+        self.assertIn("10.0.0.1", self.observados(estado["importacion"]))
+        self.assertIn(estado["importacion"], self.store.jobs)
+
+    def test_reabrir_sin_trozos_terminados_queda_interrumpida(self):
+        raiz, scan_id = self._escaneo_con_trozo(contenido='<?xml version="1.0"?><nmaprun><host>')
+        self.store = PortalStore(raiz, nmap=self.nmap)
+        estado = self._estado_en_base(scan_id)
+        self.assertEqual(estado["estado"], "interrumpida", estado)
+        self.assertFalse(estado["importacion"])
+
+    # --- Lista de escaneos de la ficha, progreso y resumen previo (tarea 9) ---
+
+    def test_escaneos_de_la_ficha_lista_el_terminado(self):
+        scan_id = self.run_scan(rangos=["10.0.0.0/30"])
+        estado = self.wait_scan(scan_id)
+        datos = self.store.scans(self.audit["id"])
+        self.assertTrue(datos["nmap"]["ok"], datos["nmap"])
+        self.assertEqual([e["id"] for e in datos["escaneos"]], [scan_id])
+        fila = datos["escaneos"][0]
+        self.assertEqual((fila["estado"], fila["presets"], fila["rangos"]), ("completa", ["rapido"], ["10.0.0.0/30"]))
+        self.assertEqual(fila["importacion"], estado["importacion"])
+        self.assertNotIn("progreso", fila)
+
+    def test_escaneos_solo_de_su_ficha(self):
+        scan_id = self.run_scan(rangos=["10.0.0.0/30"])
+        self.wait_scan(scan_id)
+        otra = self.store.create_audit({"nombre": "Otra", "incluir": "10.9.0.0/24"})
+        self.assertEqual(self.store.scans(otra["id"])["escaneos"], [])
+
+    def test_escaneos_ficha_inexistente(self):
+        with self.assertRaises(ValueError):
+            self.store.scans("0" * 32)
+
+    def test_escaneos_progreso_solo_si_esta_activo(self):
+        with closing(self.store.database()) as con:
+            scan_id = auditoria.start_scan(con, self.audit["id"],
+                                           {"rangos": ["10.0.0.0/30"], "presets": ["rapido"], "capturar": False})
+            auditoria.begin_scan(con, scan_id)
+        self.store.scan_progress[scan_id] = {"preset": "Rápido", "trozo": 1, "total": 3}
+        fila = self.store.scans(self.audit["id"])["escaneos"][0]
+        self.assertEqual(fila["estado"], "en_curso")
+        self.assertEqual(fila["progreso"], {"preset": "Rápido", "trozo": 1, "total": 3})
+        with closing(self.store.database()) as con:
+            auditoria.stop_scan(con, scan_id)
+        self.assertEqual(self.store.scans(self.audit["id"])["escaneos"][0]["estado"], "deteniendo")
+
+    def test_escaneos_interrumpida_lleva_su_error(self):
+        with closing(self.store.database()) as con:
+            scan_id = auditoria.start_scan(con, self.audit["id"],
+                                           {"rangos": ["10.0.0.0/30"], "presets": ["rapido"], "capturar": False})
+            auditoria.interrupt_scan(con, scan_id, "El portal se cerró antes de empezar el escaneo.")
+        fila = self.store.scans(self.audit["id"])["escaneos"][0]
+        self.assertEqual((fila["estado"], fila["error"]), ("interrumpida", "El portal se cerró antes de empezar el escaneo."))
+
+    def test_escaneos_sin_nmap_avisa(self):
+        sin = PortalStore(Path(self.temp.name) / "otro", nmap=str(Path(self.temp.name) / "no-existe"))
+        self.addCleanup(sin.close)
+        audit = sin.create_audit({"nombre": "X", "incluir": "10.0.0.0/24"})
+        nmap = sin.scans(audit["id"])["nmap"]
+        self.assertFalse(nmap["ok"])
+        self.assertTrue(nmap["error"])
+
+    def test_scan_publica_el_progreso_por_preset_y_trozo(self):
+        vistas = []
+        real = escaneo.escanear_trozo
+        store = self.store
+
+        def mirar(*args, **kwargs):
+            vistas.append(dict(next(iter(store.scan_progress.values()))))
+            return real(*args, **kwargs)
+
+        with patch.object(escaneo, "escanear_trozo", side_effect=mirar):
+            scan_id = self.run_scan(rangos=["10.0.0.0/30"], presets=["rapido", "vpn"])
+            self.wait_scan(scan_id)
+        self.assertEqual(vistas, [{"preset": "Rápido", "trozo": 1, "total": 2},
+                                  {"preset": "Red difícil / VPN", "trozo": 2, "total": 2}])
+        self.assertNotIn(scan_id, self.store.scan_progress)
+
+    def test_resumen_cuenta_solo_lo_que_esta_en_alcance(self):
+        audit = self.store.create_audit({"nombre": "Con exclusión", "incluir": "10.1.0.0/24", "excluir": "10.1.0.0/25"})
+        resumen = self.store.scan_summary(audit["id"], ["10.1.0.0/24"], ["rapido"])
+        self.assertEqual((resumen["ips"], resumen["trozos"]), (128, 1))
+        self.assertIsInstance(resumen["estimacion"], str)
+        self.assertEqual(resumen["aviso"], "")
+
+    def test_resumen_avisa_de_vpn_o_completo_con_muchas_ip(self):
+        audit = self.store.create_audit({"nombre": "Grande", "incluir": "10.2.0.0/21"})
+        for preset in ("vpn", "completo"):
+            self.assertTrue(self.store.scan_summary(audit["id"], [], [preset])["aviso"], preset)
+        self.assertEqual(self.store.scan_summary(audit["id"], [], ["rapido"])["aviso"], "")
+        pequena = self.store.create_audit({"nombre": "Pequeña", "incluir": "10.3.0.0/24"})
+        self.assertEqual(self.store.scan_summary(pequena["id"], [], ["vpn"])["aviso"], "")
+
+    def test_resumen_rechaza_rangos_fuera_de_la_ficha_y_presets_raros(self):
+        with self.assertRaises(ValueError):
+            self.store.scan_summary(self.audit["id"], ["192.168.0.0/24"], ["rapido"])
+        with self.assertRaises(ValueError):
+            self.store.scan_summary(self.audit["id"], [], ["inexistente"])
+
+
+class RutasEscaneoTests(unittest.TestCase):
+    def setUp(self):
+        parche = patch("dedalo.web.exploits.actualizar_fuentes")
+        parche.start()
+        self.addCleanup(parche.stop)
+        self.temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.temp.cleanup)
+        self.store = PortalStore(self.temp.name)
+        self.addCleanup(self.store.close)
+        self.server = PortalServer(("127.0.0.1", 0), self.store)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self.thread.join)
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.url = "http://127.0.0.1:" + str(self.server.server_address[1])
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.audit = self.store.create_audit({"nombre": "Cliente", "incluir": "10.0.0.0/24"})["id"]
+
+    def request(self, route, data=None, headers=None):
+        values = {"Content-Type": "application/json", "X-Dedalo-Token": self.store.token}
+        values.update(headers or {})
+        request = urllib.request.Request(self.url + route, data=json.dumps(data).encode() if data is not None else None,
+                                         headers=values)
+        try:
+            response = self.opener.open(request, timeout=5)
+        except urllib.error.HTTPError as exc:
+            response = exc
+        with response:
+            return response.status, json.loads(response.read())
+
+    def test_escanear_llama_a_scan_con_la_carga(self):
+        carga = {"rangos": ["10.0.0.0/24"], "presets": ["rapido"], "capturar": False}
+        with patch.object(PortalStore, "scan", autospec=True, return_value={"id": "abc"}) as scan:
+            estado, cuerpo = self.request(f"/api/audits/{self.audit}/escanear", carga)
+        self.assertEqual((estado, cuerpo), (202, {"id": "abc"}))
+        scan.assert_called_once_with(self.store, self.audit, carga)
+
+    def test_detener_llama_a_stop_scan(self):
+        scan_id = "a" * 32
+        with patch.object(PortalStore, "stop_scan", autospec=True, return_value={"id": scan_id}) as stop:
+            estado, _ = self.request(f"/api/escaneos/{scan_id}/detener", {})
+        self.assertEqual(estado, 200)
+        stop.assert_called_once_with(self.store, scan_id)
+
+    def test_las_rutas_de_escaneo_exigen_token_y_origen(self):
+        scan_id = "a" * 32
+        rutas = [f"/api/audits/{self.audit}/escanear", f"/api/escaneos/{scan_id}/detener",
+                 f"/api/audits/{self.audit}/escaneos/resumen"]
+        with patch.object(PortalStore, "scan") as scan, patch.object(PortalStore, "stop_scan") as stop, \
+                patch.object(PortalStore, "scan_summary") as resumen:
+            for ruta in rutas:
+                for cabeceras in ({"X-Dedalo-Token": "wrong"}, {"Origin": "https://example.org"}):
+                    with self.subTest(ruta=ruta, cabeceras=cabeceras):
+                        self.assertEqual(self.request(ruta, {"presets": ["rapido"]}, cabeceras)[0], 403)
+        scan.assert_not_called()
+        stop.assert_not_called()
+        resumen.assert_not_called()
+
+    def test_lista_de_escaneos_de_la_ficha(self):
+        estado, cuerpo = self.request(f"/api/audits/{self.audit}/escaneos")
+        self.assertEqual(estado, 200)
+        self.assertEqual(cuerpo["escaneos"], [])
+        self.assertIn("ok", cuerpo["nmap"])
+
+    def test_lista_de_una_ficha_inexistente_es_400(self):
+        self.assertEqual(self.request("/api/audits/" + "0" * 32 + "/escaneos")[0], 400)
+
+    def test_resumen_por_la_ruta(self):
+        estado, cuerpo = self.request(f"/api/audits/{self.audit}/escaneos/resumen",
+                                      {"rangos": ["10.0.0.0/24"], "presets": ["rapido"]})
+        self.assertEqual(estado, 200)
+        self.assertEqual((cuerpo["ips"], cuerpo["trozos"]), (256, 1))
+
+
+class ServePortalNmapTests(unittest.TestCase):
+    def test_serve_portal_pasa_nmap_al_almacen(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args = cli.build_parser().parse_args(["web", "--datos", temp, "--gowitness", "x", "--nmap", "/ruta/nmap"])
+            with patch.object(web, "PortalStore") as almacen, patch.object(web, "PortalServer", side_effect=RuntimeError("stop")):
+                with self.assertRaises(RuntimeError):
+                    web.serve_portal(args)
+        self.assertEqual(almacen.call_args.kwargs["nmap"], "/ruta/nmap")

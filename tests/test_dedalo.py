@@ -804,3 +804,10 @@ class ManifestWriteTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 report.replace(Path(temporary) / "a", Path(temporary) / "b", attempts=3)
         self.assertEqual(replace.call_count, 3 if os.name == "nt" else 1)
+
+
+class NmapOpcionTests(unittest.TestCase):
+    def test_web_acepta_nmap(self):
+        parser_ = cli.build_parser()
+        self.assertEqual(parser_.parse_args(["web", "--nmap", "/usr/bin/nmap"]).nmap, "/usr/bin/nmap")
+        self.assertIsNone(parser_.parse_args(["web"]).nmap)
