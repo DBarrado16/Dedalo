@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 import zipfile
 
-from dedalo import auditoria, cli, cve, favicones, gowitness, report, web
+from dedalo import auditoria, cli, cve, escaneo, favicones, gowitness, report, web
 from dedalo.web import PortalStore, PortalServer
 from tests.test_dedalo import LEAKLESS_REASON, ROOT, blocked_gorod, fake_database
 from tests.test_gowitness_fingerprint import build_gowitness_db
@@ -2419,6 +2419,56 @@ class PortalEscaneoTests(unittest.TestCase):
         vacia = self.store.create_audit({"nombre": "Vacía", "incluir": ""})
         with self.assertRaises(web.Conflict):
             self.store.scan(vacia["id"], {"rangos": [], "presets": ["rapido"], "capturar": False})
+
+    def test_scan_solo_ipv6_no_lanza(self):
+        v6 = self.store.create_audit({"nombre": "IPv6", "incluir": "2001:db8::/64"})
+        with self.assertRaises(web.Conflict):
+            self.store.scan(v6["id"], {"rangos": [], "presets": ["rapido"], "capturar": False})
+
+    def test_scan_rechaza_mas_de_65536_direcciones(self):
+        grande = self.store.create_audit({"nombre": "Grande", "incluir": "10.0.0.0/8"})
+        with self.assertRaises(ValueError) as ctx:
+            self.store.scan(grande["id"], {"rangos": ["10.0.0.0/15"], "presets": ["rapido"], "capturar": False})
+        self.assertNotIsInstance(ctx.exception, web.Conflict)
+        self.assertIn("65.536", str(ctx.exception))
+
+    def test_scan_parada_del_usuario_importa_lo_terminado(self):
+        llamadas = []
+        real = escaneo.escanear_trozo
+
+        def lento_el_segundo(*args, **kwargs):
+            llamadas.append(args[1])
+            if len(llamadas) == 2:
+                os.environ["FAKE_NMAP_ESPERA"] = "20"  # el primer trozo ya terminó; el segundo se atasca
+            return real(*args, **kwargs)
+
+        with patch.dict(os.environ, {"FAKE_NMAP_ESPERA": "0"}), \
+                patch.object(escaneo, "escanear_trozo", side_effect=lento_el_segundo):
+            scan_id = self.run_scan(rangos=["10.0.0.0/30"], presets=["rapido", "vpn"])
+            limite = time.monotonic() + 10
+            while not list(self.store.directory(scan_id).glob("vpn-*/objetivos.txt")) \
+                    and time.monotonic() < limite:
+                time.sleep(0.02)
+            self.assertTrue(list(self.store.directory(scan_id).glob("vpn-*/objetivos.txt")),
+                            "el segundo trozo no llegó a arrancar")
+            self.store.stop_scan(scan_id)
+            estado = self.wait_scan(scan_id)
+        self.assertEqual(estado["estado"], "parcial", estado)
+        self.assertTrue(estado["importacion"])
+        self.assertIn("10.0.0.1", self.observados(estado["importacion"]))
+        self.assertFalse(list(self.store.directory(scan_id).glob("vpn-*/salida.xml")))
+
+    def test_scan_parada_del_usuario_sin_nada_terminado_se_cancela(self):
+        with patch.dict(os.environ, {"FAKE_NMAP_ESPERA": "20"}):
+            scan_id = self.run_scan(rangos=["10.0.0.0/30"])
+            limite = time.monotonic() + 10
+            while not self.objetivos(scan_id) and time.monotonic() < limite:
+                time.sleep(0.02)
+            self.assertTrue(self.objetivos(scan_id), "el trozo no llegó a arrancar")
+            self.store.stop_scan(scan_id)
+            estado = self.wait_scan(scan_id)
+        self.assertEqual(estado["estado"], "cancelada", estado)
+        self.assertFalse(estado["importacion"])
 
     def test_scan_no_pasa_excluidas_a_nmap(self):
         self.store.update_audit(self.audit["id"],

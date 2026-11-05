@@ -1381,6 +1381,8 @@ class PortalStore:
             if not scope.include:
                 raise Conflict("Define el alcance de la ficha antes de escanear.")
             objetivos = self._scan_targets(rangos, scope)  # valida que los rangos estén dentro del alcance
+            if not objetivos:
+                raise Conflict("La ficha no tiene alcance IPv4 que escanear.")
             total = sum(red.num_addresses for red in objetivos)
             if total > 65536:
                 raise ValueError("Demasiadas direcciones para un escaneo (máximo 65.536). Acota los rangos.")
@@ -1447,6 +1449,7 @@ class PortalStore:
                     break
                 while True:  # se repite si un cambio de alcance obliga a relanzar el trozo
                     try:
+                        contador = self.scope_changes  # ANTES de leer: una edición posterior a la lectura se detecta
                         scope = leer_scope()
                     except Exception as exc:
                         print(f"Error del portal: no se pudo leer el alcance del escaneo {scan_id}: {exc}",
@@ -1460,7 +1463,6 @@ class PortalStore:
                     carpeta.mkdir(parents=True, exist_ok=True)
                     (carpeta / "salida.xml").unlink(missing_ok=True)  # descarta un intento anterior a medias
                     parada["motivo"] = None
-                    contador = self.scope_changes
                     dentro_vivo = set(dentro)
 
                     def parar(_contador=contador, _dentro=dentro_vivo):
