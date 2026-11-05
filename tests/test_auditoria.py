@@ -1,10 +1,12 @@
 from contextlib import closing
 import hashlib
+import json
 from pathlib import Path
 import shutil
 import sqlite3
 import tempfile
 import unittest
+import uuid
 
 from dedalo import auditoria, db, inventory, parser
 from tests.test_dedalo import ROOT
@@ -413,3 +415,56 @@ class CortesDelProxyTests(unittest.TestCase):
         self.assertEqual(self.con.execute("SELECT estado FROM captura WHERE ejecucion_id = ?",
                                           (self.capture,)).fetchone()[0], "sin_captura")
         self.assertEqual(auditoria.capture_blocks(self.con, self.capture), {})
+
+
+class EscaneoTests(unittest.TestCase):
+    OPCIONES = {"rangos": ["10.0.0.0/24"], "presets": ["rapido"], "capturar": False}
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.con = db.connect(self.root)
+        self.audit = auditoria.default_audit(self.con)
+
+    def tearDown(self):
+        self.con.close()
+        self.temp.cleanup()
+
+    def test_start_scan_crea_en_cola_ligado_a_la_ficha(self):
+        sid = auditoria.start_scan(self.con, self.audit, self.OPCIONES)
+        self.assertEqual(auditoria.scan_status(self.con, sid), {"estado": "en_cola", "error": "", "importacion": None})
+        row = self.con.execute("SELECT auditoria_id, tipo, origen_id, nombre, opciones FROM ejecucion WHERE id = ?",
+                               (sid,)).fetchone()
+        self.assertEqual((row["auditoria_id"], row["tipo"], row["origen_id"]), (self.audit, "escaneo", None))
+        self.assertTrue(row["nombre"].startswith("Escaneo Nmap · "))
+        self.assertEqual(json.loads(row["opciones"]), self.OPCIONES)
+
+    def test_start_scan_ficha_inexistente(self):
+        with self.assertRaises(ValueError):
+            auditoria.start_scan(self.con, "no-existe", self.OPCIONES)
+
+    def test_begin_y_stop_scan(self):
+        sid = auditoria.start_scan(self.con, self.audit, self.OPCIONES)
+        self.assertEqual(auditoria.stop_scan(self.con, sid), "cancelada")  # en cola: se cancela sin más
+        self.assertFalse(auditoria.begin_scan(self.con, sid))  # ya no está en cola
+        otro = auditoria.start_scan(self.con, self.audit, self.OPCIONES)
+        self.assertTrue(auditoria.begin_scan(self.con, otro))
+        self.assertEqual(auditoria.scan_status(self.con, otro)["estado"], "en_curso")
+        self.assertEqual(auditoria.stop_scan(self.con, otro), "deteniendo")
+        self.assertIsNone(auditoria.stop_scan(self.con, "no-existe"))
+        self.assertIsNone(auditoria.scan_status(self.con, "no-existe"))
+
+    def test_link_scan_import_no_usa_cascada(self):
+        sid = auditoria.start_scan(self.con, self.audit, self.OPCIONES)
+        imp = uuid.uuid4().hex
+        with self.con:
+            self.con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, nombre, estado, creada) "
+                             "VALUES (?, ?, 'importacion', 'Nmap', 'completa', ?)", (imp, self.audit, auditoria.now()))
+        auditoria.link_scan_import(self.con, sid, imp)
+        self.assertEqual(auditoria.scan_status(self.con, sid)["importacion"], imp)
+        inversa = self.con.execute("SELECT opciones FROM ejecucion WHERE id = ?", (imp,)).fetchone()[0]
+        self.assertEqual(json.loads(inversa)["escaneo"], sid)
+        self.assertIsNone(self.con.execute("SELECT origen_id FROM ejecucion WHERE id = ?", (imp,)).fetchone()[0])
+        with self.con:
+            self.con.execute("DELETE FROM ejecucion WHERE id = ?", (sid,))
+        self.assertTrue(auditoria.has_execution(self.con, imp))  # la importación sigue

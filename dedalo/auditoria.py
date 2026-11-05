@@ -612,6 +612,55 @@ def discovery_status(con, import_id: str) -> dict | None:
     return {"estado": row["estado"], "error": row["error"]} if row else None
 
 
+def start_scan(con, audit_id: str, options: dict, created: str | None = None) -> str:
+    """Crea en cola un escaneo Nmap ligado a la ficha (no a una importación).
+
+    El vínculo con la importación que produzca va en `opciones` (link_scan_import), no en
+    `origen_id`: su FK borra en cascada y borrar el escaneo se llevaría la importación.
+    """
+    if not audit_exists(con, audit_id):
+        raise ValueError("La ficha no existe")
+    scan_id, stamp = uuid.uuid4().hex, created or now()
+    with con:
+        con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada) "
+                    "VALUES (?, ?, 'escaneo', NULL, ?, 'en_cola', ?, ?)",
+                    (scan_id, audit_id, f"Escaneo Nmap · {stamp}", json.dumps(options, ensure_ascii=False), stamp))
+    return scan_id
+
+
+def begin_scan(con, scan_id: str) -> bool:
+    with con:
+        return _set_state(con, scan_id, "en_curso", only_from="en_cola")
+
+
+def stop_scan(con, scan_id: str) -> str | None:
+    with con:
+        if _set_state(con, scan_id, "cancelada", "Se canceló antes de empezar.", only_from="en_cola"):
+            return "cancelada"
+        if _set_state(con, scan_id, "deteniendo", only_from="en_curso"):
+            return "deteniendo"
+    return None
+
+
+def scan_status(con, scan_id: str) -> dict | None:
+    row = con.execute("SELECT estado, error, opciones FROM ejecucion WHERE id = ? AND tipo = 'escaneo'",
+                      (scan_id,)).fetchone()
+    if row is None:
+        return None
+    return {"estado": row["estado"], "error": row["error"], "importacion": json.loads(row["opciones"]).get("importacion")}
+
+
+def link_scan_import(con, scan_id: str, import_id: str) -> None:
+    """Anota en cada lado el id del otro, en `opciones`; sin `origen_id` (su FK borra en cascada)."""
+    for own, other, key in ((scan_id, import_id, "importacion"), (import_id, scan_id, "escaneo")):
+        row = con.execute("SELECT opciones FROM ejecucion WHERE id = ?", (own,)).fetchone()
+        if row is None:
+            raise ValueError("Ejecución no encontrada")
+        with con:
+            con.execute("UPDATE ejecucion SET opciones = ? WHERE id = ?",
+                        (json.dumps({**json.loads(row["opciones"]), key: other}, ensure_ascii=False), own))
+
+
 def finish_discovery(con, disc_id: str, rows: list[dict]) -> None:
     """Vuelca lo encontrado a observaciones (nombres y servidores DNS) y da el descubrimiento por completo."""
     audit_id = con.execute("SELECT auditoria_id FROM ejecucion WHERE id = ?", (disc_id,)).fetchone()["auditoria_id"]
