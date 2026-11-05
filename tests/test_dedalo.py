@@ -807,8 +807,7 @@ class ManifestWriteTests(unittest.TestCase):
 
 
 class NmapOpcionTests(unittest.TestCase):
-    def test_web_y_capturar_aceptan_nmap(self):
+    def test_web_acepta_nmap(self):
         parser_ = cli.build_parser()
         self.assertEqual(parser_.parse_args(["web", "--nmap", "/usr/bin/nmap"]).nmap, "/usr/bin/nmap")
-        self.assertEqual(parser_.parse_args(["capturar", "x.xml", "--nmap", "/x"]).nmap, "/x")
         self.assertIsNone(parser_.parse_args(["web"]).nmap)

@@ -232,7 +232,7 @@ El botón **Escanear con Nmap** de la ficha (junto a la subida de archivos) lanz
 - Los hosts sin ningún puerto abierto (con cualquier preset) no se importan, y un host con más de 1.000 puertos abiertos entra sin puertos y con la observación «responde en todos los puertos». Los XML completos quedan como evidencia, con `escaneo.json` y la salida de Nmap, en la carpeta del escaneo.
 - La casilla **Capturar las webs al terminar** encola la captura de la importación resultante.
 
-`--nmap RUTA` existe en `web` y en `capturar`.
+`--nmap RUTA` existe solo en `web`.
 
 ## Uso desde consola
 

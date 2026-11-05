@@ -75,7 +75,6 @@ def build_parser() -> argparse.ArgumentParser:
                          help="No quemar la barra con la URL en las capturas (por defecto sí se quema)")
     capture.add_argument("--chrome", help="Ruta o nombre del ejecutable Chrome/Chromium/Edge")
     capture.add_argument("--gowitness", help="Ruta o nombre del ejecutable gowitness v3")
-    capture.add_argument("--nmap", help="Ruta o nombre del ejecutable de Nmap (lo usa el escaneo del portal)")
     capture.add_argument("--stop-file", help=argparse.SUPPRESS)
     # Alcance vigente que el portal reescribe si cambia la ficha: se relee antes de cada pasada.
     capture.add_argument("--alcance-vivo", help=argparse.SUPPRESS)
