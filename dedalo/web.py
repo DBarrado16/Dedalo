@@ -1383,6 +1383,12 @@ class PortalStore:
             redes.append(red)
         return redes
 
+    def _tope_ips(self, objetivos):
+        """Rechaza una selección con más direcciones de las que un escaneo admite de una vez."""
+        if sum(red.num_addresses for red in objetivos) > descubrimiento.MAX_ADDRESSES:
+            tope = f"{descubrimiento.MAX_ADDRESSES:,}".replace(",", ".")
+            raise ValueError(f"Demasiadas direcciones para un escaneo (máximo {tope}). Acota los rangos.")
+
     def _scan_detail(self, scan_id):
         """La ficha del escaneo (estado, error y la importación que haya producido)."""
         with closing(self.database()) as con:
@@ -1418,9 +1424,7 @@ class PortalStore:
             objetivos = self._scan_targets(rangos, scope)  # valida que los rangos estén dentro del alcance
             if not objetivos:
                 raise Conflict("La ficha no tiene alcance IPv4 que escanear.")
-            total = sum(red.num_addresses for red in objetivos)
-            if total > 65536:
-                raise ValueError("Demasiadas direcciones para un escaneo (máximo 65.536). Acota los rangos.")
+            self._tope_ips(objetivos)
             try:
                 escaneo.find_nmap(self.nmap_option)
             except ValueError as exc:
@@ -1465,8 +1469,7 @@ class PortalStore:
                 raise ValueError("Elige una ficha de cliente existente")
             scope = auditoria.scope(con, audit_id)
         objetivos = self._scan_targets(rangos, scope)
-        if sum(red.num_addresses for red in objetivos) > 65536:
-            raise ValueError("Demasiadas direcciones para un escaneo (máximo 65.536). Acota los rangos.")
+        self._tope_ips(objetivos)
         trozos = escaneo.trocear([str(red) for red in objetivos])
         ips = sum(len(escaneo.objetivos_del_trozo(trozo, scope)[0]) for trozo in trozos)
         lentos = [escaneo.PRESETS[p]["etiqueta"] for p in presets if p in escaneo.PRESETS_LENTOS]
@@ -1572,8 +1575,7 @@ class PortalStore:
                                                    "trozo": n_preset * len(trozos) + indice + 1,
                                                    "total": len(presets) * len(trozos)}
                     resultado = escaneo.escanear_trozo(nmap, preset, dentro, excluidas, carpeta, parar=parar)
-                    registro.append({"preset": preset, "trozo": str(bloque),
-                                     **{k: resultado[k] for k in ("comando", "inicio", "fin", "codigo", "relanzado")}})
+                    registro.append({"preset": preset, "trozo": str(bloque), **resultado})
                     if resultado["relanzado"]:
                         (carpeta / "salida.xml").unlink(missing_ok=True)  # parcial: se descarta y se relanza
                         motivo = parada["motivo"]
