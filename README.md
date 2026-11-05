@@ -17,6 +17,7 @@ Acepta XML (`-oX`), grepable (`-oG`) y salida normal (`-oN`), detectados por el 
 - Python 3.12 o superior. Solo usa la librería estándar; no hay paquetes que instalar con pip.
 - [gowitness v3](https://github.com/sensepost/gowitness), probado con **3.2.0**. Colocar el ejecutable en `bin/gowitness.exe` (Windows), `bin/gowitness` (Linux), en el PATH o indicar `--gowitness`.
 - Chrome, Chromium o Edge. Se detectan automáticamente o se indican con `--chrome`. Si no se encuentra ninguno, la captura no arranca: Dédalo no deja que gowitness descargue un navegador sin verificar.
+- Opcional, para escanear desde el portal: [Nmap](https://nmap.org/download), en el mismo equipo. En Windows necesita además [Npcap](https://npcap.com) (lo ofrece el instalador de Nmap; pide permisos de administrador una sola vez). Dédalo no lo descarga ni lo instala: lo busca en `C:\Program Files (x86)\Nmap`, `C:\Program Files\Nmap`, el PATH y `/usr/bin/nmap`, o lo indicas con `--nmap`. Subir ficheros de Nmap no lo necesita.
 - Opcional, para la priorización con IA: [Ollama](https://ollama.com) en el mismo equipo, con un modelo descargado. El resto del portal funciona sin él.
 
 El ejecutable de gowitness no se incluye en el repositorio. `python -m dedalo instalar` descarga el binario oficial para Windows, Linux o macOS (Intel o ARM), comprueba su SHA-256 contra la huella fijada en `dedalo/gowitness.py` y lo coloca en `bin/`. El portal lo hace automáticamente al arrancar si no encuentra gowitness **o si el que encuentra es de otra versión** (lo típico en WSL/Kali, donde el gowitness del sistema no conoce los flags que usa Dédalo): comprueba la versión y descarga solo el binario fijado, sin pasos a mano. Solo se salta esta comprobación si se indicó `--gowitness` (ahí mandas tú). Si la descarga falla, el portal arranca igualmente y muestra el aviso. Los comandos `capturar` y `ver` no descargan nada por su cuenta.
@@ -101,6 +102,9 @@ python -m dedalo web --puerto 8788 --datos portal_datos_cliente
 
 # Indicar los ejecutables del equipo que hace las capturas
 python -m dedalo web --chrome "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --gowitness bin/gowitness.exe
+
+# Indicar dónde está Nmap, si no lo encuentra solo
+python -m dedalo web --nmap "D:\Herramientas\Nmap\nmap.exe"
 ```
 
 El portal admite hasta 20 archivos por carga (10 MB por archivo y 24 MB en total en la interfaz), con un máximo de 100.000 objetivos por ejecución. Muestra los resultados por páginas de 60 objetivos. Los ajustes de ejecutables se realizan al arrancar el servidor, no desde los archivos subidos.
@@ -214,6 +218,22 @@ Lo encontrado se guarda como observaciones de esa ejecución: los nombres en el 
 
 Para no teclear la subred a mano, el botón **Detectar mis redes** —en el formulario de la ficha y en esta pestaña— lee las interfaces de **tu propio equipo** (`ipconfig` en Windows, `ip addr` en Linux) y propone sus subredes como alcance. Solo mira las interfaces locales, no conecta con nada, y tú revisas lo que propone antes de guardarlo.
 
+## Escaneo con Nmap
+
+El botón **Escanear con Nmap** de la ficha (junto a la subida de archivos) lanza Nmap sobre las **IPv4 en alcance** de la ficha y el resultado entra como una importación más: inventario, capturas, priorización y cruce de vulnerabilidades funcionan igual. Si la ficha no tiene reglas `incluir` IPv4 o Dédalo no encuentra Nmap, el botón lo explica. Las reglas `incluir` IPv6 se ignoran.
+
+- **Presets** (fijos; puedes marcar varios y se lanzan seguidos y se juntan en una sola importación). Todos usan `-sT` (escaneo por conexión): no hace falta ser administrador y funciona por VPN. Ninguno usa scripts NSE.
+  - `Rápido`: los 1.000 puertos más comunes con detección de versión (`--top-ports 1000 -sV`).
+  - `Completo`: todos los puertos TCP con detección de versión (`-p- -sV`). Puede tardar horas en rangos grandes.
+  - `Red difícil / VPN`: `-Pn` (no da por caído a nadie aunque no conteste al ping) y más paciente. Prueba los puertos también en las IP vacías, así que en un rango grande es lento.
+- **Límite:** hasta **65.536 IP en alcance** (un /16) por lanzamiento; con más, el portal pide dividir el alcance.
+- **Alcance.** Los rangos se trocean en bloques /24 que se escanean de uno en uno; antes de cada trozo se relee el alcance y a Nmap solo se le pasan las IP que siguen en alcance. Si excluyes una IP mientras corre, Nmap se para y el trozo se relanza sin ella (hay un margen de un segundo y poco más; ver `docs/CONTRATOS.md`, §0.3).
+- **Detener** o cerrar el portal para Nmap. Lo ya terminado se importa como resultado `parcial`.
+- Los hosts que `-Pn` da por activos sin ningún puerto abierto no se importan, y un host con más de 1.000 puertos abiertos entra sin puertos y con la observación «responde en todos los puertos». Los XML completos quedan como evidencia, con `escaneo.json` y la salida de Nmap, en la carpeta del escaneo.
+- La casilla **Capturar las webs al terminar** encola la captura de la importación resultante.
+
+`--nmap RUTA` existe en `web` y en `capturar`.
+
 ## Uso desde consola
 
 Crear `rangos.txt` con un CIDR por línea:
@@ -273,6 +293,7 @@ Límite conocido: Chromium no manda por el proxy lo que va al propio equipo ni, 
 | `--sin-barra-url` | No quema la barra con la URL en las capturas (por defecto sí se quema). |
 | `--chrome RUTA` | Navegador que debe utilizar. |
 | `--gowitness RUTA` | Ejecutable de gowitness v3. |
+| `--nmap RUTA` | Ejecutable de Nmap (lo usa el escaneo del portal). |
 
 **Barra de URL (para informes).** Por defecto cada captura lleva quemada una **barra de direcciones** estilo navegador con su URL, para pegarla suelta en un informe y que se vea de qué objetivo es. La compone Chrome a partir de la imagen ya capturada (una pasada más por captura) y, con la barra activa, el formato de la imagen pasa a **PNG**. Se apaga con `--sin-barra-url` o con la casilla «Barra de URL en las capturas» del portal.
 
