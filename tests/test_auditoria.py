@@ -468,3 +468,31 @@ class EscaneoTests(unittest.TestCase):
         with self.con:
             self.con.execute("DELETE FROM ejecucion WHERE id = ?", (sid,))
         self.assertTrue(auditoria.has_execution(self.con, imp))  # la importación sigue
+
+    def importacion(self):
+        imp = uuid.uuid4().hex
+        with self.con:
+            self.con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, nombre, estado, creada) "
+                             "VALUES (?, ?, 'importacion', 'Nmap', 'en_cola', ?)", (imp, self.audit, auditoria.now()))
+        return imp
+
+    def estado(self, execution_id):
+        return self.con.execute("SELECT estado FROM ejecucion WHERE id = ?", (execution_id,)).fetchone()[0]
+
+    def test_begin_y_stop_scan_ignoran_ejecuciones_que_no_son_escaneo(self):
+        imp = self.importacion()
+        self.assertFalse(auditoria.begin_scan(self.con, imp))
+        self.assertIsNone(auditoria.stop_scan(self.con, imp))
+        self.assertEqual(self.estado(imp), "en_cola")
+
+    def test_link_scan_import_no_deja_vinculo_a_medias(self):
+        sid = auditoria.start_scan(self.con, self.audit, self.OPCIONES)
+        with self.assertRaises(ValueError):
+            auditoria.link_scan_import(self.con, sid, "no-existe")
+        self.assertIsNone(auditoria.scan_status(self.con, sid)["importacion"])
+        # tipos cruzados tampoco valen
+        imp = self.importacion()
+        with self.assertRaises(ValueError):
+            auditoria.link_scan_import(self.con, imp, sid)
+        self.assertEqual(json.loads(self.con.execute("SELECT opciones FROM ejecucion WHERE id = ?", (sid,)).fetchone()[0]),
+                         self.OPCIONES)

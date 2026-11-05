@@ -628,13 +628,19 @@ def start_scan(con, audit_id: str, options: dict, created: str | None = None) ->
     return scan_id
 
 
+def _is_scan(con, scan_id: str) -> bool:
+    return con.execute("SELECT 1 FROM ejecucion WHERE id = ? AND tipo = 'escaneo'", (scan_id,)).fetchone() is not None
+
+
 def begin_scan(con, scan_id: str) -> bool:
     with con:
-        return _set_state(con, scan_id, "en_curso", only_from="en_cola")
+        return _is_scan(con, scan_id) and _set_state(con, scan_id, "en_curso", only_from="en_cola")
 
 
 def stop_scan(con, scan_id: str) -> str | None:
     with con:
+        if not _is_scan(con, scan_id):
+            return None
         if _set_state(con, scan_id, "cancelada", "Se canceló antes de empezar.", only_from="en_cola"):
             return "cancelada"
         if _set_state(con, scan_id, "deteniendo", only_from="en_curso"):
@@ -651,14 +657,19 @@ def scan_status(con, scan_id: str) -> dict | None:
 
 
 def link_scan_import(con, scan_id: str, import_id: str) -> None:
-    """Anota en cada lado el id del otro, en `opciones`; sin `origen_id` (su FK borra en cascada)."""
-    for own, other, key in ((scan_id, import_id, "importacion"), (import_id, scan_id, "escaneo")):
-        row = con.execute("SELECT opciones FROM ejecucion WHERE id = ?", (own,)).fetchone()
-        if row is None:
-            raise ValueError("Ejecución no encontrada")
-        with con:
-            con.execute("UPDATE ejecucion SET opciones = ? WHERE id = ?",
-                        (json.dumps({**json.loads(row["opciones"]), key: other}, ensure_ascii=False), own))
+    """Anota en cada lado el id del otro, en `opciones`; sin `origen_id` (su FK borra en cascada).
+
+    Valida los dos extremos antes de escribir y guarda ambos lados en una sola transacción.
+    """
+    pares = ((scan_id, import_id, "escaneo", "importacion"), (import_id, scan_id, "importacion", "escaneo"))
+    with con:
+        nuevas = []
+        for own, other, kind, key in pares:
+            row = con.execute("SELECT opciones FROM ejecucion WHERE id = ? AND tipo = ?", (own, kind)).fetchone()
+            if row is None:
+                raise ValueError(f"No hay {kind} con ese id")
+            nuevas.append((json.dumps({**json.loads(row["opciones"]), key: other}, ensure_ascii=False), own))
+        con.executemany("UPDATE ejecucion SET opciones = ? WHERE id = ?", nuevas)
 
 
 def finish_discovery(con, disc_id: str, rows: list[dict]) -> None:
