@@ -226,10 +226,10 @@ El botón **Escanear con Nmap** de la ficha (junto a la subida de archivos) lanz
   - `Rápido`: los 1.000 puertos más comunes con detección de versión (`--top-ports 1000 -sV`).
   - `Completo`: todos los puertos TCP con detección de versión (`-p- -sV`). Puede tardar horas en rangos grandes.
   - `Red difícil / VPN`: `-Pn` (no da por caído a nadie aunque no conteste al ping) y más paciente. Prueba los puertos también en las IP vacías, así que en un rango grande es lento.
-- **Límite:** hasta **65.536 IP en alcance** (un /16) por lanzamiento; con más, el portal pide dividir el alcance.
-- **Alcance.** Los rangos se trocean en bloques /24 que se escanean de uno en uno; antes de cada trozo se relee el alcance y a Nmap solo se le pasan las IP que siguen en alcance. Si excluyes una IP mientras corre, Nmap se para y el trozo se relanza sin ella (hay un margen de un segundo y poco más; ver `docs/CONTRATOS.md`, §0.3).
+- **Límite:** hasta **65.536 direcciones** (un /16) en los rangos a escanear, contadas antes de restar las exclusiones, por lanzamiento; con más, el portal pide dividir el alcance.
+- **Alcance.** Los rangos se trocean en bloques /24 que se escanean de uno en uno; antes de cada trozo se relee el alcance y a Nmap solo se le pasan las IP que siguen en alcance. Si excluyes una IP mientras corre, Nmap se para y el trozo se relanza sin ella (se sondea cada 0,1 s si la ficha cambió y queda un margen pequeño hasta que Nmap sale; ver `docs/CONTRATOS.md`, §0.3).
 - **Detener** o cerrar el portal para Nmap. Lo ya terminado se importa como resultado `parcial`.
-- Los hosts que `-Pn` da por activos sin ningún puerto abierto no se importan, y un host con más de 1.000 puertos abiertos entra sin puertos y con la observación «responde en todos los puertos». Los XML completos quedan como evidencia, con `escaneo.json` y la salida de Nmap, en la carpeta del escaneo.
+- Los hosts sin ningún puerto abierto (con cualquier preset) no se importan, y un host con más de 1.000 puertos abiertos entra sin puertos y con la observación «responde en todos los puertos». Los XML completos quedan como evidencia, con `escaneo.json` y la salida de Nmap, en la carpeta del escaneo.
 - La casilla **Capturar las webs al terminar** encola la captura de la importación resultante.
 
 `--nmap RUTA` existe en `web` y en `capturar`.
