@@ -56,6 +56,24 @@ class DatabaseTests(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError), self.con:
             self.con.execute("INSERT INTO captura_bloqueo (captura_id, destino, motivo) VALUES (?, 'x', 'otro')", (capture,))
 
+    def test_migracion_9_admite_tipo_escaneo_y_conserva_ejecuciones(self):
+        self.assertGreaterEqual(LATEST, 9)
+        self.audit()
+        with self.con:
+            self.con.execute("UPDATE ejecucion SET manifiesto_registrado = 42 WHERE id = 'e1'")
+            self.con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, nombre, estado, creada) "
+                             "VALUES ('e2', 'a1', 'escaneo', 'Nmap', 'preparada', '2026-09-28T00:00:00Z')")
+        columns = [row[1] for row in self.con.execute("PRAGMA table_info(ejecucion)")]
+        self.assertIn("manifiesto_registrado", columns)
+        self.assertEqual(self.con.execute(
+            "SELECT manifiesto_registrado FROM ejecucion WHERE id = 'e1'").fetchone()[0], 42)
+        indexes = {row[0] for row in self.con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ejecucion'")}
+        self.assertTrue({"ejecucion_auditoria", "ejecucion_origen"} <= indexes)
+        with self.assertRaises(sqlite3.IntegrityError), self.con:
+            self.con.execute("INSERT INTO ejecucion (id, auditoria_id, tipo, nombre, estado, creada) "
+                             "VALUES ('e3', 'a1', 'otro', 'x', 'preparada', '2026-09-28T00:00:00Z')")
+
     def test_reopening_keeps_data_and_does_not_migrate_again(self):
         self.audit()
         self.con.close()

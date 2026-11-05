@@ -340,6 +340,31 @@ CREATE TABLE captura_bloqueo (
 );
 CREATE INDEX captura_bloqueo_captura ON captura_bloqueo (captura_id);
 """,
+    # Tipo de ejecución `escaneo` (Nmap lanzado desde el portal). Reconstruye `ejecucion` como la 6,
+    # conservando la columna `manifiesto_registrado` que añadió la 7.
+    9: """
+CREATE TABLE nueva_ejecucion (
+  id           TEXT PRIMARY KEY,
+  auditoria_id TEXT NOT NULL REFERENCES auditoria(id) ON DELETE CASCADE,
+  tipo         TEXT NOT NULL CHECK (tipo IN ('importacion', 'captura', 'descubrimiento', 'analisis', 'credenciales', 'version', 'vuln', 'escaneo')),
+  origen_id    TEXT REFERENCES ejecucion(id) ON DELETE CASCADE,
+  nombre       TEXT NOT NULL,
+  estado       TEXT NOT NULL CHECK (estado IN ('preparada', 'en_cola', 'en_curso', 'deteniendo', 'completa',
+                                               'parcial', 'error', 'cancelada', 'interrumpida')),
+  opciones     TEXT NOT NULL DEFAULT '{}',
+  creada       TEXT NOT NULL,
+  iniciada     TEXT,
+  terminada    TEXT,
+  error        TEXT NOT NULL DEFAULT '',
+  manifiesto_registrado INTEGER
+);
+INSERT INTO nueva_ejecucion (id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada, iniciada, terminada, error, manifiesto_registrado)
+  SELECT id, auditoria_id, tipo, origen_id, nombre, estado, opciones, creada, iniciada, terminada, error, manifiesto_registrado FROM ejecucion;
+DROP TABLE ejecucion;
+ALTER TABLE nueva_ejecucion RENAME TO ejecucion;
+CREATE INDEX ejecucion_auditoria ON ejecucion (auditoria_id);
+CREATE INDEX ejecucion_origen ON ejecucion (origen_id);
+""",
 }
 
 
