@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import ipaddress
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
 
 from .gowitness import _executable
 from .targets import Scope
@@ -83,3 +85,40 @@ def nmap_version(binary: str) -> str | None:
         return None
     encontrado = re.search(r"Nmap version ([\d.]+)", (resultado.stdout or "") + (resultado.stderr or ""))
     return encontrado.group(1) if encontrado else None
+
+
+def escanear_trozo(nmap: str, preset: str, dentro: list[str], excluidas: list[str], carpeta: Path,
+                   *, parar=None) -> dict:
+    """Lanza Nmap sobre un trozo y espera a que acabe (o a que `parar()` devuelva True).
+
+    Sin shell: la lista de argumentos la arma el código y las IP van en ficheros que escribe
+    Dédalo (`objetivos.txt`, `excluir.txt`) dentro de `carpeta`, que es también el directorio
+    de trabajo de Nmap. Ningún texto del usuario llega a la línea de comandos."""
+    carpeta = Path(carpeta)
+    (carpeta / "objetivos.txt").write_text("\n".join(dentro) + "\n", encoding="utf-8")
+    comando = [nmap, *COMUNES, *PRESETS[preset]["args"], "-oX", "salida.xml", "-iL", "objetivos.txt"]
+    if excluidas:
+        (carpeta / "excluir.txt").write_text("\n".join(excluidas) + "\n", encoding="utf-8")
+        comando += ["--excludefile", "excluir.txt"]
+    inicio = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    proc = subprocess.Popen(comando, shell=False, cwd=carpeta,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    relanzado = False
+    try:
+        while proc.poll() is None:
+            if parar is not None and parar():
+                relanzado = True
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                break
+            time.sleep(0.1)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    fin = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return {"comando": comando, "codigo": proc.returncode, "inicio": inicio, "fin": fin, "relanzado": relanzado}

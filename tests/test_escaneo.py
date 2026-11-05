@@ -1,7 +1,9 @@
 import ipaddress
+import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -123,6 +125,75 @@ class ObjetivosDelTrozoTests(unittest.TestCase):
         self.assertNotIn("10.0.0.200", dentro)
         self.assertNotIn("10.0.0.200", excluidas)
         self.assertEqual(excluidas, [])
+
+
+FAKE = Path(__file__).with_name("fake_nmap.py").resolve()
+
+
+def nmap_falso(carpeta: Path) -> str:
+    """Un ejecutable «nmap» que lanza fake_nmap.py (Popen sin shell no ejecuta un .py suelto)."""
+    if os.name == "nt":
+        envoltorio = carpeta / "nmap.cmd"
+        envoltorio.write_text(f'@"{sys.executable}" "{FAKE}" %*\n')
+    else:
+        envoltorio = carpeta / "nmap"
+        envoltorio.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{FAKE}" "$@"\n')
+        envoltorio.chmod(0o755)
+    return str(envoltorio)
+
+
+class EscanearTrozoTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+        (base / "bin").mkdir()
+        self.nmap = nmap_falso(base / "bin")
+        self.carpeta = base / "trozo"
+        self.carpeta.mkdir()
+
+    def args(self):
+        return json.loads((self.carpeta / "args.json").read_text())
+
+    def test_no_pasa_excluidas_a_nmap(self):
+        r = escaneo.escanear_trozo(self.nmap, "rapido", ["10.0.0.1", "10.0.0.2"], ["10.0.0.9"], self.carpeta)
+        self.assertNotIn("10.0.0.9", (self.carpeta / "objetivos.txt").read_text())
+        self.assertIn("--excludefile", self.args())
+        self.assertIn("10.0.0.9", (self.carpeta / "excluir.txt").read_text())
+        self.assertEqual(r["codigo"], 0)
+        self.assertFalse(r["relanzado"])
+        self.assertTrue((self.carpeta / "salida.xml").is_file())
+
+    def test_sin_excluidas_no_pone_excludefile(self):
+        escaneo.escanear_trozo(self.nmap, "rapido", ["10.0.0.1"], [], self.carpeta)
+        self.assertNotIn("--excludefile", self.args())
+
+    def test_argumentos_los_pone_el_codigo(self):
+        r = escaneo.escanear_trozo(self.nmap, "vpn", ["10.0.0.1"], [], self.carpeta)
+        esperado = [*escaneo.COMUNES, *escaneo.PRESETS["vpn"]["args"], "-oX", "salida.xml", "-iL", "objetivos.txt"]
+        self.assertEqual(self.args(), esperado)
+        self.assertEqual(r["comando"], [self.nmap, *esperado])
+
+    def test_no_usa_shell(self):
+        visto = {}
+        original = subprocess.Popen
+
+        def espia(args, **kw):
+            visto.update(kw)
+            visto["args"] = args
+            return original(args, **kw)
+
+        with patch.object(escaneo.subprocess, "Popen", espia):
+            escaneo.escanear_trozo(self.nmap, "rapido", ["10.0.0.1"], [], self.carpeta)
+        self.assertIs(visto.get("shell", False), False)
+        self.assertEqual(str(visto.get("cwd")), str(self.carpeta))
+        self.assertIsInstance(visto["args"], list)
+
+    def test_parar_mata_el_proceso_y_marca_relanzado(self):
+        with patch.dict(os.environ, {"FAKE_NMAP_ESPERA": "10"}):
+            r = escaneo.escanear_trozo(self.nmap, "rapido", ["10.0.0.1"], [], self.carpeta, parar=lambda: True)
+        self.assertTrue(r["relanzado"])
+        self.assertFalse((self.carpeta / "salida.xml").exists())
 
 
 if __name__ == "__main__":
