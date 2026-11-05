@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from pathlib import Path
 import re
@@ -9,6 +10,47 @@ import shutil
 import subprocess
 
 from .gowitness import _executable
+from .targets import Scope
+
+
+_PING = "-PE -PS21,22,23,25,80,135,139,443,445,3389,8080,8443"
+
+# Opciones propias de cada preset (sin -oX/-iL/--excludefile, que se añaden por trozo).
+PRESETS: dict[str, dict] = {
+    "rapido": {"etiqueta": "Rápido",
+               "args": f"-sT --top-ports 1000 -sV --version-light -T4 {_PING} --max-retries 2 --host-timeout 15m".split()},
+    "completo": {"etiqueta": "Completo",
+                 "args": f"-sT -p- -sV -T4 {_PING} --max-retries 2 --host-timeout 60m".split()},
+    "vpn": {"etiqueta": "Red difícil / VPN",
+            "args": "-sT -Pn --top-ports 1000 -sV -T3 --max-retries 4 --host-timeout 20m".split()},
+}
+
+# Comunes a todos: sin DNS inverso (eso es el descubrimiento DNS).
+COMUNES: list[str] = ["-n"]
+
+
+def trocear(include: list[str]) -> list[ipaddress.IPv4Network]:
+    """Las redes IPv4 de `include` en bloques /24 alineados, sin solapar y en orden.
+
+    Una red menor de /24 es un trozo de su tamaño; las redes IPv6 se ignoran."""
+    redes = [red for red in (ipaddress.ip_network(texto, strict=False) for texto in include) if red.version == 4]
+    trozos: list[ipaddress.IPv4Network] = []
+    for red in ipaddress.collapse_addresses(redes):
+        trozos.extend(red.subnets(new_prefix=24) if red.prefixlen < 24 else [red])
+    return trozos
+
+
+def objetivos_del_trozo(bloque: ipaddress.IPv4Network, scope: Scope) -> tuple[list[str], list[str]]:
+    """(en_alcance, excluidas) del bloque; las que están fuera no van en ninguna lista."""
+    en_alcance: list[str] = []
+    excluidas: list[str] = []
+    for ip in map(str, bloque):
+        situacion = scope.status(ip)
+        if situacion == scope.IN:
+            en_alcance.append(ip)
+        elif situacion == scope.EXCLUDED:
+            excluidas.append(ip)
+    return en_alcance, excluidas
 
 
 def find_nmap(explicit: str | None) -> str:
