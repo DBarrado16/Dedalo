@@ -20,11 +20,11 @@ _PING = "-PE -PS21,22,23,25,80,135,139,443,445,3389,8080,8443"
 
 # Opciones propias de cada preset (sin -oX/-iL/--excludefile, que se añaden por trozo).
 PRESETS: dict[str, dict] = {
-    "rapido": {"etiqueta": "Rápido",
+    "rapido": {"etiqueta": "Rápido", "puertos": 1000,
                "args": f"-sT --top-ports 1000 -sV --version-light -T4 {_PING} --max-retries 2 --host-timeout 15m".split()},
-    "completo": {"etiqueta": "Completo",
+    "completo": {"etiqueta": "Completo", "puertos": 65535,
                  "args": f"-sT -p- -sV -T4 {_PING} --max-retries 2 --host-timeout 60m".split()},
-    "vpn": {"etiqueta": "Red difícil / VPN",
+    "vpn": {"etiqueta": "Red difícil / VPN", "puertos": 1000,
             "args": "-sT -Pn --top-ports 1000 -sV -T3 --max-retries 4 --host-timeout 20m".split()},
 }
 
@@ -121,12 +121,14 @@ def nmap_version(binary: str) -> str | None:
 
 
 def escanear_trozo(nmap: str, preset: str, dentro: list[str], excluidas: list[str], carpeta: Path,
-                   *, parar=None) -> dict:
+                   *, parar) -> dict:
     """Lanza Nmap sobre un trozo y espera a que acabe (o a que `parar()` devuelva True).
 
     Sin shell: la lista de argumentos la arma el código y las IP van en ficheros que escribe
     Dédalo (`objetivos.txt`, `excluir.txt`) dentro de `carpeta`, que es también el directorio
     de trabajo de Nmap. Ningún texto del usuario llega a la línea de comandos."""
+    if preset not in PRESETS:
+        raise ValueError(f"Preset de escaneo desconocido: {preset}")
     carpeta = Path(carpeta)
     (carpeta / "objetivos.txt").write_text("\n".join(dentro) + "\n", encoding="utf-8")
     comando = [nmap, *COMUNES, *PRESETS[preset]["args"], "-oX", "salida.xml", "-iL", "objetivos.txt"]
@@ -142,7 +144,7 @@ def escanear_trozo(nmap: str, preset: str, dentro: list[str], excluidas: list[st
                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         try:
             while proc.poll() is None:
-                if parar is not None and parar():
+                if parar():
                     relanzado = True
                     proc.terminate()
                     try:
@@ -160,13 +162,24 @@ def escanear_trozo(nmap: str, preset: str, dentro: list[str], excluidas: list[st
     return {"comando": comando, "codigo": proc.returncode, "inicio": inicio, "fin": fin, "relanzado": relanzado}
 
 
-def limpiar_hosts(hosts: list[Host], tope_puertos: int = 1000) -> list[Host]:
-    """Descarta hosts sin puertos abiertos (fantasmas de -Pn) y vacía los que responden en todo."""
+def puertos_sondeados(presets: list[str]) -> int:
+    """Cuántos puertos TCP sondea como mucho esta combinación de presets (ValueError si falta alguno)."""
+    return max(PRESETS[p]["puertos"] for p in presets)
+
+
+def limpiar_hosts(hosts: list[Host], puertos_sondeados: int | None = None) -> list[Host]:
+    """Descarta hosts sin puertos abiertos (fantasmas de -Pn) y vacía los que responden en (casi) todo.
+
+    `puertos_sondeados` es cuántos puertos TCP sondeó el escaneo; un host con el 90 % o más
+    abiertos responde a todo (tarpit, firewall que contesta a todo) y entra sin puertos y con una
+    observación. El 90 % aguanta que la detección de versión pode algún puerto. Sin ese dato no se marca.
+    """
+    tope = puertos_sondeados * 9 // 10 if puertos_sondeados else None
     limpios = []
     for host in hosts:
         if not host.ports and not host.udp_ports:
             continue
-        if len(host.ports) > tope_puertos:
+        if tope is not None and len(host.ports) >= tope:
             abiertos = len(host.ports)
             host.ports = {}
             host.scripts.append({"id": "dedalo-todos-los-puertos",

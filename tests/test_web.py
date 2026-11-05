@@ -2415,6 +2415,19 @@ class PortalEscaneoTests(unittest.TestCase):
         with closing(self.store.database()) as con:
             return [h.ip for h in auditoria.observed_hosts(con, import_id)]
 
+    def test_importacion_fallida_no_deja_huerfana_ni_enlace(self):
+        # Si la importación falla tras registrarse en la base, se deshace entera y el escaneo queda
+        # sin enlazar (reimportable al reabrir), no una importación a medias en el historial.
+        scan_id = self.run_scan()
+        with patch("dedalo.web.write_scope_files", side_effect=OSError("disco lleno")), \
+                redirect_stderr(io.StringIO()):
+            self.wait_scan(scan_id)
+        with closing(self.store.database()) as con:
+            tipos = [r[0] for r in con.execute("SELECT tipo FROM ejecucion").fetchall()]
+            enlace = auditoria.scan_status(con, scan_id)["importacion"]
+        self.assertNotIn("importacion", tipos)
+        self.assertIsNone(enlace)
+
     def test_scan_sin_incluir_no_lanza(self):
         vacia = self.store.create_audit({"nombre": "Vacía", "incluir": ""})
         with self.assertRaises(web.Conflict):

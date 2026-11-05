@@ -1627,32 +1627,56 @@ class PortalStore:
         """Une los XML de los trozos, limpia los hosts e importa a la misma ficha; devuelve el id de la importación.
 
         La importación queda registrada como un trabajo preparado más: se puede abrir y capturar desde el portal.
+        Si algo falla tras registrarla en la base, se deshace (como `import`), y el vínculo escaneo↔importación
+        se escribe solo al final, para que un fallo deje el escaneo reimportable al reabrir.
         """
+        with closing(self.database()) as con:
+            presets = json.loads(con.execute("SELECT opciones FROM ejecucion WHERE id = ?",
+                                             (scan_id,)).fetchone()["opciones"]).get("presets", [])
+        puertos = escaneo.puertos_sondeados(presets) if presets else None
         import_id = uuid.uuid4().hex
         import_dir = self.directory(import_id)
         (import_dir / "entradas").mkdir(parents=True)
-        paths = []
-        for indice, xml in enumerate(xmls):
-            destino = import_dir / "entradas" / f"nmap-{indice:02d}.txt"
-            shutil.copyfile(xml, destino)
-            paths.append(destino)
-        hosts = escaneo.limpiar_hosts(parser.merge([parser.parse_file(path) for path in paths]))
-        opciones = options_from({})
-        stamp = now()
-        nombre = f"Escaneo Nmap · {stamp}"
-        with self.imports, closing(self.database()) as con:
-            auditoria.import_nmap(con, audit_id, import_id, nombre, hosts, paths, self.root, stamp,
-                                  {"archivos": [path.name for path in paths], "captura": opciones})
-            auditoria.link_scan_import(con, scan_id, import_id)
-        meta = {"id": import_id, "nombre": nombre, "fecha": stamp, "estado": "preparada",
-                "archivos": [path.name for path in paths], "opciones": opciones, "error": ""}
-        with self.lock:
-            with closing(self.database()) as con:
-                scope = auditoria.scope(con, audit_id)
-            self._plan(meta, hosts, scope)
-            write_scope_files(import_dir, scope)
-            self.jobs[import_id] = meta
-        return import_id
+        imported = False
+        try:
+            paths = []
+            for indice, xml in enumerate(xmls):
+                destino = import_dir / "entradas" / f"nmap-{indice:02d}.txt"
+                shutil.copyfile(xml, destino)
+                paths.append(destino)
+            hosts = escaneo.limpiar_hosts(parser.merge([parser.parse_file(path) for path in paths]),
+                                          puertos_sondeados=puertos)
+            opciones = options_from({})
+            stamp = now()
+            nombre = f"Escaneo Nmap · {stamp}"
+            with self.imports, closing(self.database()) as con:
+                auditoria.import_nmap(con, audit_id, import_id, nombre, hosts, paths, self.root, stamp,
+                                      {"archivos": [path.name for path in paths], "captura": opciones})
+            imported = True
+            meta = {"id": import_id, "nombre": nombre, "fecha": stamp, "estado": "preparada",
+                    "archivos": [path.name for path in paths], "opciones": opciones, "error": ""}
+            with self.lock:
+                with closing(self.database()) as con:
+                    scope = auditoria.scope(con, audit_id)
+                    self._plan(meta, hosts, scope)
+                    write_scope_files(import_dir, scope)
+                    auditoria.link_scan_import(con, scan_id, import_id)  # enlaza solo tras planificar y escribir
+                self.jobs[import_id] = meta
+            return import_id
+        except Exception:
+            # Base primero, carpeta después: si la base no deja deshacer, la ejecución sale entera al reabrir.
+            undone = True
+            if imported:
+                try:
+                    with closing(self.database()) as con:
+                        auditoria.delete_execution(con, import_id)
+                except Exception as exc:
+                    undone = False
+                    print(f"Error del portal: no se pudo deshacer la importación {import_id}: {exc}. Saldrá en el "
+                          "historial al reabrir el portal; bórrala desde allí.", file=sys.stderr)
+            if undone:
+                shutil.rmtree(import_dir, ignore_errors=True)
+            raise
 
     def discover(self, job_id, payload=None):
         """Encola el descubrimiento DNS de los hosts en alcance; solo lee la base al encolar."""

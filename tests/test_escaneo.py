@@ -156,7 +156,7 @@ class EscanearTrozoTests(unittest.TestCase):
         return json.loads((self.carpeta / "args.json").read_text())
 
     def test_no_pasa_excluidas_a_nmap(self):
-        r = escaneo.escanear_trozo(self.nmap, "rapido", ["10.0.0.1", "10.0.0.2"], ["10.0.0.9"], self.carpeta)
+        r = escaneo.escanear_trozo(self.nmap, "rapido", ["10.0.0.1", "10.0.0.2"], ["10.0.0.9"], self.carpeta, parar=lambda: False)
         self.assertNotIn("10.0.0.9", (self.carpeta / "objetivos.txt").read_text())
         self.assertIn("--excludefile", self.args())
         self.assertIn("10.0.0.9", (self.carpeta / "excluir.txt").read_text())
@@ -165,11 +165,11 @@ class EscanearTrozoTests(unittest.TestCase):
         self.assertTrue((self.carpeta / "salida.xml").is_file())
 
     def test_sin_excluidas_no_pone_excludefile(self):
-        escaneo.escanear_trozo(self.nmap, "rapido", ["10.0.0.1"], [], self.carpeta)
+        escaneo.escanear_trozo(self.nmap, "rapido", ["10.0.0.1"], [], self.carpeta, parar=lambda: False)
         self.assertNotIn("--excludefile", self.args())
 
     def test_argumentos_los_pone_el_codigo(self):
-        r = escaneo.escanear_trozo(self.nmap, "vpn", ["10.0.0.1"], [], self.carpeta)
+        r = escaneo.escanear_trozo(self.nmap, "vpn", ["10.0.0.1"], [], self.carpeta, parar=lambda: False)
         esperado = [*escaneo.COMUNES, *escaneo.PRESETS["vpn"]["args"], "-oX", "salida.xml", "-iL", "objetivos.txt"]
         self.assertEqual(self.args(), esperado)
         self.assertEqual(r["comando"], [self.nmap, *esperado])
@@ -184,15 +184,19 @@ class EscanearTrozoTests(unittest.TestCase):
             return original(args, **kw)
 
         with patch.object(escaneo.subprocess, "Popen", espia):
-            escaneo.escanear_trozo(self.nmap, "rapido", ["10.0.0.1"], [], self.carpeta)
+            escaneo.escanear_trozo(self.nmap, "rapido", ["10.0.0.1"], [], self.carpeta, parar=lambda: False)
         self.assertIs(visto.get("shell", False), False)
         self.assertEqual(str(visto.get("cwd")), str(self.carpeta))
         self.assertIsInstance(visto["args"], list)
 
     def test_guarda_stdout_y_stderr_del_trozo(self):
-        escaneo.escanear_trozo(self.nmap, "rapido", ["10.0.0.1"], [], self.carpeta)
+        escaneo.escanear_trozo(self.nmap, "rapido", ["10.0.0.1"], [], self.carpeta, parar=lambda: False)
         self.assertIn("fake nmap", (self.carpeta / "nmap.out").read_text())
         self.assertTrue((self.carpeta / "nmap.err").is_file())
+
+    def test_preset_desconocido_revienta(self):
+        with self.assertRaises(ValueError):
+            escaneo.escanear_trozo(self.nmap, "fantasma", ["10.0.0.1"], [], self.carpeta, parar=lambda: False)
 
     def test_parar_mata_el_proceso_y_marca_relanzado(self):
         with patch.dict(os.environ, {"FAKE_NMAP_ESPERA": "10"}):
@@ -210,17 +214,29 @@ class LimpiarHostsTests(unittest.TestCase):
         h = [parser.Host(ip="10.0.0.4", udp_ports={53: parser.Port(53)})]
         self.assertEqual([x.ip for x in escaneo.limpiar_hosts(h)], ["10.0.0.4"])
 
-    def test_vacia_host_con_demasiados_puertos(self):
-        h = parser.Host(ip="10.0.0.3", ports={n: parser.Port(n) for n in range(1, 1500)})
-        out = escaneo.limpiar_hosts([h], tope_puertos=1000)[0]
+    def test_puertos_sondeados_es_el_mayor_de_los_presets(self):
+        self.assertEqual(escaneo.puertos_sondeados(["rapido"]), 1000)
+        self.assertEqual(escaneo.puertos_sondeados(["vpn"]), 1000)
+        self.assertEqual(escaneo.puertos_sondeados(["rapido", "completo"]), 65535)
+
+    def test_vacia_host_que_responde_a_todo_con_top_1000(self):
+        # Con rapido/vpn (--top-ports 1000) un host abierto en los 1000 responde a todo.
+        h = parser.Host(ip="10.0.0.3", ports={n: parser.Port(n) for n in range(1, 1001)})
+        out = escaneo.limpiar_hosts([h], puertos_sondeados=1000)[0]
         self.assertEqual(out.ports, {})
         self.assertIn({"id": "dedalo-todos-los-puertos",
-                       "output": "responde en todos los puertos (1499 abiertos)"}, out.scripts)
+                       "output": "responde en todos los puertos (1000 abiertos)"}, out.scripts)
 
-    def test_en_el_tope_no_se_vacia(self):
-        h = parser.Host(ip="10.0.0.5", ports={n: parser.Port(n) for n in range(1, 1001)})
-        out = escaneo.limpiar_hosts([h], tope_puertos=1000)[0]
-        self.assertEqual(len(out.ports), 1000)
+    def test_host_normal_conserva_sus_puertos(self):
+        h = parser.Host(ip="10.0.0.5", ports={n: parser.Port(n) for n in range(1, 51)})
+        out = escaneo.limpiar_hosts([h], puertos_sondeados=1000)[0]
+        self.assertEqual(len(out.ports), 50)
+        self.assertEqual(out.scripts, [])
+
+    def test_sin_puertos_sondeados_no_marca_a_nadie(self):
+        h = parser.Host(ip="10.0.0.6", ports={n: parser.Port(n) for n in range(1, 2000)})
+        out = escaneo.limpiar_hosts([h])[0]
+        self.assertEqual(len(out.ports), 1999)
         self.assertEqual(out.scripts, [])
 
 
