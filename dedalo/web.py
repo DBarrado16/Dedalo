@@ -151,7 +151,7 @@ class PortalStore:
         self.catalogo_ruta = Path(catalogo_ruta)
         self.root.mkdir(parents=True, exist_ok=True)
         self.binary_option, self.chrome_option = binary, chrome
-        # Ruta a Nmap para el escaneo desde el portal (--nmap, que llega en una tarea posterior); None lo busca solo.
+        # Ruta a Nmap para el escaneo desde el portal (--nmap); None lo busca solo.
         self.nmap_option = nmap
         self.model_option, self.model_host = model, ollama
         self.lock = threading.RLock()
@@ -194,6 +194,8 @@ class PortalStore:
         self.credential_progress = {}
         # Direcciones ya consultadas del descubrimiento en curso; solo en memoria, como el análisis.
         self.discovery_progress = {}
+        # Preset y trozo en curso de cada escaneo Nmap activo; solo en memoria, como el análisis.
+        self.scan_progress = {}
         # Servicios ya mirados de la detección de versión en curso; solo en memoria, como el análisis.
         self.version_progress = {}
         # Servicios ya cruzados del cruce de vulnerabilidades en curso; solo en memoria, como el análisis.
@@ -1436,6 +1438,45 @@ class PortalStore:
                     raise Conflict("Este escaneo no está en marcha.")
         return self._scan_detail(scan_id)
 
+    def scans(self, audit_id):
+        """Los escaneos de la ficha (en curso y terminados, el último primero) y si hay Nmap con el que lanzar otro."""
+        with self.lock, closing(self.database()) as con:
+            if not auditoria.audit_exists(con, audit_id):
+                raise ValueError("Elige una ficha de cliente existente")
+            filas = auditoria.scans(con, audit_id)
+        for fila in filas:
+            progreso = self.scan_progress.get(fila["id"])
+            if progreso and fila["estado"] in ACTIVE:
+                fila["progreso"] = dict(progreso)
+        try:
+            nmap = {"ok": True, "ruta": escaneo.find_nmap(self.nmap_option)}
+        except ValueError as exc:
+            nmap = {"ok": False, "error": str(exc)}
+        return {"escaneos": filas, "nmap": nmap}
+
+    def scan_summary(self, audit_id, rangos, presets):
+        """Lo que se va a lanzar con esa elección (IP en alcance, trozos, tiempo, aviso); no se conecta con nada."""
+        if not isinstance(rangos, list) or not isinstance(presets, list):
+            raise ValueError("Carga inválida")
+        if any(p not in escaneo.PRESETS for p in presets):
+            raise ValueError("Perfil de escaneo desconocido")
+        with self.lock, closing(self.database()) as con:
+            if not auditoria.audit_exists(con, audit_id):
+                raise ValueError("Elige una ficha de cliente existente")
+            scope = auditoria.scope(con, audit_id)
+        objetivos = self._scan_targets(rangos, scope)
+        if sum(red.num_addresses for red in objetivos) > 65536:
+            raise ValueError("Demasiadas direcciones para un escaneo (máximo 65.536). Acota los rangos.")
+        trozos = escaneo.trocear([str(red) for red in objetivos])
+        ips = sum(len(escaneo.objetivos_del_trozo(trozo, scope)[0]) for trozo in trozos)
+        lentos = [escaneo.PRESETS[p]["etiqueta"] for p in presets if p in escaneo.PRESETS_LENTOS]
+        aviso = ""
+        if lentos and ips > escaneo.AVISO_IPS:
+            aviso = (f"{' y '.join(lentos)} con más de {escaneo.AVISO_IPS:,} direcciones".replace(",", ".")
+                     + " puede tardar horas o días y generar mucho tráfico. Valora acotar los rangos.")
+        return {"ips": ips, "trozos": len(trozos), "pasadas": len(trozos) * len(presets),
+                "estimacion": escaneo.estimar(presets, ips) if presets else "", "aviso": aviso}
+
     def _run_scan(self, scan_id, audit_id):
         try:
             self._scan(scan_id, audit_id)
@@ -1447,6 +1488,8 @@ class PortalStore:
                                         "No se pudo completar el escaneo. Consulta la terminal del portal.")
             except Exception as again:
                 print(f"Error del portal: no se pudo cerrar el escaneo {scan_id}: {again}", file=sys.stderr)
+        finally:
+            self.scan_progress.pop(scan_id, None)
 
     def _scan(self, scan_id, audit_id):
         """Recorre presets × trozos releyendo el alcance vivo antes de cada trozo, importa lo escaneado y, si
@@ -1478,7 +1521,7 @@ class PortalStore:
         parada_final = None   # "usuario" o "cierre" si el escaneo se detiene a medias
         parada = {"motivo": None}
         salir = False
-        for preset in presets:
+        for n_preset, preset in enumerate(presets):
             if salir:
                 break
             for indice, bloque in enumerate(trozos):
@@ -1525,6 +1568,9 @@ class PortalStore:
                                 return True
                         return False
 
+                    self.scan_progress[scan_id] = {"preset": escaneo.PRESETS[preset]["etiqueta"],
+                                                   "trozo": n_preset * len(trozos) + indice + 1,
+                                                   "total": len(presets) * len(trozos)}
                     resultado = escaneo.escanear_trozo(nmap, preset, dentro, excluidas, carpeta, parar=parar)
                     registro.append({"preset": preset, "trozo": str(bloque),
                                      **{k: resultado[k] for k in ("comando", "inicio", "fin", "codigo", "relanzado")}})
@@ -2058,6 +2104,12 @@ class PortalHandler(BaseHTTPRequestHandler):
                         and parts[3] == "escanear"):
                     self.json(store.scan(parts[2], payload), 202)
                     return
+                if (len(parts) == 5 and parts[:2] == ["api", "audits"] and re.fullmatch(r"[a-f0-9]{32}", parts[2])
+                        and parts[3:] == ["escaneos", "resumen"]):
+                    if not isinstance(payload, dict):
+                        raise ValueError("Carga inválida")
+                    self.json(store.scan_summary(parts[2], payload.get("rangos", []), payload.get("presets", [])))
+                    return
                 if (len(parts) == 4 and parts[:2] == ["api", "escaneos"] and re.fullmatch(r"[a-f0-9]{32}", parts[2])
                         and parts[3] == "detener"):
                     self.json(store.stop_scan(parts[2]))
@@ -2109,6 +2161,10 @@ class PortalHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/audits":
                 self.json(store.audits())
+                return
+            if (len(parts) == 4 and parts[:2] == ["api", "audits"] and re.fullmatch(r"[a-f0-9]{32}", parts[2])
+                    and parts[3] == "escaneos"):
+                self.json(store.scans(parts[2]))
                 return
             if path == "/api/modelos":
                 self.json(store.models())
@@ -2199,7 +2255,7 @@ def serve_portal(args):
         _, message = modelo.ensure_running(args.ollama)
         if message:
             print(message, flush=True)
-    store = PortalStore(args.datos, args.gowitness, args.chrome, model=args.modelo, ollama=args.ollama,
+    store = PortalStore(args.datos, args.gowitness, args.chrome, nmap=args.nmap, model=args.modelo, ollama=args.ollama,
                         dns_dominio=args.dns_dominio, catalogo_ruta=args.catalogo or catalogo.RUTA,
                         sin_internet=True if args.sin_internet else None)  # None: decide DEDALO_SIN_INTERNET
     try:

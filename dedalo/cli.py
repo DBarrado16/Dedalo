@@ -75,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
                          help="No quemar la barra con la URL en las capturas (por defecto sí se quema)")
     capture.add_argument("--chrome", help="Ruta o nombre del ejecutable Chrome/Chromium/Edge")
     capture.add_argument("--gowitness", help="Ruta o nombre del ejecutable gowitness v3")
+    capture.add_argument("--nmap", help="Ruta o nombre del ejecutable de Nmap (lo usa el escaneo del portal)")
     capture.add_argument("--stop-file", help=argparse.SUPPRESS)
     # Alcance vigente que el portal reescribe si cambia la ficha: se relee antes de cada pasada.
     capture.add_argument("--alcance-vivo", help=argparse.SUPPRESS)
@@ -85,6 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     portal.add_argument("--datos", default="portal_datos", help="Carpeta del historial y archivos subidos")
     portal.add_argument("--chrome", help="Navegador del servidor")
     portal.add_argument("--gowitness", help="Ejecutable de gowitness v3")
+    portal.add_argument("--nmap", help="Ejecutable de Nmap para escanear desde el portal (por defecto, el del sistema)")
     portal.add_argument("--abrir", action="store_true", help="Abrir el portal en el navegador")
     # argparse pasa por `type` también un valor por defecto de texto: DEDALO_MODELO se comprueba igual.
     # Sin espacios alrededor: en cmd, «set DEDALO_MODELO=modelo » guarda el espacio final.

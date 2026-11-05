@@ -677,6 +677,20 @@ def scan_status(con, scan_id: str) -> dict | None:
     return {"estado": row["estado"], "error": row["error"], "importacion": json.loads(row["opciones"]).get("importacion")}
 
 
+def scans(con, audit_id: str, limit: int = 50) -> list[dict]:
+    """Los escaneos Nmap de la ficha, el último primero, con lo que la portada necesita de cada uno."""
+    result = []
+    for row in con.execute("SELECT id, estado, error, opciones, creada, terminada FROM ejecucion "
+                           "WHERE auditoria_id = ? AND tipo = 'escaneo' ORDER BY creada DESC, rowid DESC LIMIT ?",
+                           (audit_id, limit)):
+        opciones = json.loads(row["opciones"])
+        result.append({"id": row["id"], "estado": row["estado"], "error": row["error"] or "",
+                       "creada": row["creada"], "terminada": row["terminada"],
+                       "presets": opciones.get("presets", []), "rangos": opciones.get("rangos", []),
+                       "capturar": bool(opciones.get("capturar")), "importacion": opciones.get("importacion")})
+    return result
+
+
 def link_scan_import(con, scan_id: str, import_id: str) -> None:
     """Anota en cada lado el id del otro, en `opciones`; sin `origen_id` (su FK borra en cascada).
 

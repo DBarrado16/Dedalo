@@ -226,3 +226,29 @@ class LimpiarHostsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class EstimarTests(unittest.TestCase):
+    def test_devuelve_texto_y_crece_con_las_ip(self):
+        self.assertIsInstance(escaneo.estimar(["rapido"], 256), str)
+        self.assertNotEqual(escaneo.estimar(["rapido"], 256), escaneo.estimar(["rapido"], 65536))
+
+    def test_completo_tarda_mas_que_rapido(self):
+        self.assertGreater(escaneo.segundos_estimados(["completo"], 256), escaneo.segundos_estimados(["rapido"], 256))
+
+    def test_presets_suman(self):
+        self.assertAlmostEqual(escaneo.segundos_estimados(["rapido", "vpn"], 100),
+                               escaneo.segundos_estimados(["rapido"], 100) + escaneo.segundos_estimados(["vpn"], 100))
+
+    def test_sin_ip_no_hay_nada_que_escanear(self):
+        self.assertIn("nada", escaneo.estimar(["rapido"], 0))
+
+    def test_unidades_legibles(self):
+        self.assertIn("min", escaneo.estimar(["rapido"], 256))
+        self.assertIn("h", escaneo.estimar(["completo"], 256))
+        self.assertIn("días", escaneo.estimar(["completo"], 65536))
+
+    def test_preset_desconocido_falla(self):
+        with self.assertRaises(ValueError):
+            escaneo.estimar(["inexistente"], 10)

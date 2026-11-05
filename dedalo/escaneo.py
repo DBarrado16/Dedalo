@@ -31,6 +31,38 @@ PRESETS: dict[str, dict] = {
 # Comunes a todos: sin DNS inverso (eso es el descubrimiento DNS).
 COMUNES: list[str] = ["-n"]
 
+# Orden de magnitud del tiempo por IP de cada preset (segundos, con los tiempos y reintentos de arriba y una
+# red mixta de equipos vivos y muertos). Sirve para avisar de lo que se va a lanzar, no para prometer una hora.
+SEGUNDOS_POR_IP: dict[str, float] = {"rapido": 1.0, "completo": 30.0, "vpn": 5.0}
+
+# Por encima de estas IP, un preset lento (completo, vpn) merece un aviso antes de lanzarse.
+PRESETS_LENTOS = ("completo", "vpn")
+AVISO_IPS = 1024
+
+
+def segundos_estimados(presets: list[str], n_ips: int) -> float:
+    """Suma de segundos esperables de los presets sobre `n_ips` direcciones (ValueError si falta alguno)."""
+    for preset in presets:
+        if preset not in SEGUNDOS_POR_IP:
+            raise ValueError(f"Perfil de escaneo desconocido: {preset}")
+    return sum(SEGUNDOS_POR_IP[preset] for preset in presets) * max(n_ips, 0)
+
+
+def estimar(presets: list[str], n_ips: int) -> str:
+    """El tiempo orden de magnitud de escanear `n_ips` con `presets`, en texto ('≈ 4 min', '≈ 2 h', '≈ 23 días')."""
+    if n_ips <= 0:
+        return "nada que escanear"
+    segundos = segundos_estimados(presets, n_ips)
+    if segundos < 60:
+        return "menos de 1 min"
+    minutos = segundos / 60
+    if minutos < 90:
+        return f"≈ {round(minutos)} min"
+    horas = minutos / 60
+    if horas < 48:
+        return f"≈ {round(horas)} h"
+    return f"≈ {round(horas / 24)} días"
+
 
 def trocear(include: list[str]) -> list[ipaddress.IPv4Network]:
     """Las redes IPv4 de `include` en bloques /24 alineados, sin solapar y en orden.

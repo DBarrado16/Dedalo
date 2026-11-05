@@ -82,8 +82,85 @@ function renderAudits() {
   $("audit-select").value = currentAudit;
   $("audit-select").disabled = !audits.length;
   $("edit-audit").hidden = !auditById(currentAudit);
+  $("scan-audit").hidden = !auditById(currentAudit);
+}
+// --- Escaneos con Nmap de la ficha: lista con progreso y diálogo de lanzamiento ---
+const presetNames = {rapido: "Rápido", completo: "Completo", vpn: "Red difícil / VPN"};
+const scanLabels = {en_cola: "En cola", en_curso: "Escaneando", deteniendo: "Deteniendo", completa: "Completo", parcial: "Parcial", error: "Error", cancelada: "Cancelado", interrumpida: "Interrumpido"};
+const nmapHint = "Instala Nmap (https://nmap.org/download) o arranca el portal con --nmap RUTA.";
+const noScans = () => ({escaneos: [], nmap: {ok: true}});
+let scanInfo = noScans(), scanBlocked = "", scanSeq = 0;
+const scanRanges = (scan) => scan.rangos.length > 3 ? scan.rangos.slice(0, 3).join(", ") + ` y ${scan.rangos.length - 3} más` : scan.rangos.join(", ");
+function scanRow(scan) {
+  const active = activeStates.has(scan.estado), progress = scan.progreso;
+  const detail = active
+    ? (progress ? `${progress.preset} · trozo ${progress.trozo} de ${progress.total}` : scan.estado === "en_cola" ? "Esperando su turno" : "Preparando el escaneo…")
+    : "";
+  const open = scan.importacion && knownJobs.some(job => job.id === scan.importacion)
+    ? `<button class="link-button" type="button" data-open="${scan.importacion}">Ver resultados</button>` : "";
+  const stop = scan.estado === "deteniendo" ? '<button class="secondary danger" type="button" disabled>Deteniendo…</button>'
+    : active ? `<button class="secondary danger" type="button" data-stop="${scan.id}">${scan.estado === "en_cola" ? "Cancelar" : "Detener"}</button>` : "";
+  return `<li class="scan-row"><div>
+    <div class="scan-head"><strong>${escapeHtml(scan.presets.map(p => presetNames[p] || p).join(" + "))}</strong><span class="badge ${badgeClass(scan.estado)}">${scanLabels[scan.estado] || scan.estado}</span><span>${escapeHtml(dateText(scan.creada))}</span></div>
+    <p>${escapeHtml(scanRanges(scan))}${scan.capturar ? " · con captura al terminar" : ""}</p>
+    ${detail ? `<p class="scan-progress">${escapeHtml(detail)}</p>` : ""}
+    ${!active && scan.error ? `<p class="scan-error">${escapeHtml(scan.error)}</p>` : ""}
+  </div><div class="scan-actions">${open}${stop}</div></li>`;
+}
+function renderScans() {
+  $("scans-panel").hidden = !scanInfo.escaneos.length;
+  const html = scanInfo.escaneos.map(scanRow).join("");
+  if ($("scan-list").innerHTML !== html) $("scan-list").innerHTML = html;
+}
+async function refreshScans(version = viewVersion) {
+  const audit = currentAudit;
+  if (!audit) { scanInfo = noScans(); renderScans(); return; }
+  try {
+    const info = await request("/api/audits/" + audit + "/escaneos");
+    if (audit !== currentAudit || version !== viewVersion) return;
+    scanInfo = info;
+  } catch { return; }
+  renderScans();
+}
+const scanChecked = (name) => [...document.querySelectorAll(`#scan-form input[name="${name}"]:checked`)].map(input => input.value);
+async function updateScanSummary() {
+  const ranges = scanChecked("scan-range"), presets = scanChecked("scan-preset"), seq = ++scanSeq;
+  const box = $("scan-summary"), launch = $("launch-scan");
+  $("scan-warning").hidden = true;
+  launch.disabled = true;
+  if (scanBlocked) { box.textContent = ""; return; }
+  if (!ranges.length || !presets.length) { box.textContent = "Elige al menos un rango y un perfil."; return; }
+  box.textContent = "Calculando…";
+  try {
+    const summary = await request(`/api/audits/${currentAudit}/escaneos/resumen`, {rangos: ranges, presets});
+    if (seq !== scanSeq) return;
+    if (!summary.ips) { box.textContent = "Ninguna IP de esos rangos está en alcance: no hay nada que escanear."; return; }
+    const passes = presets.length > 1 ? ` × ${presets.length} perfiles` : "";
+    box.innerHTML = `<strong>${summary.ips.toLocaleString("es-ES")}</strong> IP en alcance · ${summary.trozos} trozos de hasta 256 IP${passes} · tiempo estimado ${escapeHtml(summary.estimacion)} <small>(orden de magnitud)</small>`;
+    if (summary.aviso) { $("scan-warning").textContent = summary.aviso; $("scan-warning").hidden = false; }
+    launch.disabled = false;
+  } catch (error) {
+    if (seq === scanSeq) box.textContent = error.message;
+  }
+}
+function openScan() {
+  const audit = auditById(currentAudit);
+  if (!audit) return;
+  const ranges = audit.incluir.map(rule => rule.cidr).filter(cidr => !cidr.includes(":"));
+  $("scan-ranges").innerHTML = ranges.map(cidr => `<label class="toggle"><input type="checkbox" name="scan-range" value="${escapeHtml(cidr)}" checked><code>${escapeHtml(cidr)}</code></label>`).join("")
+    || '<p class="hint">Esta ficha no tiene rangos IPv4. Añádelos con «Editar ficha».</p>';
+  document.querySelectorAll('#scan-form input[name="scan-preset"]').forEach(input => { input.checked = input.value === "rapido"; });
+  $("scan-capture").checked = false;
+  $("scan-error").hidden = true;
+  scanBlocked = !ranges.length ? "La ficha no tiene alcance IPv4 que escanear. Añade rangos con «Editar ficha»."
+    : !scanInfo.nmap.ok ? scanInfo.nmap.error + " " + nmapHint : "";
+  $("scan-block").textContent = scanBlocked;
+  $("scan-block").hidden = !scanBlocked;
+  updateScanSummary();
+  $("scan-dialog").showModal();
 }
 function clearSelection() {
+  scanInfo = noScans(); renderScans();
   ++viewVersion;
   currentId = ""; current = null; inventory = null;
   history.replaceState(null, "", location.pathname);
@@ -602,6 +679,7 @@ async function poll() {
     if ((firstPoll && hashJob) || !auditById(currentAudit)) setAudit(hashJob?.auditoria || allJobs[0]?.auditoria || audits[0]?.id || "");
     firstPoll = false;
     renderAudits();
+    await refreshScans(version);
     const jobs = allJobs.filter(job => job.auditoria === currentAudit);
     updateJobs(jobs);
     if (currentId && !jobs.some(job => job.id === currentId)) {
@@ -889,6 +967,33 @@ $("results").addEventListener("click", event => {
   $("image-dialog").showModal();
 });
 $("close-image").addEventListener("click", () => $("image-dialog").close());
+$("scan-audit").addEventListener("click", openScan);
+document.querySelector(".close-scan").addEventListener("click", () => $("scan-dialog").close());
+$("scan-form").addEventListener("change", updateScanSummary);
+$("scan-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const launch = $("launch-scan");
+  launch.disabled = true;
+  $("scan-error").hidden = true;
+  try {
+    await request(`/api/audits/${currentAudit}/escanear`, {rangos: scanChecked("scan-range"), presets: scanChecked("scan-preset"), capturar: $("scan-capture").checked});
+    $("scan-dialog").close();
+    await refreshScans();
+  } catch (error) {
+    $("scan-error").textContent = error.message;
+    $("scan-error").hidden = false;
+    launch.disabled = false;
+  }
+});
+$("scan-list").addEventListener("click", async event => {
+  const stop = event.target.closest("[data-stop]"), open = event.target.closest("[data-open]");
+  if (open) { await selectJob(open.dataset.open); return; }
+  if (!stop) return;
+  stop.disabled = true;
+  try { await request("/api/escaneos/" + stop.dataset.stop + "/detener", {}); }
+  catch (error) { notice(error.message); }
+  await refreshScans();
+});
 async function boot() {
   try {
     const bootstrap = await request("/api/bootstrap");
